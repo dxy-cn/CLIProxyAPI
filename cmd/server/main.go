@@ -18,21 +18,21 @@ import (
 
 	"github.com/joho/godotenv"
 	configaccess "github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/authbootstrap"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cmd"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/store"
 	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/translator"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/tui"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
-	_ "time/tzdata"
 )
 
 var (
@@ -132,13 +132,6 @@ func main() {
 		pgStoreSchema        string
 		pgStoreLocalPath     string
 		pgStoreInst          *store.PostgresStore
-		useMySQLStore        bool
-		mysqlStoreDSN        string
-		mysqlStoreLocalPath  string
-		mysqlStoreInst       *store.MySQLStore
-		authBootstrapDir     string
-		authBootstrapFile    string
-		authBootstrapReplace bool
 		useGitStore          bool
 		gitStoreRemoteURL    string
 		gitStoreUser         string
@@ -179,10 +172,6 @@ func main() {
 		}
 		return "", false
 	}
-	envBool := func(key string) bool {
-		value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
-		return value == "1" || value == "true" || value == "yes" || value == "on"
-	}
 	writableBase := util.WritablePath()
 	if value, ok := lookupEnv("PGSTORE_DSN", "pgstore_dsn"); ok {
 		usePostgresStore = true
@@ -204,30 +193,6 @@ func main() {
 		}
 		useGitStore = false
 	}
-	if value, ok := lookupEnv("MYSQLSTORE_DSN", "mysqlstore_dsn"); ok && !usePostgresStore {
-		useMySQLStore = true
-		mysqlStoreDSN = value
-	}
-	if useMySQLStore {
-		if value, ok := lookupEnv("MYSQLSTORE_LOCAL_PATH", "mysqlstore_local_path"); ok {
-			mysqlStoreLocalPath = value
-		}
-		if mysqlStoreLocalPath == "" {
-			if writableBase != "" {
-				mysqlStoreLocalPath = writableBase
-			} else {
-				mysqlStoreLocalPath = wd
-			}
-		}
-		useGitStore = false
-	}
-	if value, ok := lookupEnv("AUTH_BOOTSTRAP_DIR", "auth_bootstrap_dir"); ok {
-		authBootstrapDir = value
-	}
-	if value, ok := lookupEnv("AUTH_BOOTSTRAP_FILE", "auth_bootstrap_file"); ok {
-		authBootstrapFile = value
-	}
-	authBootstrapReplace = envBool("AUTH_BOOTSTRAP_OVERWRITE") || envBool("auth_bootstrap_overwrite")
 	if value, ok := lookupEnv("GITSTORE_GIT_URL", "gitstore_git_url"); ok {
 		useGitStore = true
 		gitStoreRemoteURL = value
@@ -269,7 +234,7 @@ func main() {
 	}
 
 	// Determine and load the configuration file.
-	// Prefer the Postgres/MySQL store when configured, otherwise fallback to git or local files.
+	// Prefer the Postgres store when configured, otherwise fallback to git or local files.
 	var configFilePath string
 	if usePostgresStore {
 		if pgStoreLocalPath == "" {
@@ -300,35 +265,6 @@ func main() {
 		if err == nil {
 			cfg.AuthDir = pgStoreInst.AuthDir()
 			log.Infof("postgres-backed token store enabled, workspace path: %s", pgStoreInst.WorkDir())
-		}
-	} else if useMySQLStore {
-		if mysqlStoreLocalPath == "" {
-			mysqlStoreLocalPath = wd
-		}
-		mysqlStoreLocalPath = filepath.Join(mysqlStoreLocalPath, "mysqlstore")
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		mysqlStoreInst, err = store.NewMySQLStore(ctx, store.MySQLStoreConfig{
-			DSN:      mysqlStoreDSN,
-			SpoolDir: mysqlStoreLocalPath,
-		})
-		cancel()
-		if err != nil {
-			log.Errorf("failed to initialize mysql token store: %v", err)
-			return
-		}
-		examplePath := filepath.Join(wd, "config.example.yaml")
-		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
-		if errBootstrap := mysqlStoreInst.Bootstrap(ctx, examplePath); errBootstrap != nil {
-			cancel()
-			log.Errorf("failed to bootstrap mysql-backed config: %v", errBootstrap)
-			return
-		}
-		cancel()
-		configFilePath = mysqlStoreInst.ConfigPath()
-		cfg, err = config.LoadConfigOptional(configFilePath, isCloudDeploy)
-		if err == nil {
-			cfg.AuthDir = mysqlStoreInst.AuthDir()
-			log.Infof("mysql-backed token store enabled, workspace path: %s", mysqlStoreInst.WorkDir())
 		}
 	} else if useObjectStore {
 		if objectStoreLocalPath == "" {
@@ -481,6 +417,10 @@ func main() {
 			configFileExists = true
 		}
 	}
+	redisqueue.SetUsageStatisticsEnabled(cfg.UsageStatisticsEnabled)
+	redisqueue.SetRetentionSeconds(cfg.RedisUsageQueueRetentionSeconds)
+	coreauth.SetQuotaCooldownDisabled(cfg.DisableCooling)
+
 	if err = logging.ConfigureLogOutput(cfg); err != nil {
 		log.Errorf("failed to configure log output: %v", err)
 		return
@@ -508,36 +448,12 @@ func main() {
 	// Register the shared token store once so all components use the same persistence backend.
 	if usePostgresStore {
 		sdkAuth.RegisterTokenStore(pgStoreInst)
-	} else if useMySQLStore {
-		sdkAuth.RegisterTokenStore(mysqlStoreInst)
 	} else if useObjectStore {
 		sdkAuth.RegisterTokenStore(objectStoreInst)
 	} else if useGitStore {
 		sdkAuth.RegisterTokenStore(gitStoreInst)
 	} else {
 		sdkAuth.RegisterTokenStore(sdkAuth.NewFileTokenStore())
-	}
-	if tokenStore := sdkAuth.GetTokenStore(); tokenStore != nil {
-		if dirSetter, ok := tokenStore.(interface{ SetBaseDir(string) }); ok {
-			dirSetter.SetBaseDir(cfg.AuthDir)
-		}
-		if authBootstrapDir != "" || authBootstrapFile != "" {
-			result, errImport := authbootstrap.Import(context.Background(), tokenStore, authbootstrap.Options{
-				Dir:       authBootstrapDir,
-				File:      authBootstrapFile,
-				Overwrite: authBootstrapReplace,
-			})
-			if errImport != nil {
-				log.Errorf("failed to bootstrap auth files: %v", errImport)
-				return
-			}
-			if result.Imported > 0 || result.Skipped > 0 {
-				log.WithFields(log.Fields{
-					"imported": result.Imported,
-					"skipped":  result.Skipped,
-				}).Info("auth bootstrap completed")
-			}
-		}
 	}
 
 	// Register built-in access providers before constructing services.
@@ -572,7 +488,6 @@ func main() {
 			cmd.WaitForCloudDeploy()
 			return
 		}
-		localModel = effectiveLocalModel(localModel, flagExplicitlySet(flag.CommandLine, "local-model"), cfg)
 		if localModel && (!tuiMode || standalone) {
 			log.Info("Local model mode: using embedded model catalog, remote model updates disabled")
 		}

@@ -14,7 +14,7 @@ temp/*
 refs/*
 
 # Storage backends
-mysqlstore/*
+pgstore/*
 gitstore/*
 objectstore/*
 
@@ -50,10 +50,4 @@ _bmad-output/*
 # macOS
 .DS_Store
 ._*
-usage.*
-
-# Opencode
-.beads/
-.opencode/
-.cli-proxy-api/
-.venv/
+.gocache/
