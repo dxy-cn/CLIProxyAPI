@@ -83,6 +83,50 @@ func TestGetMonitorHourlyPerformance_MinuteGranularityFiltersZeroLatency(t *test
 	}
 }
 
+func TestGetMonitorHourlyPerformance_FiltersBySource(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	now := time.Now().Local().Truncate(time.Hour)
+	slotTime := now.Add(-time.Hour)
+
+	h := newMonitorTestHandler(
+		testUsageRecord(slotTime.Add(5*time.Minute), "api-1", "model-a", "source-a", false, 1000, 120),
+		testUsageRecord(slotTime.Add(15*time.Minute), "api-1", "model-a", "source-b", false, 1100, 420),
+	)
+
+	rr := executeMonitorRequest(h.GetMonitorHourlyPerformance, "/monitor/hourly-performance?hours=6&granularity=hour&source=source-a")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body=%s", rr.Code, rr.Body.String())
+	}
+
+	var resp struct {
+		Slots                  []string  `json:"slots"`
+		AvgRPM                 []float64 `json:"avg_rpm"`
+		AvgFirstTokenLatencyMs []float64 `json:"avg_first_token_latency_ms"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	expectedSlot := slotTime.Format("2006-01-02T15:04:05-07:00")
+	slotIndex := -1
+	for i, slot := range resp.Slots {
+		if slot == expectedSlot {
+			slotIndex = i
+			break
+		}
+	}
+	if slotIndex < 0 {
+		t.Fatalf("hour slot not found: %s", expectedSlot)
+	}
+	if math.Abs(resp.AvgRPM[slotIndex]-0.0166667) > 0.0001 {
+		t.Fatalf("unexpected filtered avg_rpm: got %.4f want %.4f", resp.AvgRPM[slotIndex], 0.0166667)
+	}
+	if math.Abs(resp.AvgFirstTokenLatencyMs[slotIndex]-120) > 0.0001 {
+		t.Fatalf("unexpected filtered avg_first_token_latency_ms: got %.4f want 120.0000", resp.AvgFirstTokenLatencyMs[slotIndex])
+	}
+}
+
 func TestGetMonitorHourlyPerformance_RejectsUnsupportedWindow(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
