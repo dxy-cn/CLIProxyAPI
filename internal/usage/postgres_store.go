@@ -69,9 +69,7 @@ func (s *pgUsageStore) EnsureSchema(ctx context.Context) error {
 			reasoning_tokens       BIGINT NOT NULL DEFAULT 0,
 			cached_tokens          BIGINT NOT NULL DEFAULT 0,
 			total_tokens           BIGINT NOT NULL DEFAULT 0,
-			first_token_latency_ms BIGINT NOT NULL DEFAULT 0,
-			local_queue_latency_ms BIGINT NOT NULL DEFAULT 0,
-			upstream_first_token_latency_ms BIGINT NOT NULL DEFAULT 0
+			first_token_latency_ms BIGINT NOT NULL DEFAULT 0
 		)
 	`, table)
 	if _, err := s.db.ExecContext(ctx, createTable); err != nil {
@@ -110,8 +108,6 @@ func (s *pgUsageStore) EnsureSchema(ctx context.Context) error {
 		fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS path TEXT NOT NULL DEFAULT ''", table),
 		fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS latency_ms BIGINT NOT NULL DEFAULT 0", table),
 		fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS first_token_latency_ms BIGINT NOT NULL DEFAULT 0", table),
-		fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS local_queue_latency_ms BIGINT NOT NULL DEFAULT 0", table),
-		fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS upstream_first_token_latency_ms BIGINT NOT NULL DEFAULT 0", table),
 	}
 	for _, m := range pgMigrations {
 		if _, err := s.db.ExecContext(ctx, m); err != nil {
@@ -140,8 +136,8 @@ func (s *pgUsageStore) Insert(ctx context.Context, record UsageRecord) error {
 	query := fmt.Sprintf(`
 		INSERT INTO %s (api_key, model, source, auth_index, failed, requested_at,
 			input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens,
-			method, path, latency_ms, first_token_latency_ms, local_queue_latency_ms, upstream_first_token_latency_ms)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+			method, path, latency_ms, first_token_latency_ms)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 	`, table)
 	_, err := s.db.ExecContext(ctx, query,
 		record.APIKey,
@@ -159,8 +155,6 @@ func (s *pgUsageStore) Insert(ctx context.Context, record UsageRecord) error {
 		record.Path,
 		record.LatencyMs,
 		record.FirstTokenLatencyMs,
-		record.LocalQueueLatencyMs,
-		record.UpstreamFirstTokenLatencyMs,
 	)
 	if err != nil {
 		return fmt.Errorf("usage store: insert record: %w", err)
@@ -183,8 +177,8 @@ func (s *pgUsageStore) InsertBatch(ctx context.Context, records []UsageRecord) (
 	query := fmt.Sprintf(`
 		INSERT INTO %s (api_key, model, source, auth_index, failed, requested_at,
 			input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens,
-			method, path, latency_ms, first_token_latency_ms, local_queue_latency_ms, upstream_first_token_latency_ms)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+			method, path, latency_ms, first_token_latency_ms)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 	`, table)
 
 	stmt, err := tx.PrepareContext(ctx, query)
@@ -214,8 +208,6 @@ func (s *pgUsageStore) InsertBatch(ctx context.Context, records []UsageRecord) (
 			record.Path,
 			record.LatencyMs,
 			record.FirstTokenLatencyMs,
-			record.LocalQueueLatencyMs,
-			record.UpstreamFirstTokenLatencyMs,
 		)
 		if execErr != nil {
 			skipped++
@@ -245,7 +237,7 @@ func (s *pgUsageStore) ListRecordsAfterID(ctx context.Context, afterID int64, li
 	query := fmt.Sprintf(`
 		SELECT id, api_key, model, source, auth_index, failed, requested_at,
 			input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens,
-			method, path, latency_ms, first_token_latency_ms, local_queue_latency_ms, upstream_first_token_latency_ms
+			method, path, latency_ms, first_token_latency_ms
 		FROM %s
 		WHERE id > $1
 		ORDER BY id ASC
@@ -283,8 +275,6 @@ func (s *pgUsageStore) ListRecordsAfterID(ctx context.Context, afterID int64, li
 			&record.Path,
 			&record.LatencyMs,
 			&record.FirstTokenLatencyMs,
-			&record.LocalQueueLatencyMs,
-			&record.UpstreamFirstTokenLatencyMs,
 		); err != nil {
 			return nil, afterID, fmt.Errorf("usage store: scan list records after id: %w", err)
 		}

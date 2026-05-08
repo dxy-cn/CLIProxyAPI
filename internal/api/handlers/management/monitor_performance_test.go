@@ -17,22 +17,12 @@ func TestGetMonitorHourlyPerformance_MinuteGranularityFiltersZeroLatency(t *test
 	now := time.Now().Local().Truncate(time.Minute)
 	slotTime := now.Add(-2 * time.Minute)
 	otherSlotTime := now.Add(-1 * time.Minute)
-	firstRecord := testUsageRecord(slotTime.Add(5*time.Second), "api-1", "model-a", "source-a", false, 1200, 150)
-	firstRecord.LocalQueueLatency = 40 * time.Millisecond
-	firstRecord.UpstreamFirstTokenLatency = 110 * time.Millisecond
-	zeroLatencyRecord := testUsageRecord(slotTime.Add(15*time.Second), "api-1", "model-a", "source-a", false, 1500, 0)
-	failedRecord := testUsageRecord(slotTime.Add(25*time.Second), "api-1", "model-a", "source-a", true, 1800, 450)
-	failedRecord.LocalQueueLatency = 100 * time.Millisecond
-	failedRecord.UpstreamFirstTokenLatency = 350 * time.Millisecond
-	otherSlotRecord := testUsageRecord(otherSlotTime.Add(10*time.Second), "api-1", "model-a", "source-a", false, 900, 300)
-	otherSlotRecord.LocalQueueLatency = 75 * time.Millisecond
-	otherSlotRecord.UpstreamFirstTokenLatency = 225 * time.Millisecond
 
 	h := newMonitorTestHandler(
-		firstRecord,
-		zeroLatencyRecord,
-		failedRecord,
-		otherSlotRecord,
+		testUsageRecord(slotTime.Add(5*time.Second), "api-1", "model-a", "source-a", false, 1200, 150),
+		testUsageRecord(slotTime.Add(15*time.Second), "api-1", "model-a", "source-a", false, 1500, 0),
+		testUsageRecord(slotTime.Add(25*time.Second), "api-1", "model-a", "source-a", true, 1800, 450),
+		testUsageRecord(otherSlotTime.Add(10*time.Second), "api-1", "model-a", "source-a", false, 900, 300),
 	)
 
 	rr := executeMonitorRequest(h.GetMonitorHourlyPerformance, "/monitor/hourly-performance?hours=6&granularity=minute")
@@ -41,12 +31,10 @@ func TestGetMonitorHourlyPerformance_MinuteGranularityFiltersZeroLatency(t *test
 	}
 
 	var resp struct {
-		Slots                          []string  `json:"slots"`
-		AvgRPM                         []float64 `json:"avg_rpm"`
-		AvgFirstTokenLatencyMs         []float64 `json:"avg_first_token_latency_ms"`
-		AvgLocalQueueLatencyMs         []float64 `json:"avg_local_queue_latency_ms"`
-		AvgUpstreamFirstTokenLatencyMs []float64 `json:"avg_upstream_first_token_latency_ms"`
-		Granularity                    string    `json:"granularity"`
+		Slots                  []string  `json:"slots"`
+		AvgRPM                 []float64 `json:"avg_rpm"`
+		AvgFirstTokenLatencyMs []float64 `json:"avg_first_token_latency_ms"`
+		Granularity            string    `json:"granularity"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response failed: %v", err)
@@ -58,16 +46,8 @@ func TestGetMonitorHourlyPerformance_MinuteGranularityFiltersZeroLatency(t *test
 	if len(resp.Slots) != 360 {
 		t.Fatalf("unexpected slot count: got %d want 360", len(resp.Slots))
 	}
-	if len(resp.AvgRPM) != len(resp.Slots) ||
-		len(resp.AvgFirstTokenLatencyMs) != len(resp.Slots) ||
-		len(resp.AvgLocalQueueLatencyMs) != len(resp.Slots) ||
-		len(resp.AvgUpstreamFirstTokenLatencyMs) != len(resp.Slots) {
-		t.Fatalf("unexpected series length: slots=%d rpm=%d latency=%d local=%d upstream=%d",
-			len(resp.Slots),
-			len(resp.AvgRPM),
-			len(resp.AvgFirstTokenLatencyMs),
-			len(resp.AvgLocalQueueLatencyMs),
-			len(resp.AvgUpstreamFirstTokenLatencyMs))
+	if len(resp.AvgRPM) != len(resp.Slots) || len(resp.AvgFirstTokenLatencyMs) != len(resp.Slots) {
+		t.Fatalf("unexpected series length: slots=%d rpm=%d latency=%d", len(resp.Slots), len(resp.AvgRPM), len(resp.AvgFirstTokenLatencyMs))
 	}
 
 	findSlot := func(target time.Time) int {
@@ -90,12 +70,6 @@ func TestGetMonitorHourlyPerformance_MinuteGranularityFiltersZeroLatency(t *test
 	if math.Abs(resp.AvgFirstTokenLatencyMs[slotIndex]-150) > 0.0001 {
 		t.Fatalf("unexpected avg_first_token_latency_ms for slot: got %.4f want 150.0000", resp.AvgFirstTokenLatencyMs[slotIndex])
 	}
-	if math.Abs(resp.AvgLocalQueueLatencyMs[slotIndex]-40) > 0.0001 {
-		t.Fatalf("unexpected avg_local_queue_latency_ms for slot: got %.4f want 40.0000", resp.AvgLocalQueueLatencyMs[slotIndex])
-	}
-	if math.Abs(resp.AvgUpstreamFirstTokenLatencyMs[slotIndex]-110) > 0.0001 {
-		t.Fatalf("unexpected avg_upstream_first_token_latency_ms for slot: got %.4f want 110.0000", resp.AvgUpstreamFirstTokenLatencyMs[slotIndex])
-	}
 
 	otherSlotIndex := findSlot(otherSlotTime)
 	if otherSlotIndex < 0 {
@@ -106,12 +80,6 @@ func TestGetMonitorHourlyPerformance_MinuteGranularityFiltersZeroLatency(t *test
 	}
 	if math.Abs(resp.AvgFirstTokenLatencyMs[otherSlotIndex]-300) > 0.0001 {
 		t.Fatalf("unexpected avg_first_token_latency_ms for other slot: got %.4f want 300.0000", resp.AvgFirstTokenLatencyMs[otherSlotIndex])
-	}
-	if math.Abs(resp.AvgLocalQueueLatencyMs[otherSlotIndex]-75) > 0.0001 {
-		t.Fatalf("unexpected avg_local_queue_latency_ms for other slot: got %.4f want 75.0000", resp.AvgLocalQueueLatencyMs[otherSlotIndex])
-	}
-	if math.Abs(resp.AvgUpstreamFirstTokenLatencyMs[otherSlotIndex]-225) > 0.0001 {
-		t.Fatalf("unexpected avg_upstream_first_token_latency_ms for other slot: got %.4f want 225.0000", resp.AvgUpstreamFirstTokenLatencyMs[otherSlotIndex])
 	}
 }
 

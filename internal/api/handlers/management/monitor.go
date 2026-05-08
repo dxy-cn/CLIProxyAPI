@@ -23,21 +23,19 @@ const (
 )
 
 type monitorRecord struct {
-	Timestamp                   time.Time
-	APIKey                      string
-	Model                       string
-	Source                      string
-	AuthIndex                   string
-	Failed                      bool
-	InputTokens                 int64
-	OutputTokens                int64
-	ReasoningTokens             int64
-	CachedTokens                int64
-	TotalTokens                 int64
-	LatencyMs                   int64
-	FirstTokenLatencyMs         int64
-	LocalQueueLatencyMs         int64
-	UpstreamFirstTokenLatencyMs int64
+	Timestamp           time.Time
+	APIKey              string
+	Model               string
+	Source              string
+	AuthIndex           string
+	Failed              bool
+	InputTokens         int64
+	OutputTokens        int64
+	ReasoningTokens     int64
+	CachedTokens        int64
+	TotalTokens         int64
+	LatencyMs           int64
+	FirstTokenLatencyMs int64
 }
 
 type monitorRecordFilter struct {
@@ -63,25 +61,23 @@ type monitorTimeRange struct {
 }
 
 type monitorRequestLogItem struct {
-	Timestamp                   time.Time              `json:"timestamp"`
-	APIKey                      string                 `json:"api_key"`
-	Model                       string                 `json:"model"`
-	Source                      string                 `json:"source"`
-	AuthIndex                   string                 `json:"auth_index"`
-	Failed                      bool                   `json:"failed"`
-	InputTokens                 int64                  `json:"input_tokens"`
-	OutputTokens                int64                  `json:"output_tokens"`
-	ReasoningTokens             int64                  `json:"reasoning_tokens"`
-	CachedTokens                int64                  `json:"cached_tokens"`
-	TotalTokens                 int64                  `json:"total_tokens"`
-	RequestCount                int64                  `json:"request_count"`
-	SuccessRate                 float64                `json:"success_rate"`
-	FirstTokenLatencyMs         int64                  `json:"first_token_latency_ms"`
-	LocalQueueLatencyMs         int64                  `json:"local_queue_latency_ms"`
-	UpstreamFirstTokenLatencyMs int64                  `json:"upstream_first_token_latency_ms"`
-	TotalDurationMs             int64                  `json:"total_duration_ms"`
-	TokensPerSecond             float64                `json:"tokens_per_second"`
-	RecentRequests              []monitorRecentRequest `json:"recent_requests"`
+	Timestamp           time.Time              `json:"timestamp"`
+	APIKey              string                 `json:"api_key"`
+	Model               string                 `json:"model"`
+	Source              string                 `json:"source"`
+	AuthIndex           string                 `json:"auth_index"`
+	Failed              bool                   `json:"failed"`
+	InputTokens         int64                  `json:"input_tokens"`
+	OutputTokens        int64                  `json:"output_tokens"`
+	ReasoningTokens     int64                  `json:"reasoning_tokens"`
+	CachedTokens        int64                  `json:"cached_tokens"`
+	TotalTokens         int64                  `json:"total_tokens"`
+	RequestCount        int64                  `json:"request_count"`
+	SuccessRate         float64                `json:"success_rate"`
+	FirstTokenLatencyMs int64                  `json:"first_token_latency_ms"`
+	TotalDurationMs     int64                  `json:"total_duration_ms"`
+	TokensPerSecond     float64                `json:"tokens_per_second"`
+	RecentRequests      []monitorRecentRequest `json:"recent_requests"`
 }
 
 type monitorFilterOptions struct {
@@ -187,25 +183,23 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 			for _, row := range queryResult.Items {
 				groupStats := queryResult.GroupStats[usage.MonitorGroupKey(row.Source, row.Model)]
 				items = append(items, monitorRequestLogItem{
-					Timestamp:                   row.Timestamp,
-					APIKey:                      row.APIKey,
-					Model:                       row.Model,
-					Source:                      row.Source,
-					AuthIndex:                   row.AuthIndex,
-					Failed:                      row.Failed,
-					InputTokens:                 row.InputTokens,
-					OutputTokens:                row.OutputTokens,
-					ReasoningTokens:             row.ReasoningTokens,
-					CachedTokens:                row.CachedTokens,
-					TotalTokens:                 row.TotalTokens,
-					RequestCount:                groupStats.Total,
-					SuccessRate:                 calcRate(groupStats.Success, groupStats.Total),
-					FirstTokenLatencyMs:         row.FirstTokenLatencyMs,
-					LocalQueueLatencyMs:         row.LocalQueueLatencyMs,
-					UpstreamFirstTokenLatencyMs: row.UpstreamFirstTokenLatencyMs,
-					TotalDurationMs:             row.LatencyMs,
-					TokensPerSecond:             perRequestTokPerSec(row.OutputTokens, row.LatencyMs),
-					RecentRequests:              fromUsageRecentRequests(groupStats.Recent),
+					Timestamp:           row.Timestamp,
+					APIKey:              row.APIKey,
+					Model:               row.Model,
+					Source:              row.Source,
+					AuthIndex:           row.AuthIndex,
+					Failed:              row.Failed,
+					InputTokens:         row.InputTokens,
+					OutputTokens:        row.OutputTokens,
+					ReasoningTokens:     row.ReasoningTokens,
+					CachedTokens:        row.CachedTokens,
+					TotalTokens:         row.TotalTokens,
+					RequestCount:        groupStats.Total,
+					SuccessRate:         calcRate(groupStats.Success, groupStats.Total),
+					FirstTokenLatencyMs: row.FirstTokenLatencyMs,
+					TotalDurationMs:     row.LatencyMs,
+					TokensPerSecond:     perRequestTokPerSec(row.OutputTokens, row.LatencyMs),
+					RecentRequests:      fromUsageRecentRequests(groupStats.Recent),
 				})
 			}
 
@@ -240,22 +234,20 @@ func (h *Handler) GetMonitorRequestLogs(c *gin.Context) {
 			return
 		}
 		logs = append(logs, monitorRequestLogItem{
-			Timestamp:                   record.Timestamp,
-			APIKey:                      record.APIKey,
-			Model:                       record.Model,
-			Source:                      record.Source,
-			AuthIndex:                   record.AuthIndex,
-			Failed:                      record.Failed,
-			InputTokens:                 record.InputTokens,
-			OutputTokens:                record.OutputTokens,
-			ReasoningTokens:             record.ReasoningTokens,
-			CachedTokens:                record.CachedTokens,
-			TotalTokens:                 record.TotalTokens,
-			FirstTokenLatencyMs:         record.FirstTokenLatencyMs,
-			LocalQueueLatencyMs:         record.LocalQueueLatencyMs,
-			UpstreamFirstTokenLatencyMs: record.UpstreamFirstTokenLatencyMs,
-			TotalDurationMs:             record.LatencyMs,
-			TokensPerSecond:             perRequestTokPerSec(record.OutputTokens, record.LatencyMs),
+			Timestamp:           record.Timestamp,
+			APIKey:              record.APIKey,
+			Model:               record.Model,
+			Source:              record.Source,
+			AuthIndex:           record.AuthIndex,
+			Failed:              record.Failed,
+			InputTokens:         record.InputTokens,
+			OutputTokens:        record.OutputTokens,
+			ReasoningTokens:     record.ReasoningTokens,
+			CachedTokens:        record.CachedTokens,
+			TotalTokens:         record.TotalTokens,
+			FirstTokenLatencyMs: record.FirstTokenLatencyMs,
+			TotalDurationMs:     record.LatencyMs,
+			TokensPerSecond:     perRequestTokPerSec(record.OutputTokens, record.LatencyMs),
 		})
 	})
 
@@ -705,21 +697,19 @@ func visitSnapshotRecords(snapshot usage.StatisticsSnapshot, visit func(record m
 					source = "unknown"
 				}
 				visit(monitorRecord{
-					Timestamp:                   detail.Timestamp,
-					APIKey:                      apiKey,
-					Model:                       model,
-					Source:                      source,
-					AuthIndex:                   detail.AuthIndex,
-					Failed:                      detail.Failed,
-					InputTokens:                 detail.Tokens.InputTokens,
-					OutputTokens:                detail.Tokens.OutputTokens,
-					ReasoningTokens:             detail.Tokens.ReasoningTokens,
-					CachedTokens:                detail.Tokens.CachedTokens,
-					TotalTokens:                 detail.Tokens.TotalTokens,
-					LatencyMs:                   detail.LatencyMs,
-					FirstTokenLatencyMs:         detail.FirstTokenLatencyMs,
-					LocalQueueLatencyMs:         detail.LocalQueueLatencyMs,
-					UpstreamFirstTokenLatencyMs: detail.UpstreamFirstTokenLatencyMs,
+					Timestamp:           detail.Timestamp,
+					APIKey:              apiKey,
+					Model:               model,
+					Source:              source,
+					AuthIndex:           detail.AuthIndex,
+					Failed:              detail.Failed,
+					InputTokens:         detail.Tokens.InputTokens,
+					OutputTokens:        detail.Tokens.OutputTokens,
+					ReasoningTokens:     detail.Tokens.ReasoningTokens,
+					CachedTokens:        detail.Tokens.CachedTokens,
+					TotalTokens:         detail.Tokens.TotalTokens,
+					LatencyMs:           detail.LatencyMs,
+					FirstTokenLatencyMs: detail.FirstTokenLatencyMs,
 				})
 			}
 		}
@@ -1179,13 +1169,11 @@ type monitorHourlyTokensResponse struct {
 }
 
 type monitorHourlyPerformanceResponse struct {
-	Slots                          []string         `json:"slots"`
-	AvgRPM                         []float64        `json:"avg_rpm"`
-	AvgFirstTokenLatencyMs         []float64        `json:"avg_first_token_latency_ms"`
-	AvgLocalQueueLatencyMs         []float64        `json:"avg_local_queue_latency_ms"`
-	AvgUpstreamFirstTokenLatencyMs []float64        `json:"avg_upstream_first_token_latency_ms"`
-	Granularity                    string           `json:"granularity"`
-	TimeRange                      monitorTimeRange `json:"time_range"`
+	Slots                  []string         `json:"slots"`
+	AvgRPM                 []float64        `json:"avg_rpm"`
+	AvgFirstTokenLatencyMs []float64        `json:"avg_first_token_latency_ms"`
+	Granularity            string           `json:"granularity"`
+	TimeRange              monitorTimeRange `json:"time_range"`
 }
 
 type monitorKeyTokenStatsItem struct {
@@ -1955,29 +1943,23 @@ func (h *Handler) GetMonitorHourlyPerformance(c *gin.Context) {
 	slotCount := len(slots)
 	slotSeconds := int(slotDuration / time.Second)
 
-	buildResponse := func(requests, latencySamples, latencyTotals, localQueueLatencyTotals, upstreamFirstTokenLatencyTotals []int64) monitorHourlyPerformanceResponse {
+	buildResponse := func(requests, latencySamples, latencyTotals []int64) monitorHourlyPerformanceResponse {
 		avgRPM := make([]float64, slotCount)
 		avgFirstTokenLatency := make([]float64, slotCount)
-		avgLocalQueueLatency := make([]float64, slotCount)
-		avgUpstreamFirstTokenLatency := make([]float64, slotCount)
 		for i := 0; i < slotCount; i++ {
 			if requests[i] > 0 {
 				avgRPM[i] = float64(requests[i]) * 60 / float64(slotSeconds)
 			}
 			if latencySamples[i] > 0 {
 				avgFirstTokenLatency[i] = float64(latencyTotals[i]) / float64(latencySamples[i])
-				avgLocalQueueLatency[i] = float64(localQueueLatencyTotals[i]) / float64(latencySamples[i])
-				avgUpstreamFirstTokenLatency[i] = float64(upstreamFirstTokenLatencyTotals[i]) / float64(latencySamples[i])
 			}
 		}
 		return monitorHourlyPerformanceResponse{
-			Slots:                          slots,
-			AvgRPM:                         avgRPM,
-			AvgFirstTokenLatencyMs:         avgFirstTokenLatency,
-			AvgLocalQueueLatencyMs:         avgLocalQueueLatency,
-			AvgUpstreamFirstTokenLatencyMs: avgUpstreamFirstTokenLatency,
-			Granularity:                    granularity,
-			TimeRange:                      monitorTimeRange{Start: start, End: end},
+			Slots:                  slots,
+			AvgRPM:                 avgRPM,
+			AvgFirstTokenLatencyMs: avgFirstTokenLatency,
+			Granularity:            granularity,
+			TimeRange:              monitorTimeRange{Start: start, End: end},
 		}
 	}
 
@@ -1987,8 +1969,6 @@ func (h *Handler) GetMonitorHourlyPerformance(c *gin.Context) {
 			requests := make([]int64, slotCount)
 			latencySamples := make([]int64, slotCount)
 			latencyTotals := make([]int64, slotCount)
-			localQueueLatencyTotals := make([]int64, slotCount)
-			upstreamFirstTokenLatencyTotals := make([]int64, slotCount)
 
 			for _, slot := range performanceSlots {
 				if slot.SlotIndex < 0 || slot.SlotIndex >= slotCount {
@@ -1997,11 +1977,9 @@ func (h *Handler) GetMonitorHourlyPerformance(c *gin.Context) {
 				requests[slot.SlotIndex] = slot.Requests
 				latencySamples[slot.SlotIndex] = slot.FirstTokenLatencySamples
 				latencyTotals[slot.SlotIndex] = slot.FirstTokenLatencyTotalMs
-				localQueueLatencyTotals[slot.SlotIndex] = slot.LocalQueueLatencyTotalMs
-				upstreamFirstTokenLatencyTotals[slot.SlotIndex] = slot.UpstreamFirstTokenLatencyTotalMs
 			}
 
-			c.JSON(http.StatusOK, buildResponse(requests, latencySamples, latencyTotals, localQueueLatencyTotals, upstreamFirstTokenLatencyTotals))
+			c.JSON(http.StatusOK, buildResponse(requests, latencySamples, latencyTotals))
 			return
 		}
 	}
@@ -2009,8 +1987,6 @@ func (h *Handler) GetMonitorHourlyPerformance(c *gin.Context) {
 	requests := make([]int64, slotCount)
 	latencySamples := make([]int64, slotCount)
 	latencyTotals := make([]int64, slotCount)
-	localQueueLatencyTotals := make([]int64, slotCount)
-	upstreamFirstTokenLatencyTotals := make([]int64, slotCount)
 
 	visitSnapshotRecords(h.usageSnapshot(), func(record monitorRecord) {
 		if record.Timestamp.Before(cutoff) {
@@ -2028,12 +2004,10 @@ func (h *Handler) GetMonitorHourlyPerformance(c *gin.Context) {
 		if !record.Failed && record.FirstTokenLatencyMs > 0 {
 			latencySamples[idx]++
 			latencyTotals[idx] += record.FirstTokenLatencyMs
-			localQueueLatencyTotals[idx] += record.LocalQueueLatencyMs
-			upstreamFirstTokenLatencyTotals[idx] += record.UpstreamFirstTokenLatencyMs
 		}
 	})
 
-	c.JSON(http.StatusOK, buildResponse(requests, latencySamples, latencyTotals, localQueueLatencyTotals, upstreamFirstTokenLatencyTotals))
+	c.JSON(http.StatusOK, buildResponse(requests, latencySamples, latencyTotals))
 }
 
 func parseHoursParam(c *gin.Context) (int, error) {

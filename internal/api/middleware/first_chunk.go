@@ -54,14 +54,6 @@ func (h *FirstChunkHolder) Latency() time.Duration {
 	return time.Duration(h.latency.Load())
 }
 
-// StartedAt returns the request start time used by the holder.
-func (h *FirstChunkHolder) StartedAt() time.Time {
-	if h == nil {
-		return time.Time{}
-	}
-	return h.startedAt
-}
-
 // GetFirstChunkHolder retrieves the holder stored on the gin.Context, if any.
 func GetFirstChunkHolder(c *gin.Context) *FirstChunkHolder {
 	if c == nil {

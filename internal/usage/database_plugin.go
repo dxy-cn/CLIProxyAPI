@@ -261,23 +261,21 @@ func (p *DatabasePlugin) HandleUsage(ctx context.Context, record coreusage.Recor
 	detail := normaliseDetail(record.Detail)
 
 	dbRecord := UsageRecord{
-		APIKey:                      record.APIKey,
-		Model:                       record.Model,
-		Source:                      record.Source,
-		AuthIndex:                   record.AuthIndex,
-		Failed:                      record.Failed,
-		RequestedAt:                 record.RequestedAt,
-		InputTokens:                 detail.InputTokens,
-		OutputTokens:                detail.OutputTokens,
-		ReasoningTokens:             detail.ReasoningTokens,
-		CachedTokens:                detail.CachedTokens,
-		TotalTokens:                 detail.TotalTokens,
-		Method:                      method,
-		Path:                        path,
-		LatencyMs:                   normaliseLatency(record.Latency),
-		FirstTokenLatencyMs:         normaliseLatency(record.FirstTokenLatency),
-		LocalQueueLatencyMs:         normaliseLatency(record.LocalQueueLatency),
-		UpstreamFirstTokenLatencyMs: normaliseLatency(record.UpstreamFirstTokenLatency),
+		APIKey:              record.APIKey,
+		Model:               record.Model,
+		Source:              record.Source,
+		AuthIndex:           record.AuthIndex,
+		Failed:              record.Failed,
+		RequestedAt:         record.RequestedAt,
+		InputTokens:         detail.InputTokens,
+		OutputTokens:        detail.OutputTokens,
+		ReasoningTokens:     detail.ReasoningTokens,
+		CachedTokens:        detail.CachedTokens,
+		TotalTokens:         detail.TotalTokens,
+		Method:              method,
+		Path:                path,
+		LatencyMs:           normaliseLatency(record.Latency),
+		FirstTokenLatencyMs: normaliseLatency(record.FirstTokenLatency),
 	}
 
 	p.bufferMu.Lock()
@@ -322,21 +320,19 @@ func (p *DatabasePlugin) ImportRecords(snapshot StatisticsSnapshot) (added, skip
 			for _, detail := range modelSnapshot.Details {
 				tokens := normaliseTokenStats(detail.Tokens)
 				records = append(records, UsageRecord{
-					APIKey:                      apiKey,
-					Model:                       model,
-					Source:                      detail.Source,
-					AuthIndex:                   detail.AuthIndex,
-					Failed:                      detail.Failed,
-					RequestedAt:                 detail.Timestamp,
-					InputTokens:                 tokens.InputTokens,
-					OutputTokens:                tokens.OutputTokens,
-					ReasoningTokens:             tokens.ReasoningTokens,
-					CachedTokens:                tokens.CachedTokens,
-					TotalTokens:                 tokens.TotalTokens,
-					LatencyMs:                   detail.LatencyMs,
-					FirstTokenLatencyMs:         detail.FirstTokenLatencyMs,
-					LocalQueueLatencyMs:         detail.LocalQueueLatencyMs,
-					UpstreamFirstTokenLatencyMs: detail.UpstreamFirstTokenLatencyMs,
+					APIKey:              apiKey,
+					Model:               model,
+					Source:              detail.Source,
+					AuthIndex:           detail.AuthIndex,
+					Failed:              detail.Failed,
+					RequestedAt:         detail.Timestamp,
+					InputTokens:         tokens.InputTokens,
+					OutputTokens:        tokens.OutputTokens,
+					ReasoningTokens:     tokens.ReasoningTokens,
+					CachedTokens:        tokens.CachedTokens,
+					TotalTokens:         tokens.TotalTokens,
+					LatencyMs:           detail.LatencyMs,
+					FirstTokenLatencyMs: detail.FirstTokenLatencyMs,
 				})
 			}
 		}
