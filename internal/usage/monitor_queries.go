@@ -47,19 +47,21 @@ type MonitorFilterOptions struct {
 
 // MonitorRequestLog represents a single request log row.
 type MonitorRequestLog struct {
-	Timestamp           time.Time
-	APIKey              string
-	Model               string
-	Source              string
-	AuthIndex           string
-	Failed              bool
-	InputTokens         int64
-	OutputTokens        int64
-	ReasoningTokens     int64
-	CachedTokens        int64
-	TotalTokens         int64
-	LatencyMs           int64
-	FirstTokenLatencyMs int64
+	Timestamp                   time.Time
+	APIKey                      string
+	Model                       string
+	Source                      string
+	AuthIndex                   string
+	Failed                      bool
+	InputTokens                 int64
+	OutputTokens                int64
+	ReasoningTokens             int64
+	CachedTokens                int64
+	TotalTokens                 int64
+	LatencyMs                   int64
+	FirstTokenLatencyMs         int64
+	LocalQueueLatencyMs         int64
+	UpstreamFirstTokenLatencyMs int64
 }
 
 // MonitorRequestGroupStats represents per-channel+model counters for request logs.
@@ -202,10 +204,12 @@ type MonitorHourlyTokenSlot struct {
 
 // MonitorPerformanceSlot represents per-slot aggregates for rpm and first-token latency charts.
 type MonitorPerformanceSlot struct {
-	SlotIndex                int
-	Requests                 int64
-	FirstTokenLatencySamples int64
-	FirstTokenLatencyTotalMs int64
+	SlotIndex                        int
+	Requests                         int64
+	FirstTokenLatencySamples         int64
+	FirstTokenLatencyTotalMs         int64
+	LocalQueueLatencyTotalMs         int64
+	UpstreamFirstTokenLatencyTotalMs int64
 }
 
 // MonitorHealthBlock represents a single time block for service health.
@@ -551,7 +555,8 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 	query := fmt.Sprintf(`
 		SELECT api_key, model, COALESCE(NULLIF(source, ''), 'unknown'), auth_index,
 			failed, requested_at, input_tokens, output_tokens, reasoning_tokens,
-			cached_tokens, total_tokens, COALESCE(latency_ms, 0), COALESCE(first_token_latency_ms, 0)
+			cached_tokens, total_tokens, COALESCE(latency_ms, 0), COALESCE(first_token_latency_ms, 0),
+			COALESCE(local_queue_latency_ms, 0), COALESCE(upstream_first_token_latency_ms, 0)
 		FROM usage_records
 		WHERE %s
 		ORDER BY requested_at DESC, id DESC
@@ -588,6 +593,8 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 			&item.TotalTokens,
 			&item.LatencyMs,
 			&item.FirstTokenLatencyMs,
+			&item.LocalQueueLatencyMs,
+			&item.UpstreamFirstTokenLatencyMs,
 		); err != nil {
 			return MonitorRequestLogsResult{}, fmt.Errorf("usage store: scan monitor request logs: %w", err)
 		}
@@ -1878,7 +1885,9 @@ func (s *sqliteUsageStore) QueryMonitorPerformanceSlots(ctx context.Context, fil
 		SELECT (requested_at - ?) / ? AS slot_idx,
 			COUNT(*),
 			COALESCE(SUM(CASE WHEN failed = 0 AND first_token_latency_ms > 0 THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN failed = 0 AND first_token_latency_ms > 0 THEN first_token_latency_ms ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN failed = 0 AND first_token_latency_ms > 0 THEN first_token_latency_ms ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN failed = 0 AND first_token_latency_ms > 0 THEN local_queue_latency_ms ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN failed = 0 AND first_token_latency_ms > 0 THEN upstream_first_token_latency_ms ELSE 0 END), 0)
 		FROM usage_records
 		WHERE %s AND requested_at >= ? AND requested_at <= ?
 		GROUP BY slot_idx
@@ -1898,7 +1907,14 @@ func (s *sqliteUsageStore) QueryMonitorPerformanceSlots(ctx context.Context, fil
 	items := make([]MonitorPerformanceSlot, 0)
 	for rows.Next() {
 		var item MonitorPerformanceSlot
-		if err = rows.Scan(&item.SlotIndex, &item.Requests, &item.FirstTokenLatencySamples, &item.FirstTokenLatencyTotalMs); err != nil {
+		if err = rows.Scan(
+			&item.SlotIndex,
+			&item.Requests,
+			&item.FirstTokenLatencySamples,
+			&item.FirstTokenLatencyTotalMs,
+			&item.LocalQueueLatencyTotalMs,
+			&item.UpstreamFirstTokenLatencyTotalMs,
+		); err != nil {
 			return nil, fmt.Errorf("usage store: scan monitor performance slot: %w", err)
 		}
 		items = append(items, item)

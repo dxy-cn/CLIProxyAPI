@@ -19,6 +19,7 @@ const firstChunkContextKey = "USAGE_FIRST_CHUNK"
 
 type firstChunkLatencyReader interface {
 	Latency() time.Duration
+	StartedAt() time.Time
 }
 
 type UsageReporter struct {
@@ -100,17 +101,19 @@ func (r *UsageReporter) buildRecord(detail usage.Detail, failed bool) usage.Reco
 		return usage.Record{Detail: detail, Failed: failed}
 	}
 	return usage.Record{
-		Provider:          r.provider,
-		Model:             r.model,
-		Source:            r.source,
-		APIKey:            r.apiKey,
-		AuthID:            r.authID,
-		AuthIndex:         r.authIndex,
-		RequestedAt:       r.requestedAt,
-		Latency:           r.latency(),
-		FirstTokenLatency: firstChunkLatencyFromReporterContext(r),
-		Failed:            failed,
-		Detail:            detail,
+		Provider:                  r.provider,
+		Model:                     r.model,
+		Source:                    r.source,
+		APIKey:                    r.apiKey,
+		AuthID:                    r.authID,
+		AuthIndex:                 r.authIndex,
+		RequestedAt:               r.requestedAt,
+		Latency:                   r.latency(),
+		FirstTokenLatency:         firstChunkLatencyFromReporterContext(r),
+		LocalQueueLatency:         localQueueLatencyFromReporterContext(r),
+		UpstreamFirstTokenLatency: upstreamFirstTokenLatencyFromReporterContext(r),
+		Failed:                    failed,
+		Detail:                    detail,
 	}
 }
 
@@ -134,6 +137,41 @@ func firstChunkLatencyFromReporterContext(r *UsageReporter) time.Duration {
 		return 0
 	}
 	return latency
+}
+
+func localQueueLatencyFromReporterContext(r *UsageReporter) time.Duration {
+	if r == nil || r.firstChunk == nil || r.requestedAt.IsZero() {
+		return 0
+	}
+	startedAt := r.firstChunk.StartedAt()
+	if startedAt.IsZero() {
+		return 0
+	}
+	latency := r.requestedAt.Sub(startedAt)
+	if latency < 0 {
+		return 0
+	}
+	firstTokenLatency := firstChunkLatencyFromReporterContext(r)
+	if firstTokenLatency > 0 && latency > firstTokenLatency {
+		return firstTokenLatency
+	}
+	return latency
+}
+
+func upstreamFirstTokenLatencyFromReporterContext(r *UsageReporter) time.Duration {
+	firstTokenLatency := firstChunkLatencyFromReporterContext(r)
+	if firstTokenLatency <= 0 {
+		return 0
+	}
+	localQueueLatency := localQueueLatencyFromReporterContext(r)
+	if localQueueLatency <= 0 {
+		return firstTokenLatency
+	}
+	upstreamLatency := firstTokenLatency - localQueueLatency
+	if upstreamLatency < 0 {
+		return 0
+	}
+	return upstreamLatency
 }
 
 func firstChunkReaderFromContext(ctx context.Context) firstChunkLatencyReader {

@@ -16,21 +16,23 @@ import (
 
 // UsageRecord represents a single usage record for database persistence.
 type UsageRecord struct {
-	APIKey              string
-	Model               string
-	Source              string
-	AuthIndex           string
-	Failed              bool
-	RequestedAt         time.Time
-	InputTokens         int64
-	OutputTokens        int64
-	ReasoningTokens     int64
-	CachedTokens        int64
-	TotalTokens         int64
-	Method              string // HTTP method (GET, POST, etc.)
-	Path                string // Request URL path (/v1/chat/completions, etc.)
-	LatencyMs           int64  // Request latency in milliseconds, 0 if unknown
-	FirstTokenLatencyMs int64  // Time to first token in milliseconds, 0 if unknown
+	APIKey                      string
+	Model                       string
+	Source                      string
+	AuthIndex                   string
+	Failed                      bool
+	RequestedAt                 time.Time
+	InputTokens                 int64
+	OutputTokens                int64
+	ReasoningTokens             int64
+	CachedTokens                int64
+	TotalTokens                 int64
+	Method                      string // HTTP method (GET, POST, etc.)
+	Path                        string // Request URL path (/v1/chat/completions, etc.)
+	LatencyMs                   int64  // Request latency in milliseconds, 0 if unknown
+	FirstTokenLatencyMs         int64  // Time to first token in milliseconds, 0 if unknown
+	LocalQueueLatencyMs         int64  // Local queue and dispatch time before upstream execution, 0 if unknown
+	UpstreamFirstTokenLatencyMs int64  // Upstream time from dispatch to first token, 0 if unknown
 }
 
 // APIStats holds aggregated metrics for a single API key from database.
@@ -364,6 +366,8 @@ func (s *mysqlUsageStore) EnsureSchema(ctx context.Context) error {
 				path                   varchar(2048) NOT NULL DEFAULT '',
 				latency_ms             bigint unsigned NOT NULL DEFAULT 0,
 				first_token_latency_ms bigint unsigned NOT NULL DEFAULT 0,
+				local_queue_latency_ms bigint unsigned NOT NULL DEFAULT 0,
+				upstream_first_token_latency_ms bigint unsigned NOT NULL DEFAULT 0,
 				created_at             datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
 				updated_at             datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
 				PRIMARY KEY (id)
@@ -390,6 +394,15 @@ func (s *mysqlUsageStore) EnsureSchema(ctx context.Context) error {
 			}
 		}
 	}
+	migrations := []string{
+		fmt.Sprintf("ALTER TABLE %s ADD COLUMN local_queue_latency_ms bigint unsigned NOT NULL DEFAULT 0", table),
+		fmt.Sprintf("ALTER TABLE %s ADD COLUMN upstream_first_token_latency_ms bigint unsigned NOT NULL DEFAULT 0", table),
+	}
+	for _, m := range migrations {
+		if _, err := s.db.ExecContext(ctx, m); err != nil && !dbutil.IsMySQLError(err, 1060) {
+			return fmt.Errorf("usage store: migration: %w", err)
+		}
+	}
 
 	return nil
 }
@@ -403,8 +416,8 @@ func (s *mysqlUsageStore) Insert(ctx context.Context, record UsageRecord) error 
 	query := fmt.Sprintf(`
 			INSERT INTO %s (api_key, model, source, auth_index, failed, requested_at,
 				input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens,
-				method, path, latency_ms, first_token_latency_ms)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				method, path, latency_ms, first_token_latency_ms, local_queue_latency_ms, upstream_first_token_latency_ms)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, table)
 	_, err := s.db.ExecContext(ctx, query,
 		record.APIKey,
@@ -422,6 +435,8 @@ func (s *mysqlUsageStore) Insert(ctx context.Context, record UsageRecord) error 
 		record.Path,
 		record.LatencyMs,
 		record.FirstTokenLatencyMs,
+		record.LocalQueueLatencyMs,
+		record.UpstreamFirstTokenLatencyMs,
 	)
 	if err != nil {
 		return fmt.Errorf("usage store: insert record: %w", err)
@@ -444,8 +459,8 @@ func (s *mysqlUsageStore) InsertBatch(ctx context.Context, records []UsageRecord
 	query := fmt.Sprintf(`
 			INSERT INTO %s (api_key, model, source, auth_index, failed, requested_at,
 				input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens,
-				method, path, latency_ms, first_token_latency_ms)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				method, path, latency_ms, first_token_latency_ms, local_queue_latency_ms, upstream_first_token_latency_ms)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, table)
 
 	stmt, err := tx.PrepareContext(ctx, query)
@@ -475,6 +490,8 @@ func (s *mysqlUsageStore) InsertBatch(ctx context.Context, records []UsageRecord
 			record.Path,
 			record.LatencyMs,
 			record.FirstTokenLatencyMs,
+			record.LocalQueueLatencyMs,
+			record.UpstreamFirstTokenLatencyMs,
 		)
 		if execErr != nil {
 			skipped++
@@ -504,7 +521,7 @@ func (s *mysqlUsageStore) ListRecordsAfterID(ctx context.Context, afterID int64,
 	query := fmt.Sprintf(`
 		SELECT id, api_key, model, source, auth_index, failed, requested_at,
 			input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens,
-			method, path, latency_ms, first_token_latency_ms
+			method, path, latency_ms, first_token_latency_ms, local_queue_latency_ms, upstream_first_token_latency_ms
 			FROM %s
 			WHERE id > ?
 			ORDER BY id ASC
@@ -542,6 +559,8 @@ func (s *mysqlUsageStore) ListRecordsAfterID(ctx context.Context, afterID int64,
 			&record.Path,
 			&record.LatencyMs,
 			&record.FirstTokenLatencyMs,
+			&record.LocalQueueLatencyMs,
+			&record.UpstreamFirstTokenLatencyMs,
 		); err != nil {
 			return nil, afterID, fmt.Errorf("usage store: scan list records after id: %w", err)
 		}
@@ -804,7 +823,9 @@ func (s *sqliteUsageStore) EnsureSchema(ctx context.Context) error {
 			reasoning_tokens       INTEGER NOT NULL DEFAULT 0,
 			cached_tokens          INTEGER NOT NULL DEFAULT 0,
 			total_tokens           INTEGER NOT NULL DEFAULT 0,
-			first_token_latency_ms INTEGER NOT NULL DEFAULT 0
+			first_token_latency_ms INTEGER NOT NULL DEFAULT 0,
+			local_queue_latency_ms INTEGER NOT NULL DEFAULT 0,
+			upstream_first_token_latency_ms INTEGER NOT NULL DEFAULT 0
 		)
 	`
 	if _, err := s.db.ExecContext(ctx, createTable); err != nil {
@@ -843,6 +864,8 @@ func (s *sqliteUsageStore) EnsureSchema(ctx context.Context) error {
 		"ALTER TABLE usage_records ADD COLUMN path TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE usage_records ADD COLUMN latency_ms INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE usage_records ADD COLUMN first_token_latency_ms INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE usage_records ADD COLUMN local_queue_latency_ms INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE usage_records ADD COLUMN upstream_first_token_latency_ms INTEGER NOT NULL DEFAULT 0",
 	}
 	for _, m := range migrations {
 		_, _ = s.db.ExecContext(ctx, m) // ignore "duplicate column" errors
@@ -889,8 +912,8 @@ func (s *sqliteUsageStore) Insert(ctx context.Context, record UsageRecord) error
 	query := `
 		INSERT INTO usage_records (api_key, model, source, auth_index, failed, requested_at,
 			input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens,
-			method, path, latency_ms, first_token_latency_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			method, path, latency_ms, first_token_latency_ms, local_queue_latency_ms, upstream_first_token_latency_ms)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 	_, err := s.db.ExecContext(ctx, query,
 		record.APIKey,
@@ -908,6 +931,8 @@ func (s *sqliteUsageStore) Insert(ctx context.Context, record UsageRecord) error
 		record.Path,
 		record.LatencyMs,
 		record.FirstTokenLatencyMs,
+		record.LocalQueueLatencyMs,
+		record.UpstreamFirstTokenLatencyMs,
 	)
 	if err != nil {
 		return fmt.Errorf("usage store: insert record: %w", err)
@@ -929,8 +954,8 @@ func (s *sqliteUsageStore) InsertBatch(ctx context.Context, records []UsageRecor
 	query := `
 		INSERT INTO usage_records (api_key, model, source, auth_index, failed, requested_at,
 			input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens,
-			method, path, latency_ms, first_token_latency_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			method, path, latency_ms, first_token_latency_ms, local_queue_latency_ms, upstream_first_token_latency_ms)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	stmt, err := tx.PrepareContext(ctx, query)
@@ -960,6 +985,8 @@ func (s *sqliteUsageStore) InsertBatch(ctx context.Context, records []UsageRecor
 			record.Path,
 			record.LatencyMs,
 			record.FirstTokenLatencyMs,
+			record.LocalQueueLatencyMs,
+			record.UpstreamFirstTokenLatencyMs,
 		)
 		if execErr != nil {
 			skipped++

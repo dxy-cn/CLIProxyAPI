@@ -69,23 +69,37 @@ func TestUsageReporterBuildRecordIncludesLatency(t *testing.T) {
 func TestNewUsageReporterBuildRecordIncludesFirstTokenLatency(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	holder := &stubFirstChunkReader{latency: 320 * time.Millisecond}
+	holder := &stubFirstChunkReader{
+		startedAt: time.Now().Add(-420 * time.Millisecond),
+		latency:   320 * time.Millisecond,
+	}
 	ginCtx.Set("USAGE_FIRST_CHUNK", holder)
 
 	ctx := context.WithValue(context.Background(), "gin", ginCtx)
 	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
-	reporter.requestedAt = time.Now().Add(-2 * time.Second)
+	reporter.requestedAt = holder.startedAt.Add(120 * time.Millisecond)
 
 	record := reporter.buildRecord(usage.Detail{OutputTokens: 10}, false)
 	if record.FirstTokenLatency != 320*time.Millisecond {
 		t.Fatalf("first token latency = %v, want %v", record.FirstTokenLatency, 320*time.Millisecond)
 	}
+	if record.LocalQueueLatency != 120*time.Millisecond {
+		t.Fatalf("local queue latency = %v, want %v", record.LocalQueueLatency, 120*time.Millisecond)
+	}
+	if record.UpstreamFirstTokenLatency != 200*time.Millisecond {
+		t.Fatalf("upstream first token latency = %v, want %v", record.UpstreamFirstTokenLatency, 200*time.Millisecond)
+	}
 }
 
 type stubFirstChunkReader struct {
-	latency time.Duration
+	startedAt time.Time
+	latency   time.Duration
 }
 
 func (s *stubFirstChunkReader) Latency() time.Duration {
 	return s.latency
+}
+
+func (s *stubFirstChunkReader) StartedAt() time.Time {
+	return s.startedAt
 }
