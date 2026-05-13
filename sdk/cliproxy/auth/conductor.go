@@ -3416,6 +3416,17 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 	if updated.Runtime == nil {
 		updated.Runtime = auth.Runtime
 	}
+	m.mu.RLock()
+	current := m.auths[id]
+	if current != nil && (current.Disabled || current.Status == StatusDisabled) {
+		updated.Disabled = true
+		updated.Status = StatusDisabled
+		updated.StatusMessage = current.StatusMessage
+		if updated.Metadata != nil {
+			updated.Metadata["disabled"] = true
+		}
+	}
+	m.mu.RUnlock()
 	updated.LastRefreshedAt = now
 	updated.NextRefreshAfter = time.Time{}
 	updated.LastError = nil

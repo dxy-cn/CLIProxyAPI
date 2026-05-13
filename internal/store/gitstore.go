@@ -267,6 +267,7 @@ func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string
 	if path == "" {
 		return "", fmt.Errorf("auth filestore: missing file path attribute for %s", auth.ID)
 	}
+	syncAuthDisabledMetadata(auth)
 
 	if auth.Disabled {
 		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
@@ -472,12 +473,14 @@ func (s *GitTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth, 
 		return nil, fmt.Errorf("stat file: %w", err)
 	}
 	id := s.idFor(path, baseDir)
+	disabled, status := authDisabledStateFromMetadata(metadata)
 	auth := &cliproxyauth.Auth{
 		ID:               id,
 		Provider:         provider,
 		FileName:         id,
 		Label:            s.labelFor(metadata),
-		Status:           cliproxyauth.StatusActive,
+		Status:           status,
+		Disabled:         disabled,
 		Attributes:       map[string]string{"path": path},
 		Metadata:         metadata,
 		CreatedAt:        info.ModTime(),

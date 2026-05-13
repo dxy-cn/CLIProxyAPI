@@ -197,6 +197,7 @@ func (s *MySQLStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (string,
 	if path == "" {
 		return "", fmt.Errorf("mysql store: missing file path attribute for %s", auth.ID)
 	}
+	syncAuthDisabledMetadata(auth)
 
 	if auth.Disabled {
 		if _, statErr := os.Stat(path); errors.Is(statErr, fs.ErrNotExist) {
@@ -296,12 +297,14 @@ func (s *MySQLStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error) {
 		if email := strings.TrimSpace(valueAsString(metadata["email"])); email != "" {
 			attr["email"] = email
 		}
+		disabled, status := authDisabledStateFromMetadata(metadata)
 		auth := &cliproxyauth.Auth{
 			ID:               normalizeAuthID(id),
 			Provider:         provider,
 			FileName:         normalizeAuthID(id),
 			Label:            labelFor(metadata),
-			Status:           cliproxyauth.StatusActive,
+			Status:           status,
+			Disabled:         disabled,
 			Attributes:       attr,
 			Metadata:         metadata,
 			CreatedAt:        createdAt,
