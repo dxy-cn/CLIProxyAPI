@@ -2,8 +2,40 @@ package auth
 
 import (
 	"context"
+	"net/http"
 	"testing"
+
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
+
+type blockingRefreshExecutor struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (e *blockingRefreshExecutor) Identifier() string { return "codex" }
+
+func (e *blockingRefreshExecutor) Execute(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, nil
+}
+
+func (e *blockingRefreshExecutor) ExecuteStream(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+	return nil, nil
+}
+
+func (e *blockingRefreshExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, error) {
+	close(e.started)
+	<-e.release
+	return auth, nil
+}
+
+func (e *blockingRefreshExecutor) CountTokens(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, nil
+}
+
+func (e *blockingRefreshExecutor) HttpRequest(context.Context, *Auth, *http.Request) (*http.Response, error) {
+	return nil, nil
+}
 
 func TestManager_Update_PreservesModelStates(t *testing.T) {
 	m := NewManager(nil, nil, nil)
@@ -45,6 +77,56 @@ func TestManager_Update_PreservesModelStates(t *testing.T) {
 	}
 	if state.Quota.BackoffLevel != backoffLevel {
 		t.Fatalf("expected BackoffLevel to be %d, got %d", backoffLevel, state.Quota.BackoffLevel)
+	}
+}
+
+func TestManager_RefreshAuth_DoesNotReenableDisabledAuth(t *testing.T) {
+	ctx := context.Background()
+	m := NewManager(nil, nil, nil)
+	exec := &blockingRefreshExecutor{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	m.RegisterExecutor(exec)
+
+	if _, err := m.Register(ctx, &Auth{
+		ID:       "auth-refresh-race",
+		Provider: "codex",
+		Status:   StatusActive,
+		Metadata: map[string]any{"type": "codex"},
+	}); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.refreshAuth(ctx, "auth-refresh-race")
+	}()
+	<-exec.started
+
+	if _, err := m.Update(ctx, &Auth{
+		ID:       "auth-refresh-race",
+		Provider: "codex",
+		Disabled: true,
+		Status:   StatusDisabled,
+		Metadata: map[string]any{"type": "codex", "disabled": true},
+	}); err != nil {
+		t.Fatalf("disable auth during refresh: %v", err)
+	}
+
+	close(exec.release)
+	<-done
+
+	updated, ok := m.GetByID("auth-refresh-race")
+	if !ok || updated == nil {
+		t.Fatalf("expected auth to be present")
+	}
+	if !updated.Disabled {
+		t.Fatal("refresh completion re-enabled disabled auth")
+	}
+	if updated.Status != StatusDisabled {
+		t.Fatalf("status = %q, want %q", updated.Status, StatusDisabled)
 	}
 }
 
