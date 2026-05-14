@@ -320,7 +320,36 @@ func (a *Auth) StableIdentity() string {
 			return "codex:chatgpt:" + accountID
 		}
 	}
+	if provider == "" || a.Metadata == nil {
+		return ""
+	}
+	if email := strings.ToLower(strings.TrimSpace(metadataString(a.Metadata, "email"))); email != "" {
+		identity := provider + ":oauth:" + email
+		if projectID := strings.TrimSpace(metadataString(a.Metadata, "project_id")); projectID != "" {
+			identity += ":project:" + projectID
+		}
+		return identity
+	}
+	if deviceID := strings.TrimSpace(metadataString(a.Metadata, "device_id")); deviceID != "" {
+		return provider + ":oauth-device:" + deviceID
+	}
 	return ""
+}
+
+func metadataString(metadata map[string]any, key string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	value, ok := metadata[key]
+	if !ok {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	default:
+		return ""
+	}
 }
 
 func (a *Auth) codexChatGPTAccountID() string {

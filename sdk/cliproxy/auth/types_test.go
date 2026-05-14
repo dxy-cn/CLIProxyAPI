@@ -214,6 +214,61 @@ func TestStableIdentityDoesNotFollowCodexFileName(t *testing.T) {
 	}
 }
 
+func TestStableIdentityUsesOAuthEmailForNonCodexProviders(t *testing.T) {
+	t.Parallel()
+
+	auth := &Auth{
+		Provider: "claude",
+		FileName: "claude-old.json",
+		Metadata: map[string]any{
+			"email": "User@Example.COM",
+		},
+	}
+	renamed := auth.Clone()
+	renamed.FileName = "claude-new.json"
+
+	const want = "claude:oauth:user@example.com"
+	if got := auth.StableIdentity(); got != want {
+		t.Fatalf("StableIdentity() = %q, want %q", got, want)
+	}
+	if got := renamed.StableIdentity(); got != want {
+		t.Fatalf("renamed StableIdentity() = %q, want %q", got, want)
+	}
+}
+
+func TestStableIdentityIncludesOAuthProjectWhenPresent(t *testing.T) {
+	t.Parallel()
+
+	auth := &Auth{
+		Provider: "gemini",
+		Metadata: map[string]any{
+			"email":      "user@example.com",
+			"project_id": "project-a",
+		},
+	}
+
+	const want = "gemini:oauth:user@example.com:project:project-a"
+	if got := auth.StableIdentity(); got != want {
+		t.Fatalf("StableIdentity() = %q, want %q", got, want)
+	}
+}
+
+func TestStableIdentityUsesOAuthDeviceIDWhenEmailIsUnavailable(t *testing.T) {
+	t.Parallel()
+
+	auth := &Auth{
+		Provider: "kimi",
+		Metadata: map[string]any{
+			"device_id": "device-123",
+		},
+	}
+
+	const want = "kimi:oauth-device:device-123"
+	if got := auth.StableIdentity(); got != want {
+		t.Fatalf("StableIdentity() = %q, want %q", got, want)
+	}
+}
+
 func testJWT(t *testing.T, claims map[string]any) string {
 	t.Helper()
 
