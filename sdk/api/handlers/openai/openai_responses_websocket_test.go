@@ -179,6 +179,12 @@ func (e *websocketCompactionCaptureExecutor) HttpRequest(context.Context, *corea
 	return nil, errors.New("not implemented")
 }
 
+func TestResponsesWebsocketUpgraderEnablesCompression(t *testing.T) {
+	if !responsesWebsocketUpgrader.EnableCompression {
+		t.Fatal("responses websocket upgrader must enable compression")
+	}
+}
+
 func TestNormalizeResponsesWebsocketRequestCreate(t *testing.T) {
 	raw := []byte(`{"type":"response.create","model":"test-model","stream":false,"input":[{"type":"message","id":"msg-1"}]}`)
 
