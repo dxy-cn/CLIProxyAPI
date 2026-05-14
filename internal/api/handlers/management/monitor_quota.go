@@ -44,6 +44,7 @@ func (h *Handler) GetPublicMonitorCodexQuota(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "empty codex quota payload"})
 		return
 	}
+	h.maybeSendCodexQuotaWarning(c.Request.Context(), auth, payload)
 
 	response := publicCodexQuotaResponse(payload, auth)
 	if len(response) == 0 {

@@ -88,6 +88,9 @@ type Config struct {
 	// QuotaExceeded defines the behavior when a quota is exceeded.
 	QuotaExceeded QuotaExceeded `yaml:"quota-exceeded" json:"quota-exceeded"`
 
+	// QuotaWarning defines credential quota warning notification settings.
+	QuotaWarning QuotaWarning `yaml:"quota-warning" json:"quota-warning"`
+
 	// Routing controls credential selection behavior.
 	Routing RoutingConfig `yaml:"routing" json:"routing"`
 
@@ -211,6 +214,15 @@ type QuotaExceeded struct {
 	// AntigravityCredits indicates whether to retry Antigravity quota_exhausted 429s once
 	// on the same credential with enabledCreditTypes=["GOOGLE_ONE_AI"].
 	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
+}
+
+// QuotaWarning defines notification settings for low remaining credential quota.
+type QuotaWarning struct {
+	// WebhookURL is the WeCom bot webhook endpoint used for warning notifications.
+	WebhookURL string `yaml:"webhook-url" json:"webhook-url"`
+
+	// Threshold is the remaining quota percentage below which a warning should be sent.
+	Threshold int `yaml:"threshold" json:"threshold"`
 }
 
 // RoutingConfig configures how credentials are selected for requests.

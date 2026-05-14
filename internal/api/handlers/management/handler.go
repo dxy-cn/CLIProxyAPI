@@ -48,6 +48,9 @@ type Handler struct {
 	envSecret           string
 	logDir              string
 	postAuthHook        coreauth.PostAuthHook
+	quotaWarningMu      sync.Mutex
+	quotaWarningSent    map[string]struct{}
+	quotaWarningSender  quotaWarningSender
 }
 
 // NewHandler creates a new management handler instance.
@@ -64,6 +67,8 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		tokenStore:          sdkAuth.GetTokenStore(),
 		allowRemoteOverride: envSecret != "",
 		envSecret:           envSecret,
+		quotaWarningSent:    make(map[string]struct{}),
+		quotaWarningSender:  sendWeComQuotaWarning,
 	}
 	h.startAttemptCleanup()
 	return h

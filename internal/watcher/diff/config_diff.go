@@ -83,6 +83,12 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.QuotaExceeded.AntigravityCredits != newCfg.QuotaExceeded.AntigravityCredits {
 		changes = append(changes, fmt.Sprintf("quota-exceeded.antigravity-credits: %t -> %t", oldCfg.QuotaExceeded.AntigravityCredits, newCfg.QuotaExceeded.AntigravityCredits))
 	}
+	if strings.TrimSpace(oldCfg.QuotaWarning.WebhookURL) != strings.TrimSpace(newCfg.QuotaWarning.WebhookURL) {
+		changes = append(changes, fmt.Sprintf("quota-warning.webhook-url: %s", redactedPresenceChange(oldCfg.QuotaWarning.WebhookURL, newCfg.QuotaWarning.WebhookURL)))
+	}
+	if oldCfg.QuotaWarning.Threshold != newCfg.QuotaWarning.Threshold {
+		changes = append(changes, fmt.Sprintf("quota-warning.threshold: %d -> %d", oldCfg.QuotaWarning.Threshold, newCfg.QuotaWarning.Threshold))
+	}
 
 	if oldCfg.Routing.Strategy != newCfg.Routing.Strategy {
 		changes = append(changes, fmt.Sprintf("routing.strategy: %s -> %s", oldCfg.Routing.Strategy, newCfg.Routing.Strategy))
@@ -370,6 +376,19 @@ func formatProxyURL(raw string) string {
 		return host
 	}
 	return scheme + "://" + host
+}
+
+func redactedPresenceChange(oldValue, newValue string) string {
+	oldSet := strings.TrimSpace(oldValue) != ""
+	newSet := strings.TrimSpace(newValue) != ""
+	switch {
+	case !oldSet && newSet:
+		return "created"
+	case oldSet && !newSet:
+		return "deleted"
+	default:
+		return "updated"
+	}
 }
 
 func equalStringSet(a, b []string) bool {

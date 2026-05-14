@@ -211,12 +211,47 @@ func (h *Handler) APICall(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
 		return
 	}
+	h.maybeSendAPICallCodexQuotaWarning(c.Request.Context(), auth, method, parsedURL, resp.StatusCode, respBody)
 
 	c.JSON(http.StatusOK, apiCallResponse{
 		StatusCode: resp.StatusCode,
 		Header:     resp.Header,
 		Body:       string(respBody),
 	})
+}
+
+func (h *Handler) maybeSendAPICallCodexQuotaWarning(ctx context.Context, auth *coreauth.Auth, method string, parsedURL *url.URL, statusCode int, body []byte) {
+	if h == nil || auth == nil || parsedURL == nil {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return
+	}
+	if method != http.MethodGet || statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return
+	}
+	if !sameURL(parsedURL, codexVerifyURL) {
+		return
+	}
+
+	var payload gin.H
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return
+	}
+	h.maybeSendCodexQuotaWarning(ctx, auth, payload)
+}
+
+func sameURL(parsed *url.URL, raw string) bool {
+	if parsed == nil {
+		return false
+	}
+	expected, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Scheme, expected.Scheme) &&
+		strings.EqualFold(parsed.Host, expected.Host) &&
+		parsed.Path == expected.Path
 }
 
 func firstNonEmptyString(values ...*string) string {
