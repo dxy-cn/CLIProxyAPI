@@ -64,21 +64,26 @@ func TestMaybeSendCodexQuotaWarningSendsOnceBelowThreshold(t *testing.T) {
 	if strings.Contains(sent[0], "account@example.com") {
 		t.Fatalf("warning content must use note instead of account email: %s", sent[0])
 	}
-	if !strings.Contains(sent[0], "凭证: note-name") {
+	if strings.Contains(sent[0], "> 凭证:") {
+		t.Fatalf("warning content must use credential-name label: %s", sent[0])
+	}
+	if !strings.Contains(sent[0], "凭证名称: note-name") {
 		t.Fatalf("warning content missing credential note: %s", sent[0])
 	}
 	if strings.Contains(sent[0], "剩余额度") {
 		t.Fatalf("warning content must not use legacy remaining-quota label: %s", sent[0])
 	}
-	if !strings.Contains(sent[0], "5小时限额: 15%") {
+	if strings.Contains(sent[0], "5小时限额") {
+		t.Fatalf("warning content must not use legacy five-hour limit label: %s", sent[0])
+	}
+	if !strings.Contains(sent[0], "5小时剩余: 15%") {
 		t.Fatalf("warning content missing remaining quota: %s", sent[0])
 	}
 	if strings.Contains(sent[0], "阈值:") {
 		t.Fatalf("warning content must not include threshold line: %s", sent[0])
 	}
-	expectedReset := time.Unix(1777777777, 0).Local().Format("2006-01-02 15:04")
-	if !strings.Contains(sent[0], "重置时间: "+expectedReset) {
-		t.Fatalf("warning content should format reset_at timestamp: %s", sent[0])
+	if strings.Contains(sent[0], "重置时间") {
+		t.Fatalf("warning content must not include reset time line: %s", sent[0])
 	}
 }
 
@@ -138,18 +143,21 @@ func TestMaybeSendCodexQuotaWarningOnlyChecksFiveHourLimit(t *testing.T) {
 	if strings.Contains(sent[0], "周限额") {
 		t.Fatalf("warning content must not report weekly limit: %s", sent[0])
 	}
-	if !strings.Contains(sent[0], "5小时限额: 15%") {
+	if !strings.Contains(sent[0], "5小时剩余: 15%") {
 		t.Fatalf("warning content must report five-hour limit: %s", sent[0])
 	}
 	if strings.Contains(sent[0], "panwenwen092@gmail.com") {
 		t.Fatalf("warning content must use credential note instead of account email: %s", sent[0])
 	}
-	if !strings.Contains(sent[0], "凭证: ✈️J ToC3 / 2026-05-13") {
+	if !strings.Contains(sent[0], "凭证名称: ✈️J ToC3 / 2026-05-13") {
 		t.Fatalf("warning content must include credential note: %s", sent[0])
+	}
+	if strings.Contains(sent[0], "重置时间") {
+		t.Fatalf("warning content must not include reset time line: %s", sent[0])
 	}
 }
 
-func TestMaybeSendCodexQuotaWarningFormatsResetAfterSecondsAsResetTime(t *testing.T) {
+func TestMaybeSendCodexQuotaWarningOmitsResetTime(t *testing.T) {
 	h := &Handler{
 		cfg: &config.Config{
 			QuotaWarning: config.QuotaWarning{
@@ -176,17 +184,11 @@ func TestMaybeSendCodexQuotaWarningFormatsResetAfterSecondsAsResetTime(t *testin
 		},
 	})
 
-	if !strings.Contains(sent, "5小时限额: 15%") {
+	if !strings.Contains(sent, "5小时剩余: 15%") {
 		t.Fatalf("warning content missing five-hour remaining quota: %s", sent)
 	}
-	resetText := quotaWarningLineValue(sent, "> 重置时间: ")
-	resetTime, err := time.ParseInLocation("2006-01-02 15:04", resetText, time.Local)
-	if err != nil {
-		t.Fatalf("warning content should format reset_after_seconds as reset time: %s", sent)
-	}
-	want := time.Now().Add(3670 * time.Second)
-	if resetTime.Before(want.Add(-time.Minute)) || resetTime.After(want.Add(time.Minute)) {
-		t.Fatalf("reset time = %s, want around %s in content %s", resetText, want.Format("2006-01-02 15:04"), sent)
+	if strings.Contains(sent, "重置时间") {
+		t.Fatalf("warning content must not include reset time: %s", sent)
 	}
 }
 
@@ -324,7 +326,7 @@ func TestSetConfigThresholdChangeFetchesCodexCredentialsAndWarnsBelowNewThreshol
 	sentMu.Lock()
 	first := sent[0]
 	sentMu.Unlock()
-	if !strings.Contains(first, "凭证: below-note") {
+	if !strings.Contains(first, "凭证名称: below-note") {
 		t.Fatalf("warning must target the below-threshold credential: %s", first)
 	}
 	if strings.Contains(first, "codex-above@example.com") || strings.Contains(first, "codex-below@example.com") {
@@ -394,13 +396,4 @@ func waitForQuotaWarningSent(t *testing.T, mu *sync.Mutex, sent *[]string, want 
 	got := len(*sent)
 	mu.Unlock()
 	t.Fatalf("sent warnings = %d, want %d", got, want)
-}
-
-func quotaWarningLineValue(content string, prefix string) string {
-	for _, line := range strings.Split(content, "\n") {
-		if strings.HasPrefix(line, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
-		}
-	}
-	return ""
 }
