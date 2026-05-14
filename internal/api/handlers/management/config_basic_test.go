@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -216,6 +218,71 @@ func TestPutConfigYAMLAcceptsMatchingConfigHash(t *testing.T) {
 	}
 	if got := rec.Header().Get(configHashHeader); got != configContentHash(data) {
 		t.Fatalf("%s = %q, want %q", configHashHeader, got, configContentHash(data))
+	}
+}
+
+func TestPutConfigYAMLDispatchesQuotaWarningsOnThresholdChange(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	original := []byte("quota-warning:\n  webhook-url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test\n  threshold: 10\n")
+	if err := os.WriteFile(configPath, original, 0o600); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-auth",
+		Provider: "codex",
+		Label:    "codex-1",
+	}); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := NewHandler(&config.Config{
+		QuotaWarning: config.QuotaWarning{
+			WebhookURL: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test",
+			Threshold:  10,
+		},
+	}, configPath, manager)
+	h.quotaWarningQuotaFetcher = func(_ context.Context, auth *coreauth.Auth) (int, gin.H, error) {
+		if auth.ID != "codex-auth" {
+			t.Errorf("unexpected quota fetch auth: %s", auth.ID)
+		}
+		return http.StatusOK, gin.H{"rate_limit": gin.H{"primary_window": gin.H{
+			"used_percent":         85,
+			"limit_window_seconds": 18000,
+			"reset_at":             1777777777,
+		}}}, nil
+	}
+
+	sent := make(chan string, 1)
+	h.quotaWarningSender = func(_ context.Context, _ string, content string) error {
+		sent <- content
+		return nil
+	}
+
+	next := "quota-warning:\n  webhook-url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test\n  threshold: 20\n"
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/config.yaml", strings.NewReader(next))
+	ctx.Request.Header.Set("Content-Type", "application/yaml")
+	ctx.Request.Header.Set(configHashHeader, configContentHash(original))
+
+	h.PutConfigYAML(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PutConfigYAML status = %d, want %d with body %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	select {
+	case content := <-sent:
+		if !strings.Contains(content, "凭证: codex-1") || !strings.Contains(content, "5小时剩余额度: 15%") {
+			t.Fatalf("unexpected quota warning content: %s", content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected quota warning after threshold change")
 	}
 }
 
