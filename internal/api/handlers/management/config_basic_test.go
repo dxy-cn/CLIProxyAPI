@@ -236,7 +236,8 @@ func TestPutConfigYAMLDispatchesQuotaWarningsOnThresholdChange(t *testing.T) {
 	if _, err := manager.Register(context.Background(), &coreauth.Auth{
 		ID:       "codex-auth",
 		Provider: "codex",
-		Label:    "codex-1",
+		Label:    "codex-note",
+		Metadata: map[string]any{"email": "codex-1@example.com"},
 	}); err != nil {
 		t.Fatalf("register auth: %v", err)
 	}
@@ -279,7 +280,10 @@ func TestPutConfigYAMLDispatchesQuotaWarningsOnThresholdChange(t *testing.T) {
 	select {
 	case content := <-sent:
 		expectedReset := time.Unix(1777777777, 0).Local().Format("2006-01-02 15:04")
-		if !strings.Contains(content, "凭证: codex-1") ||
+		if strings.Contains(content, "codex-1@example.com") {
+			t.Fatalf("quota warning content must not use email as credential name: %s", content)
+		}
+		if !strings.Contains(content, "凭证: codex-note") ||
 			!strings.Contains(content, "5小时限额: 15%") ||
 			!strings.Contains(content, "重置时间: "+expectedReset) {
 			t.Fatalf("unexpected quota warning content: %s", content)

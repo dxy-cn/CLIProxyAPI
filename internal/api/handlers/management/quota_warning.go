@@ -22,6 +22,7 @@ const (
 	quotaWarningHTTPTimeout      = 5 * time.Second
 	quotaWarningResetTimeLayout  = "2006-01-02 15:04"
 	quotaWarningUnixMilliseconds = 1_000_000_000_000
+	quotaWarningFiveHourSeconds  = 18000
 )
 
 type quotaWarningSender func(ctx context.Context, webhookURL string, content string) error
@@ -32,6 +33,7 @@ type quotaWarningWindow struct {
 	ID          string
 	Label       string
 	Period      string
+	Seconds     float64
 	Remaining   float64
 	Reset       string
 	DedupeReset string
@@ -160,11 +162,21 @@ func lowestCodexQuotaWindow(payload gin.H) (quotaWarningWindow, bool) {
 		return quotaWarningWindow{}, false
 	}
 
-	lowest := windows[0]
-	for _, window := range windows[1:] {
+	var lowest quotaWarningWindow
+	for _, window := range windows {
+		if window.Seconds != quotaWarningFiveHourSeconds {
+			continue
+		}
+		if lowest.ID == "" {
+			lowest = window
+			continue
+		}
 		if window.Remaining < lowest.Remaining {
 			lowest = window
 		}
+	}
+	if lowest.ID == "" {
+		return quotaWarningWindow{}, false
 	}
 	return lowest, true
 }
@@ -231,10 +243,12 @@ func codexQuotaWarningWindow(id string, label string, raw any, limitReached bool
 	}
 
 	reset := quotaWarningResetLabel(window)
+	seconds, _ := numericValue(firstValue(window, "limit_window_seconds", "limitWindowSeconds"))
 	return quotaWarningWindow{
 		ID:          id,
 		Label:       label,
 		Period:      quotaWarningWindowPeriod(window),
+		Seconds:     seconds,
 		Remaining:   remaining,
 		Reset:       reset,
 		DedupeReset: quotaWarningResetKey(window, reset),
@@ -256,6 +270,9 @@ func quotaWarningAuthLabel(auth *coreauth.Auth) string {
 	}
 	if label := strings.TrimSpace(auth.Label); label != "" {
 		return label
+	}
+	if _, account := auth.AccountInfo(); strings.TrimSpace(account) != "" {
+		return strings.TrimSpace(account)
 	}
 	if index := strings.TrimSpace(auth.Index); index != "" {
 		return index

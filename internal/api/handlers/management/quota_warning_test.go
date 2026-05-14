@@ -34,6 +34,8 @@ func TestMaybeSendCodexQuotaWarningSendsOnceBelowThreshold(t *testing.T) {
 		Index:    "codex-1",
 		Provider: "codex",
 		FileName: "codex-user.json",
+		Label:    "note-name",
+		Metadata: map[string]any{"email": "account@example.com"},
 	}
 	payload := gin.H{
 		"plan_type": "pro",
@@ -57,6 +59,12 @@ func TestMaybeSendCodexQuotaWarningSendsOnceBelowThreshold(t *testing.T) {
 	if strings.Contains(sent[0], "窗口:") {
 		t.Fatalf("warning content must not include standalone window line: %s", sent[0])
 	}
+	if strings.Contains(sent[0], "account@example.com") {
+		t.Fatalf("warning content must use note instead of account email: %s", sent[0])
+	}
+	if !strings.Contains(sent[0], "凭证: note-name") {
+		t.Fatalf("warning content missing credential note: %s", sent[0])
+	}
 	if strings.Contains(sent[0], "剩余额度") {
 		t.Fatalf("warning content must not use legacy remaining-quota label: %s", sent[0])
 	}
@@ -69,6 +77,71 @@ func TestMaybeSendCodexQuotaWarningSendsOnceBelowThreshold(t *testing.T) {
 	expectedReset := time.Unix(1777777777, 0).Local().Format("2006-01-02 15:04")
 	if !strings.Contains(sent[0], "重置时间: "+expectedReset) {
 		t.Fatalf("warning content should format reset_at timestamp: %s", sent[0])
+	}
+}
+
+func TestMaybeSendCodexQuotaWarningOnlyChecksFiveHourLimit(t *testing.T) {
+	h := &Handler{
+		cfg: &config.Config{
+			QuotaWarning: config.QuotaWarning{
+				WebhookURL: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test",
+				Threshold:  20,
+			},
+		},
+		quotaWarningSent: make(map[string]struct{}),
+	}
+
+	var sent []string
+	h.quotaWarningSender = func(_ context.Context, _ string, content string) error {
+		sent = append(sent, content)
+		return nil
+	}
+
+	auth := &coreauth.Auth{
+		Provider: "codex",
+		Label:    "✈️J ToC3 / 2026-05-13",
+		Metadata: map[string]any{"email": "panwenwen092@gmail.com"},
+	}
+	payload := gin.H{
+		"rate_limit": gin.H{
+			"primary_window": gin.H{
+				"used_percent":         50,
+				"limit_window_seconds": 18000,
+				"reset_at":             1777777777,
+			},
+			"secondary_window": gin.H{
+				"used_percent":         95,
+				"limit_window_seconds": 604800,
+				"reset_at":             1777777777,
+			},
+		},
+	}
+
+	h.maybeSendCodexQuotaWarning(context.Background(), auth, payload)
+	if len(sent) != 0 {
+		t.Fatalf("weekly limit must not trigger quota warning: %v", sent)
+	}
+
+	payload["rate_limit"].(gin.H)["primary_window"] = gin.H{
+		"used_percent":         85,
+		"limit_window_seconds": 18000,
+		"reset_at":             1777777777,
+	}
+	h.maybeSendCodexQuotaWarning(context.Background(), auth, payload)
+	if len(sent) != 1 {
+		t.Fatalf("five-hour limit below threshold should trigger once, got %d", len(sent))
+	}
+	if strings.Contains(sent[0], "周限额") {
+		t.Fatalf("warning content must not report weekly limit: %s", sent[0])
+	}
+	if !strings.Contains(sent[0], "5小时限额: 15%") {
+		t.Fatalf("warning content must report five-hour limit: %s", sent[0])
+	}
+	if strings.Contains(sent[0], "panwenwen092@gmail.com") {
+		t.Fatalf("warning content must use credential note instead of account email: %s", sent[0])
+	}
+	if !strings.Contains(sent[0], "凭证: ✈️J ToC3 / 2026-05-13") {
+		t.Fatalf("warning content must include credential note: %s", sent[0])
 	}
 }
 
@@ -169,7 +242,8 @@ func TestSetConfigThresholdChangeFetchesCodexCredentialsAndWarnsBelowNewThreshol
 		ID:       "below-auth",
 		Index:    "codex-below",
 		Provider: "codex",
-		Label:    "codex-below",
+		Label:    "below-note",
+		Metadata: map[string]any{"email": "codex-below@example.com"},
 	})
 	if err != nil {
 		t.Fatalf("register below auth: %v", err)
@@ -178,7 +252,8 @@ func TestSetConfigThresholdChangeFetchesCodexCredentialsAndWarnsBelowNewThreshol
 		ID:       "above-auth",
 		Index:    "codex-above",
 		Provider: "codex",
-		Label:    "codex-above",
+		Label:    "above-note",
+		Metadata: map[string]any{"email": "codex-above@example.com"},
 	})
 	if err != nil {
 		t.Fatalf("register above auth: %v", err)
@@ -241,10 +316,10 @@ func TestSetConfigThresholdChangeFetchesCodexCredentialsAndWarnsBelowNewThreshol
 	sentMu.Lock()
 	first := sent[0]
 	sentMu.Unlock()
-	if !strings.Contains(first, "凭证: codex-below") {
+	if !strings.Contains(first, "凭证: below-note") {
 		t.Fatalf("warning must target the below-threshold credential: %s", first)
 	}
-	if strings.Contains(first, "codex-above") {
+	if strings.Contains(first, "codex-above@example.com") || strings.Contains(first, "codex-below@example.com") {
 		t.Fatalf("warning must not target above-threshold credential: %s", first)
 	}
 
