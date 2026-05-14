@@ -34,7 +34,9 @@ func TestMaybeSendCodexQuotaWarningSendsOnceBelowThreshold(t *testing.T) {
 		Index:    "codex-1",
 		Provider: "codex",
 		FileName: "codex-user.json",
-		Label:    "note-name",
+		Attributes: map[string]string{
+			"note": "note-name",
+		},
 		Metadata: map[string]any{"email": "account@example.com"},
 	}
 	payload := gin.H{
@@ -99,7 +101,9 @@ func TestMaybeSendCodexQuotaWarningOnlyChecksFiveHourLimit(t *testing.T) {
 
 	auth := &coreauth.Auth{
 		Provider: "codex",
-		Label:    "✈️J ToC3 / 2026-05-13",
+		Attributes: map[string]string{
+			"note": "✈️J ToC3 / 2026-05-13",
+		},
 		Metadata: map[string]any{"email": "panwenwen092@gmail.com"},
 	}
 	payload := gin.H{
@@ -242,7 +246,9 @@ func TestSetConfigThresholdChangeFetchesCodexCredentialsAndWarnsBelowNewThreshol
 		ID:       "below-auth",
 		Index:    "codex-below",
 		Provider: "codex",
-		Label:    "below-note",
+		Attributes: map[string]string{
+			"note": "below-note",
+		},
 		Metadata: map[string]any{"email": "codex-below@example.com"},
 	})
 	if err != nil {
@@ -252,7 +258,9 @@ func TestSetConfigThresholdChangeFetchesCodexCredentialsAndWarnsBelowNewThreshol
 		ID:       "above-auth",
 		Index:    "codex-above",
 		Provider: "codex",
-		Label:    "above-note",
+		Attributes: map[string]string{
+			"note": "above-note",
+		},
 		Metadata: map[string]any{"email": "codex-above@example.com"},
 	})
 	if err != nil {

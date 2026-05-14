@@ -268,6 +268,16 @@ func quotaWarningAuthLabel(auth *coreauth.Auth) string {
 	if auth == nil {
 		return "-"
 	}
+	if note := strings.TrimSpace(authAttribute(auth, "note")); note != "" {
+		return note
+	}
+	if auth.Metadata != nil {
+		if note, ok := auth.Metadata["note"].(string); ok {
+			if note = strings.TrimSpace(note); note != "" {
+				return note
+			}
+		}
+	}
 	if label := strings.TrimSpace(auth.Label); label != "" {
 		return label
 	}

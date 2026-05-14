@@ -236,7 +236,9 @@ func TestPutConfigYAMLDispatchesQuotaWarningsOnThresholdChange(t *testing.T) {
 	if _, err := manager.Register(context.Background(), &coreauth.Auth{
 		ID:       "codex-auth",
 		Provider: "codex",
-		Label:    "codex-note",
+		Attributes: map[string]string{
+			"note": "codex-note",
+		},
 		Metadata: map[string]any{"email": "codex-1@example.com"},
 	}); err != nil {
 		t.Fatalf("register auth: %v", err)
