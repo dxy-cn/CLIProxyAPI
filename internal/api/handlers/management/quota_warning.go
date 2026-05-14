@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -20,6 +21,8 @@ import (
 const quotaWarningHTTPTimeout = 5 * time.Second
 
 type quotaWarningSender func(ctx context.Context, webhookURL string, content string) error
+
+type quotaWarningQuotaFetcher func(ctx context.Context, auth *coreauth.Auth) (int, gin.H, error)
 
 type quotaWarningWindow struct {
 	ID          string
@@ -54,7 +57,7 @@ func (h *Handler) maybeSendCodexQuotaWarning(ctx context.Context, auth *coreauth
 		return
 	}
 
-	dedupeKey := quotaWarningDedupeKey(auth, window, threshold)
+	dedupeKey := h.quotaWarningDedupeKey(auth, window, threshold)
 	h.quotaWarningMu.Lock()
 	if h.quotaWarningSent == nil {
 		h.quotaWarningSent = make(map[string]struct{})
@@ -78,6 +81,73 @@ func (h *Handler) maybeSendCodexQuotaWarning(ctx context.Context, auth *coreauth
 		log.WithError(err).Warn("quota warning: send failed")
 		return
 	}
+}
+
+func (h *Handler) shouldDispatchQuotaWarningsAfterConfigChange(oldCfg *config.Config, newCfg *config.Config) bool {
+	if h == nil || !quotaWarningConfigEnabled(newCfg) {
+		return false
+	}
+
+	oldEnabled := quotaWarningConfigEnabled(oldCfg)
+	oldThreshold := 0
+	if oldCfg != nil {
+		oldThreshold = oldCfg.QuotaWarning.Threshold
+	}
+	newThreshold := newCfg.QuotaWarning.Threshold
+	if oldEnabled && oldThreshold == newThreshold {
+		return false
+	}
+
+	h.quotaWarningMu.Lock()
+	h.quotaWarningVersion++
+	h.quotaWarningMu.Unlock()
+	return true
+}
+
+func (h *Handler) dispatchQuotaWarningsForCurrentCodexAuths(ctx context.Context) {
+	if h == nil {
+		return
+	}
+
+	h.mu.Lock()
+	cfg := h.cfg
+	manager := h.authManager
+	h.mu.Unlock()
+	if !quotaWarningConfigEnabled(cfg) || manager == nil {
+		return
+	}
+
+	fetcher := h.quotaWarningQuotaFetcher
+	if fetcher == nil {
+		fetcher = h.fetchCodexQuotaPayload
+	}
+
+	for _, auth := range manager.List() {
+		if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+			continue
+		}
+		statusCode, payload, err := fetcher(ctx, auth)
+		if err != nil {
+			log.WithError(err).Warn("quota warning: fetch codex quota failed")
+			continue
+		}
+		if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices || len(payload) == 0 {
+			continue
+		}
+		h.maybeSendCodexQuotaWarning(ctx, auth, payload)
+	}
+}
+
+func quotaWarningConfigEnabled(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	warning := cfg.QuotaWarning
+	webhookURL := strings.TrimSpace(warning.WebhookURL)
+	return webhookURL != "" &&
+		warning.Threshold > 0 &&
+		warning.Threshold <= 100 &&
+		isWeComRobotWebhook(webhookURL)
 }
 
 func lowestCodexQuotaWindow(payload gin.H) (quotaWarningWindow, bool) {
@@ -171,8 +241,8 @@ func buildQuotaWarningContent(auth *coreauth.Auth, window quotaWarningWindow, th
 	return strings.Join([]string{
 		"### Token Pulse 额度预警",
 		fmt.Sprintf("> 凭证: %s", quotaWarningAuthLabel(auth)),
-		fmt.Sprintf("> %s额度: %s", window.Period, formatQuotaWarningPercent(window.Remaining)),
-		fmt.Sprintf("> 重置时间: %s", emptyAsDash(window.Reset)),
+		fmt.Sprintf("> %s剩余额度: %s", window.Period, formatQuotaWarningPercent(window.Remaining)),
+		fmt.Sprintf("> 重置: %s", emptyAsDash(window.Reset)),
 	}, "\n")
 }
 
@@ -198,7 +268,7 @@ func quotaWarningAuthLabel(auth *coreauth.Auth) string {
 	return "-"
 }
 
-func quotaWarningDedupeKey(auth *coreauth.Auth, window quotaWarningWindow, threshold int) string {
+func (h *Handler) quotaWarningDedupeKey(auth *coreauth.Auth, window quotaWarningWindow, threshold int) string {
 	identity := ""
 	if auth != nil {
 		identity = strings.TrimSpace(auth.StableIdentity())
@@ -212,7 +282,13 @@ func quotaWarningDedupeKey(auth *coreauth.Auth, window quotaWarningWindow, thres
 			identity = strings.TrimSpace(auth.FileName)
 		}
 	}
-	return strings.Join([]string{identity, window.ID, window.DedupeReset, strconv.Itoa(threshold)}, "|")
+	version := int64(0)
+	if h != nil {
+		h.quotaWarningMu.Lock()
+		version = h.quotaWarningVersion
+		h.quotaWarningMu.Unlock()
+	}
+	return strings.Join([]string{identity, window.ID, window.DedupeReset, strconv.Itoa(threshold), strconv.FormatInt(version, 10)}, "|")
 }
 
 func sendWeComQuotaWarning(ctx context.Context, webhookURL string, content string) error {

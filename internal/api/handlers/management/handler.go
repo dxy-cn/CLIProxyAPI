@@ -3,6 +3,7 @@
 package management
 
 import (
+	"context"
 	"crypto/subtle"
 	"fmt"
 	"net/http"
@@ -35,22 +36,24 @@ const attemptMaxIdleTime = 2 * time.Hour
 
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
-	cfg                 *config.Config
-	configFilePath      string
-	mu                  sync.Mutex
-	attemptsMu          sync.Mutex
-	failedAttempts      map[string]*attemptInfo // keyed by client IP
-	authManager         *coreauth.Manager
-	usageStats          *usage.RequestStatistics
-	tokenStore          coreauth.Store
-	localPassword       string
-	allowRemoteOverride bool
-	envSecret           string
-	logDir              string
-	postAuthHook        coreauth.PostAuthHook
-	quotaWarningMu      sync.Mutex
-	quotaWarningSent    map[string]struct{}
-	quotaWarningSender  quotaWarningSender
+	cfg                      *config.Config
+	configFilePath           string
+	mu                       sync.Mutex
+	attemptsMu               sync.Mutex
+	failedAttempts           map[string]*attemptInfo // keyed by client IP
+	authManager              *coreauth.Manager
+	usageStats               *usage.RequestStatistics
+	tokenStore               coreauth.Store
+	localPassword            string
+	allowRemoteOverride      bool
+	envSecret                string
+	logDir                   string
+	postAuthHook             coreauth.PostAuthHook
+	quotaWarningMu           sync.Mutex
+	quotaWarningSent         map[string]struct{}
+	quotaWarningSender       quotaWarningSender
+	quotaWarningQuotaFetcher quotaWarningQuotaFetcher
+	quotaWarningVersion      int64
 }
 
 // NewHandler creates a new management handler instance.
@@ -115,8 +118,13 @@ func (h *Handler) SetConfig(cfg *config.Config) {
 		return
 	}
 	h.mu.Lock()
+	oldCfg := h.cfg
 	h.cfg = cfg
 	h.mu.Unlock()
+
+	if h.shouldDispatchQuotaWarningsAfterConfigChange(oldCfg, cfg) {
+		go h.dispatchQuotaWarningsForCurrentCodexAuths(context.Background())
+	}
 }
 
 // SetAuthManager updates the auth manager reference used by management endpoints.
