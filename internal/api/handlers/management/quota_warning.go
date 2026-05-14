@@ -18,7 +18,11 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const quotaWarningHTTPTimeout = 5 * time.Second
+const (
+	quotaWarningHTTPTimeout      = 5 * time.Second
+	quotaWarningResetTimeLayout  = "2006-01-02 15:04"
+	quotaWarningUnixMilliseconds = 1_000_000_000_000
+)
 
 type quotaWarningSender func(ctx context.Context, webhookURL string, content string) error
 
@@ -241,8 +245,8 @@ func buildQuotaWarningContent(auth *coreauth.Auth, window quotaWarningWindow, th
 	return strings.Join([]string{
 		"### Token Pulse 额度预警",
 		fmt.Sprintf("> 凭证: %s", quotaWarningAuthLabel(auth)),
-		fmt.Sprintf("> %s剩余额度: %s", window.Period, formatQuotaWarningPercent(window.Remaining)),
-		fmt.Sprintf("> 重置: %s", emptyAsDash(window.Reset)),
+		fmt.Sprintf("> %s限额: %s", window.Period, formatQuotaWarningPercent(window.Remaining)),
+		fmt.Sprintf("> 重置时间: %s", emptyAsDash(window.Reset)),
 	}, "\n")
 }
 
@@ -342,16 +346,31 @@ func isWeComRobotWebhook(webhookURL string) bool {
 }
 
 func quotaWarningResetLabel(window map[string]any) string {
-	if reset := firstStringish(window, "reset_at", "resetAt"); reset != "" {
+	if reset, ok := quotaWarningResetAtLabel(firstValue(window, "reset_at", "resetAt")); ok {
 		return reset
 	}
 	if resetAfter, ok := numericValue(firstValue(window, "reset_after_seconds", "resetAfterSeconds")); ok {
 		if resetAfter <= 0 {
-			return "即将重置"
+			return time.Now().Local().Format(quotaWarningResetTimeLayout)
 		}
-		return fmt.Sprintf("%.0f分钟后", resetAfter/60)
+		return time.Now().Add(time.Duration(resetAfter * float64(time.Second))).Local().Format(quotaWarningResetTimeLayout)
 	}
 	return "-"
+}
+
+func quotaWarningResetAtLabel(value any) (string, bool) {
+	if value == nil {
+		return "", false
+	}
+	seconds, ok := numericValue(value)
+	if !ok {
+		reset := strings.TrimSpace(fmt.Sprint(value))
+		return reset, reset != ""
+	}
+	if seconds >= quotaWarningUnixMilliseconds {
+		seconds = seconds / 1000
+	}
+	return time.Unix(int64(seconds), 0).Local().Format(quotaWarningResetTimeLayout), true
 }
 
 func quotaWarningWindowPeriod(window map[string]any) string {

@@ -278,7 +278,10 @@ func TestPutConfigYAMLDispatchesQuotaWarningsOnThresholdChange(t *testing.T) {
 	}
 	select {
 	case content := <-sent:
-		if !strings.Contains(content, "凭证: codex-1") || !strings.Contains(content, "5小时剩余额度: 15%") {
+		expectedReset := time.Unix(1777777777, 0).Local().Format("2006-01-02 15:04")
+		if !strings.Contains(content, "凭证: codex-1") ||
+			!strings.Contains(content, "5小时限额: 15%") ||
+			!strings.Contains(content, "重置时间: "+expectedReset) {
 			t.Fatalf("unexpected quota warning content: %s", content)
 		}
 	case <-time.After(time.Second):

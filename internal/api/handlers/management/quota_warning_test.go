@@ -57,18 +57,22 @@ func TestMaybeSendCodexQuotaWarningSendsOnceBelowThreshold(t *testing.T) {
 	if strings.Contains(sent[0], "窗口:") {
 		t.Fatalf("warning content must not include standalone window line: %s", sent[0])
 	}
-	if !strings.Contains(sent[0], "5小时剩余额度: 15%") {
+	if strings.Contains(sent[0], "剩余额度") {
+		t.Fatalf("warning content must not use legacy remaining-quota label: %s", sent[0])
+	}
+	if !strings.Contains(sent[0], "5小时限额: 15%") {
 		t.Fatalf("warning content missing remaining quota: %s", sent[0])
 	}
 	if strings.Contains(sent[0], "阈值:") {
 		t.Fatalf("warning content must not include threshold line: %s", sent[0])
 	}
-	if !strings.Contains(sent[0], "重置: 1777777777") {
-		t.Fatalf("warning content should prefer reset_at: %s", sent[0])
+	expectedReset := time.Unix(1777777777, 0).Local().Format("2006-01-02 15:04")
+	if !strings.Contains(sent[0], "重置时间: "+expectedReset) {
+		t.Fatalf("warning content should format reset_at timestamp: %s", sent[0])
 	}
 }
 
-func TestMaybeSendCodexQuotaWarningFormatsResetAfterSecondsAsMinutes(t *testing.T) {
+func TestMaybeSendCodexQuotaWarningFormatsResetAfterSecondsAsResetTime(t *testing.T) {
 	h := &Handler{
 		cfg: &config.Config{
 			QuotaWarning: config.QuotaWarning{
@@ -95,11 +99,17 @@ func TestMaybeSendCodexQuotaWarningFormatsResetAfterSecondsAsMinutes(t *testing.
 		},
 	})
 
-	if !strings.Contains(sent, "5小时剩余额度: 15%") {
+	if !strings.Contains(sent, "5小时限额: 15%") {
 		t.Fatalf("warning content missing five-hour remaining quota: %s", sent)
 	}
-	if !strings.Contains(sent, "重置: 61分钟后") {
-		t.Fatalf("warning content should format reset_after_seconds as minutes: %s", sent)
+	resetText := quotaWarningLineValue(sent, "> 重置时间: ")
+	resetTime, err := time.ParseInLocation("2006-01-02 15:04", resetText, time.Local)
+	if err != nil {
+		t.Fatalf("warning content should format reset_after_seconds as reset time: %s", sent)
+	}
+	want := time.Now().Add(3670 * time.Second)
+	if resetTime.Before(want.Add(-time.Minute)) || resetTime.After(want.Add(time.Minute)) {
+		t.Fatalf("reset time = %s, want around %s in content %s", resetText, want.Format("2006-01-02 15:04"), sent)
 	}
 }
 
@@ -301,4 +311,13 @@ func waitForQuotaWarningSent(t *testing.T, mu *sync.Mutex, sent *[]string, want 
 	got := len(*sent)
 	mu.Unlock()
 	t.Fatalf("sent warnings = %d, want %d", got, want)
+}
+
+func quotaWarningLineValue(content string, prefix string) string {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
 }
