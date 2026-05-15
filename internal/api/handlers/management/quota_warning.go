@@ -259,7 +259,8 @@ func buildQuotaWarningContent(auth *coreauth.Auth, window quotaWarningWindow, th
 	return strings.Join([]string{
 		"### Token Pulse 额度预警",
 		fmt.Sprintf("> 凭证名称: %s", quotaWarningAuthLabel(auth)),
-		fmt.Sprintf("> %s剩余: %s", window.Period, formatQuotaWarningPercent(window.Remaining)),
+		fmt.Sprintf("> %s限额: %s", window.Period, formatQuotaWarningPercent(window.Remaining)),
+		fmt.Sprintf("> 重置时间: %s", emptyAsDash(window.Reset)),
 	}, "\n")
 }
 

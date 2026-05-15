@@ -284,11 +284,10 @@ func TestPutConfigYAMLDispatchesQuotaWarningsOnThresholdChange(t *testing.T) {
 		if strings.Contains(content, "codex-1@example.com") {
 			t.Fatalf("quota warning content must not use email as credential name: %s", content)
 		}
-		if strings.Contains(content, "重置时间") {
-			t.Fatalf("quota warning content must not include reset time: %s", content)
-		}
+		expectedReset := time.Unix(1777777777, 0).Local().Format("2006-01-02 15:04")
 		if !strings.Contains(content, "凭证名称: codex-note") ||
-			!strings.Contains(content, "5小时剩余: 15%") {
+			!strings.Contains(content, "5小时限额: 15%") ||
+			!strings.Contains(content, "重置时间: "+expectedReset) {
 			t.Fatalf("unexpected quota warning content: %s", content)
 		}
 	case <-time.After(time.Second):

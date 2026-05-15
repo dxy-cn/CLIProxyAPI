@@ -73,17 +73,18 @@ func TestMaybeSendCodexQuotaWarningSendsOnceBelowThreshold(t *testing.T) {
 	if strings.Contains(sent[0], "剩余额度") {
 		t.Fatalf("warning content must not use legacy remaining-quota label: %s", sent[0])
 	}
-	if strings.Contains(sent[0], "5小时限额") {
-		t.Fatalf("warning content must not use legacy five-hour limit label: %s", sent[0])
+	if strings.Contains(sent[0], "5小时剩余") {
+		t.Fatalf("warning content must not use five-hour remaining label: %s", sent[0])
 	}
-	if !strings.Contains(sent[0], "5小时剩余: 15%") {
+	if !strings.Contains(sent[0], "5小时限额: 15%") {
 		t.Fatalf("warning content missing remaining quota: %s", sent[0])
 	}
 	if strings.Contains(sent[0], "阈值:") {
 		t.Fatalf("warning content must not include threshold line: %s", sent[0])
 	}
-	if strings.Contains(sent[0], "重置时间") {
-		t.Fatalf("warning content must not include reset time line: %s", sent[0])
+	expectedReset := time.Unix(1777777777, 0).Local().Format("2006-01-02 15:04")
+	if !strings.Contains(sent[0], "重置时间: "+expectedReset) {
+		t.Fatalf("warning content should include reset time: %s", sent[0])
 	}
 }
 
@@ -143,7 +144,7 @@ func TestMaybeSendCodexQuotaWarningOnlyChecksFiveHourLimit(t *testing.T) {
 	if strings.Contains(sent[0], "周限额") {
 		t.Fatalf("warning content must not report weekly limit: %s", sent[0])
 	}
-	if !strings.Contains(sent[0], "5小时剩余: 15%") {
+	if !strings.Contains(sent[0], "5小时限额: 15%") {
 		t.Fatalf("warning content must report five-hour limit: %s", sent[0])
 	}
 	if strings.Contains(sent[0], "panwenwen092@gmail.com") {
@@ -152,12 +153,9 @@ func TestMaybeSendCodexQuotaWarningOnlyChecksFiveHourLimit(t *testing.T) {
 	if !strings.Contains(sent[0], "凭证名称: ✈️J ToC3 / 2026-05-13") {
 		t.Fatalf("warning content must include credential note: %s", sent[0])
 	}
-	if strings.Contains(sent[0], "重置时间") {
-		t.Fatalf("warning content must not include reset time line: %s", sent[0])
-	}
 }
 
-func TestMaybeSendCodexQuotaWarningOmitsResetTime(t *testing.T) {
+func TestMaybeSendCodexQuotaWarningFormatsResetAfterSecondsAsResetTime(t *testing.T) {
 	h := &Handler{
 		cfg: &config.Config{
 			QuotaWarning: config.QuotaWarning{
@@ -174,7 +172,10 @@ func TestMaybeSendCodexQuotaWarningOmitsResetTime(t *testing.T) {
 		return nil
 	}
 
-	h.maybeSendCodexQuotaWarning(context.Background(), &coreauth.Auth{Provider: "codex"}, gin.H{
+	h.maybeSendCodexQuotaWarning(context.Background(), &coreauth.Auth{
+		Provider: "codex",
+		Metadata: map[string]any{"email": "fallback@example.com"},
+	}, gin.H{
 		"rate_limit": gin.H{
 			"primary_window": gin.H{
 				"used_percent":         85,
@@ -184,11 +185,20 @@ func TestMaybeSendCodexQuotaWarningOmitsResetTime(t *testing.T) {
 		},
 	})
 
-	if !strings.Contains(sent, "5小时剩余: 15%") {
+	if !strings.Contains(sent, "5小时限额: 15%") {
 		t.Fatalf("warning content missing five-hour remaining quota: %s", sent)
 	}
-	if strings.Contains(sent, "重置时间") {
-		t.Fatalf("warning content must not include reset time: %s", sent)
+	if !strings.Contains(sent, "凭证名称: fallback@example.com") {
+		t.Fatalf("warning content should fall back to email when note is absent: %s", sent)
+	}
+	resetText := quotaWarningLineValue(sent, "> 重置时间: ")
+	resetTime, err := time.ParseInLocation("2006-01-02 15:04", resetText, time.Local)
+	if err != nil {
+		t.Fatalf("warning content should format reset_after_seconds as reset time: %s", sent)
+	}
+	want := time.Now().Add(3670 * time.Second)
+	if resetTime.Before(want.Add(-time.Minute)) || resetTime.After(want.Add(time.Minute)) {
+		t.Fatalf("reset time = %s, want around %s in content %s", resetText, want.Format("2006-01-02 15:04"), sent)
 	}
 }
 
@@ -396,4 +406,13 @@ func waitForQuotaWarningSent(t *testing.T, mu *sync.Mutex, sent *[]string, want 
 	got := len(*sent)
 	mu.Unlock()
 	t.Fatalf("sent warnings = %d, want %d", got, want)
+}
+
+func quotaWarningLineValue(content string, prefix string) string {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
 }
