@@ -390,6 +390,132 @@ func TestSetConfigDoesNotFetchQuotaWhenWarningDisabled(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 }
 
+func TestQuotaWarningScannerIntervalIsThirtyMinutes(t *testing.T) {
+	if quotaWarningScanInterval != 30*time.Minute {
+		t.Fatalf("quotaWarningScanInterval = %s, want %s", quotaWarningScanInterval, 30*time.Minute)
+	}
+}
+
+func TestQuotaWarningScannerRunsOnTick(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-auth",
+		Index:    "codex-1",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"note": "scan-note",
+		},
+	}); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := &Handler{
+		cfg: &config.Config{
+			QuotaWarning: config.QuotaWarning{
+				WebhookURL: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test",
+				Threshold:  20,
+			},
+		},
+		authManager:      manager,
+		quotaWarningSent: make(map[string]struct{}),
+	}
+
+	fetched := make(chan struct{}, 1)
+	h.quotaWarningQuotaFetcher = func(_ context.Context, auth *coreauth.Auth) (int, gin.H, error) {
+		if auth.ID != "codex-auth" {
+			t.Fatalf("unexpected auth: %s", auth.ID)
+		}
+		fetched <- struct{}{}
+		return 200, gin.H{"rate_limit": gin.H{"primary_window": gin.H{
+			"used_percent":         85,
+			"limit_window_seconds": 18000,
+			"reset_at":             1777777777,
+		}}}, nil
+	}
+
+	sent := make(chan string, 1)
+	h.quotaWarningSender = func(_ context.Context, _ string, content string) error {
+		sent <- content
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.startQuotaWarningScanner(ctx, 10*time.Millisecond)
+
+	select {
+	case <-fetched:
+	case <-time.After(time.Second):
+		t.Fatal("expected scanner to fetch quota on tick")
+	}
+
+	select {
+	case content := <-sent:
+		if !strings.Contains(content, "凭证名称: scan-note") {
+			t.Fatalf("unexpected warning content: %s", content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected scanner to send quota warning")
+	}
+}
+
+func TestQuotaWarningScannerSkipsOverlappingRuns(t *testing.T) {
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-auth",
+		Index:    "codex-1",
+		Provider: "codex",
+	}); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := &Handler{
+		cfg: &config.Config{
+			QuotaWarning: config.QuotaWarning{
+				WebhookURL: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test",
+				Threshold:  20,
+			},
+		},
+		authManager:      manager,
+		quotaWarningSent: make(map[string]struct{}),
+	}
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var fetchCount int
+	var fetchMu sync.Mutex
+	h.quotaWarningQuotaFetcher = func(_ context.Context, _ *coreauth.Auth) (int, gin.H, error) {
+		fetchMu.Lock()
+		fetchCount++
+		fetchMu.Unlock()
+		started <- struct{}{}
+		<-release
+		return 200, gin.H{"rate_limit": gin.H{"primary_window": gin.H{
+			"used_percent":         85,
+			"limit_window_seconds": 18000,
+			"reset_at":             1777777777,
+		}}}, nil
+	}
+	h.quotaWarningSender = func(_ context.Context, _ string, _ string) error { return nil }
+
+	go h.runQuotaWarningScan(context.Background())
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("expected first scan to start")
+	}
+
+	h.runQuotaWarningScan(context.Background())
+	fetchMu.Lock()
+	got := fetchCount
+	fetchMu.Unlock()
+	if got != 1 {
+		t.Fatalf("fetch count during overlapping scan = %d, want 1", got)
+	}
+
+	close(release)
+}
+
 func waitForQuotaWarningSent(t *testing.T, mu *sync.Mutex, sent *[]string, want int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)

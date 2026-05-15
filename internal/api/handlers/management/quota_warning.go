@@ -23,6 +23,7 @@ const (
 	quotaWarningResetTimeLayout  = "2006-01-02 15:04"
 	quotaWarningUnixMilliseconds = 1_000_000_000_000
 	quotaWarningFiveHourSeconds  = 18000
+	quotaWarningScanInterval     = 30 * time.Minute
 )
 
 type quotaWarningSender func(ctx context.Context, webhookURL string, content string) error
@@ -142,6 +143,52 @@ func (h *Handler) dispatchQuotaWarningsForCurrentCodexAuths(ctx context.Context)
 		}
 		h.maybeSendCodexQuotaWarning(ctx, auth, payload)
 	}
+}
+
+func (h *Handler) startQuotaWarningScanner(ctx context.Context, interval time.Duration) {
+	if h == nil || interval <= 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				h.runQuotaWarningScan(ctx)
+			}
+		}
+	}()
+}
+
+func (h *Handler) runQuotaWarningScan(ctx context.Context) {
+	if h == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	h.quotaWarningScanMu.Lock()
+	if h.quotaWarningScanRunning {
+		h.quotaWarningScanMu.Unlock()
+		return
+	}
+	h.quotaWarningScanRunning = true
+	h.quotaWarningScanMu.Unlock()
+
+	defer func() {
+		h.quotaWarningScanMu.Lock()
+		h.quotaWarningScanRunning = false
+		h.quotaWarningScanMu.Unlock()
+	}()
+
+	h.dispatchQuotaWarningsForCurrentCodexAuths(ctx)
 }
 
 func quotaWarningConfigEnabled(cfg *config.Config) bool {

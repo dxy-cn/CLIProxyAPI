@@ -105,6 +105,7 @@ quota-exceeded:
   antigravity-credits: true # Whether to retry Antigravity quota_exhausted 429s once with enabledCreditTypes=["GOOGLE_ONE_AI"]
 
 # Credential quota warning. threshold is remaining quota percentage.
+# Codex credentials are scanned every 30 minutes when this is enabled.
 quota-warning:
   webhook-url: "" # WeCom bot webhook URL
   threshold: 20 # Send warning when remaining quota is below this percentage

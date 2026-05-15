@@ -54,6 +54,8 @@ type Handler struct {
 	quotaWarningSender       quotaWarningSender
 	quotaWarningQuotaFetcher quotaWarningQuotaFetcher
 	quotaWarningVersion      int64
+	quotaWarningScanMu       sync.Mutex
+	quotaWarningScanRunning  bool
 }
 
 // NewHandler creates a new management handler instance.
@@ -74,6 +76,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		quotaWarningSender:  sendWeComQuotaWarning,
 	}
 	h.startAttemptCleanup()
+	h.startQuotaWarningScanner(context.Background(), quotaWarningScanInterval)
 	return h
 }
 
