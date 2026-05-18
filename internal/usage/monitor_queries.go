@@ -1400,6 +1400,11 @@ func buildSQLiteMonitorWhere(filter MonitorQueryFilter, includeStatus bool) (str
 			args = append(args, apiKeyLikeArg)
 		}
 	}
+	if filter.APIContains == "" && len(filter.APIMatchedKeys) > 0 {
+		inClause, inArgs := toInClause(filter.APIMatchedKeys)
+		clauses = append(clauses, "api_key IN ("+inClause+")")
+		args = append(args, inArgs...)
+	}
 	if filter.AuthIndex != "" {
 		if filter.AuthIndex == "unknown" {
 			clauses = append(clauses, "(auth_index IS NULL OR auth_index = '')")

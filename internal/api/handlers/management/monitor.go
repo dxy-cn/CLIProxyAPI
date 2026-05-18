@@ -736,6 +736,18 @@ func (f monitorRecordFilter) matches(record monitorRecord) bool {
 			}
 		}
 	}
+	if f.APIContains == "" && len(f.APIMatchedKeys) > 0 {
+		matched := false
+		for _, apiKey := range f.APIMatchedKeys {
+			if record.APIKey == apiKey {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
 	if f.AuthIndex != "" {
 		recordAuthIndex := strings.TrimSpace(record.AuthIndex)
 		if recordAuthIndex == "" {
@@ -1590,7 +1602,11 @@ func (h *Handler) GetPublicMonitorKeyTokenStats(c *gin.Context) {
 		start, end = applyDefaultTimeRange(start, end, 1)
 	}
 
-	filter := monitorRecordFilter{AuthIndex: authIndex, Start: start, End: end}
+	filter := monitorRecordFilter{
+		APIMatchedKeys: h.monitorAPIKeysForBoundAuthIndex(authIndex, currentAPIKey),
+		Start:          start,
+		End:            end,
+	}
 	responseCtx := h.monitorKeyTokenResponseContext(c)
 	if responseCtx.PanelTitle == "" {
 		if title := quotaWarningAuthLabel(auth); title != "-" {

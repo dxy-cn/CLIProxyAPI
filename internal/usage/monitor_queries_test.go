@@ -183,6 +183,36 @@ func TestSQLiteUsageStoreQueryMonitorKeyTokenStats_UsesEffectiveTotalTokens(t *t
 	}
 }
 
+func TestSQLiteUsageStoreQueryMonitorKeyTokenStats_FiltersMatchedKeysWithoutSearchText(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteUsageStore(t)
+	defer store.Close()
+
+	base := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
+	insertUsageRecords(t, store,
+		UsageRecord{APIKey: "api-a", Source: "source-a", RequestedAt: base.Add(-2 * time.Hour), TotalTokens: 10},
+		UsageRecord{APIKey: "api-b", Source: "source-b", RequestedAt: base.Add(-1 * time.Hour), TotalTokens: 20},
+		UsageRecord{APIKey: "api-c", Source: "source-c", RequestedAt: base.Add(-30 * time.Minute), TotalTokens: 30},
+	)
+
+	rows, err := store.QueryMonitorKeyTokenStats(ctx, MonitorQueryFilter{
+		APIMatchedKeys: []string{"api-a", "api-b"},
+	})
+	if err != nil {
+		t.Fatalf("QueryMonitorKeyTokenStats failed: %v", err)
+	}
+
+	if len(rows) != 2 {
+		t.Fatalf("unexpected row count: got %d want 2: %+v", len(rows), rows)
+	}
+	if rows[0].APIKey != "api-a" || rows[0].TotalTokens != 10 {
+		t.Fatalf("unexpected first row: %+v", rows[0])
+	}
+	if rows[1].APIKey != "api-b" || rows[1].TotalTokens != 20 {
+		t.Fatalf("unexpected second row: %+v", rows[1])
+	}
+}
+
 func TestSQLiteUsageStoreQueryMonitorChannelStats(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteUsageStore(t)

@@ -161,7 +161,8 @@ api-keys:
 		SDKConfig: proxyconfig.SDKConfig{
 			APIKeys: proxyconfig.FlexAPIKeyList{clientKey, "sk-other"},
 			APIKeyAuthIdentityBindings: map[string]string{
-				clientKey: "codex:chatgpt:acct-bound",
+				clientKey:  "codex:chatgpt:acct-bound",
+				"sk-other": "codex:chatgpt:acct-bound",
 			},
 		},
 		Routing: proxyconfig.RoutingConfig{Strategy: "account-bind"},
@@ -233,6 +234,84 @@ api-keys:
 	}
 	if item.TotalTokens != 30 {
 		t.Fatalf("current key tokens = %d, want 30", item.TotalTokens)
+	}
+}
+
+func TestPublicMonitorKeyTokenStatsUsesBoundKeysWhenAuthIndexMissing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	const clientKey = "sk-current"
+	const otherKey = "sk-other"
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	registered, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-bound",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"id_token":     testMonitorCodexJWT(t, "acct-bound", "pro"),
+			"access_token": "access-token",
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	base := time.Date(2026, 5, 18, 12, 0, 0, 0, time.Local)
+	h := newMonitorTestHandler(
+		testUsageRecordWithAuth(base.Add(-2*time.Hour), clientKey, "", false),
+		testUsageRecordWithAuth(base.Add(-1*time.Hour), otherKey, "", false),
+		testUsageRecordWithAuth(base.Add(-1*time.Hour), "sk-unbound", "", false),
+	)
+	h.cfg = &proxyconfig.Config{
+		SDKConfig: proxyconfig.SDKConfig{
+			APIKeys: proxyconfig.FlexAPIKeyList{clientKey, otherKey, "sk-unbound"},
+			APIKeyAuthIdentityBindings: map[string]string{
+				clientKey: "codex:chatgpt:acct-bound",
+				otherKey:  "codex:chatgpt:acct-bound",
+			},
+		},
+		Routing: proxyconfig.RoutingConfig{Strategy: "account-bind"},
+	}
+	h.authManager = manager
+
+	if registered.Index == "" {
+		t.Fatal("registered auth index is empty")
+	}
+
+	router := gin.New()
+	router.GET("/public-monitor/key-token-stats", h.PublicMonitorAPIKeyMiddleware(), h.GetPublicMonitorKeyTokenStats)
+
+	req := httptest.NewRequest(http.MethodGet, "/public-monitor/key-token-stats?api_key="+clientKey, nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var resp struct {
+		TotalTokens int64 `json:"total_tokens"`
+		Items       []struct {
+			APIKey      string `json:"api_key"`
+			TotalTokens int64  `json:"total_tokens"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	if resp.TotalTokens != 60 {
+		t.Fatalf("total_tokens = %d, want only bound key tokens", resp.TotalTokens)
+	}
+	got := map[string]int64{}
+	for _, item := range resp.Items {
+		got[item.APIKey] = item.TotalTokens
+	}
+	if got[clientKey] != 30 || got[otherKey] != 30 {
+		t.Fatalf("bound key totals not included correctly: %+v", got)
+	}
+	if _, ok := got["sk-unbound"]; ok {
+		t.Fatalf("unbound key leaked into public key stats: %+v", got)
 	}
 }
 

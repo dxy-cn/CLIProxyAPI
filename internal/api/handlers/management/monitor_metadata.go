@@ -310,6 +310,61 @@ func (h *Handler) boundAuthForMonitorKey(clientKey string) *coreauth.Auth {
 	return nil
 }
 
+func (h *Handler) monitorAPIKeysForBoundAuthIndex(authIndex, currentAPIKey string) []string {
+	authIndex = strings.TrimSpace(authIndex)
+	currentAPIKey = strings.TrimSpace(currentAPIKey)
+	if authIndex == "" || h == nil || h.cfg == nil || h.authManager == nil {
+		if currentAPIKey == "" {
+			return nil
+		}
+		return []string{currentAPIKey}
+	}
+
+	auths := h.authManager.List()
+	bindingMap, defaultAuthIndex := coreauth.ResolveBindingIndexes(
+		auths,
+		h.cfg.APIKeyAuthBindings,
+		h.cfg.APIKeyAuthIdentityBindings,
+		h.cfg.Routing.DefaultModelAccount,
+	)
+
+	candidates := make(map[string]struct{})
+	if currentAPIKey != "" {
+		candidates[currentAPIKey] = struct{}{}
+	}
+	for apiKey := range h.monitorAPIKeyConfigMap() {
+		if trimmed := strings.TrimSpace(apiKey); trimmed != "" {
+			candidates[trimmed] = struct{}{}
+		}
+	}
+	for _, apiKey := range h.cfg.APIKeys {
+		if trimmed := strings.TrimSpace(apiKey); trimmed != "" {
+			candidates[trimmed] = struct{}{}
+		}
+	}
+	for apiKey := range bindingMap {
+		if trimmed := strings.TrimSpace(apiKey); trimmed != "" {
+			candidates[trimmed] = struct{}{}
+		}
+	}
+
+	keys := make([]string, 0, len(candidates))
+	for apiKey := range candidates {
+		resolvedIndex := strings.TrimSpace(bindingMap[apiKey])
+		if resolvedIndex == "" {
+			resolvedIndex = strings.TrimSpace(defaultAuthIndex)
+		}
+		if resolvedIndex == authIndex {
+			keys = append(keys, apiKey)
+		}
+	}
+	if len(keys) == 0 && currentAPIKey != "" {
+		keys = append(keys, currentAPIKey)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func lookupMonitorAPIKeysByName(query string, nameMap map[string]string) []string {
 	query = strings.ToLower(strings.TrimSpace(query))
 	if query == "" || len(nameMap) == 0 {
