@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"gopkg.in/yaml.v3"
 )
 
@@ -196,6 +197,34 @@ func (h *Handler) monitorAPIKeyNameMap() map[string]string {
 	return parseMonitorAPIKeyNameMap(data)
 }
 
+func (h *Handler) monitorAuthNoteMap() map[string]string {
+	if h == nil || h.authManager == nil {
+		return nil
+	}
+	auths := h.authManager.List()
+	if len(auths) == 0 {
+		return nil
+	}
+	notes := make(map[string]string, len(auths))
+	for _, auth := range auths {
+		if auth == nil {
+			continue
+		}
+		auth.EnsureIndex()
+		index := strings.TrimSpace(auth.Index)
+		if index == "" {
+			continue
+		}
+		if label := strings.TrimSpace(quotaWarningAuthLabel(auth)); label != "" && label != "-" {
+			notes[index] = label
+		}
+	}
+	if len(notes) == 0 {
+		return nil
+	}
+	return notes
+}
+
 func (h *Handler) PublicMonitorAPIKeyMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		apiKey := strings.TrimSpace(firstQuery(c, "api_key", "api", "api-key"))
@@ -214,6 +243,71 @@ func (h *Handler) PublicMonitorAPIKeyMiddleware() gin.HandlerFunc {
 		c.Set(publicMonitorAPIKeyContextKey, apiKey)
 		c.Next()
 	}
+}
+
+func publicMonitorCurrentAPIKey(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	value, exists := c.Get(publicMonitorAPIKeyContextKey)
+	if !exists {
+		return ""
+	}
+	apiKey, _ := value.(string)
+	return strings.TrimSpace(apiKey)
+}
+
+func monitorAPIKeyDisplayName(apiKey string, nameMap map[string]string) string {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return ""
+	}
+	if name := strings.TrimSpace(nameMap[apiKey]); name != "" {
+		return name
+	}
+	return apiKey
+}
+
+func (h *Handler) boundAuthForMonitorKey(clientKey string) *coreauth.Auth {
+	clientKey = strings.TrimSpace(clientKey)
+	if clientKey == "" || h == nil || h.cfg == nil || h.authManager == nil {
+		return nil
+	}
+
+	strategy, _ := coreauth.NormalizeRoutingStrategy(h.cfg.Routing.Strategy)
+	if strategy != coreauth.RoutingStrategyAccountBind {
+		return nil
+	}
+
+	auths := h.authManager.List()
+	bindingMap, defaultAuthIndex := coreauth.ResolveBindingIndexes(
+		auths,
+		h.cfg.APIKeyAuthBindings,
+		h.cfg.APIKeyAuthIdentityBindings,
+		h.cfg.Routing.DefaultModelAccount,
+	)
+
+	authIndex := ""
+	if bindingMap != nil {
+		authIndex = strings.TrimSpace(bindingMap[clientKey])
+	}
+	if authIndex == "" {
+		authIndex = strings.TrimSpace(defaultAuthIndex)
+	}
+	if authIndex == "" {
+		return nil
+	}
+
+	for _, auth := range auths {
+		if auth == nil {
+			continue
+		}
+		auth.EnsureIndex()
+		if auth.Index == authIndex {
+			return auth
+		}
+	}
+	return nil
 }
 
 func lookupMonitorAPIKeysByName(query string, nameMap map[string]string) []string {

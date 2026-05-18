@@ -461,6 +461,7 @@ func (s *Server) registerPublicMonitorRoutes() {
 		monitor.GET("/quota", s.mgmt.GetPublicMonitorCodexQuota)
 		monitor.GET("/daily-trend", s.mgmt.GetMonitorDailyTrend)
 		monitor.GET("/hourly-tokens", s.mgmt.GetMonitorHourlyTokens)
+		monitor.GET("/key-token-stats", s.mgmt.GetPublicMonitorKeyTokenStats)
 	}
 }
 

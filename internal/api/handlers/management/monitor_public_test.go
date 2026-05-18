@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -117,6 +118,121 @@ func TestPublicMonitorAPIKeyMiddlewareForcesValidatedKeyFilter(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestPublicMonitorKeyTokenStatsUsesCurrentKeyMetadata(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	const clientKey = "sk-current"
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	configYaml := []byte(`
+api-keys:
+  - name: Current Key Name
+    api-key: sk-current
+    auth_identity: codex:chatgpt:acct-bound
+  - name: Other Key Name
+    api-key: sk-other
+`)
+	if err := os.WriteFile(configPath, configYaml, 0o600); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	registered, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-bound",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"id_token":     testMonitorCodexJWT(t, "acct-bound", "pro"),
+			"access_token": "access-token",
+			"note":         "Bound Credential Note",
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	base := time.Date(2026, 5, 18, 12, 0, 0, 0, time.Local)
+	h := newMonitorTestHandler(
+		testUsageRecordWithAuth(base.Add(-2*time.Hour), clientKey, registered.Index, false),
+		testUsageRecordWithAuth(base.Add(-1*time.Hour), "sk-other", registered.Index, false),
+	)
+	h.cfg = &proxyconfig.Config{
+		SDKConfig: proxyconfig.SDKConfig{
+			APIKeys: proxyconfig.FlexAPIKeyList{clientKey, "sk-other"},
+			APIKeyAuthIdentityBindings: map[string]string{
+				clientKey: "codex:chatgpt:acct-bound",
+			},
+		},
+		Routing: proxyconfig.RoutingConfig{Strategy: "account-bind"},
+	}
+	h.configFilePath = configPath
+	h.authManager = manager
+
+	router := gin.New()
+	router.GET("/public-monitor/key-token-stats", h.PublicMonitorAPIKeyMiddleware(), h.GetPublicMonitorKeyTokenStats)
+
+	req := httptest.NewRequest(http.MethodGet, "/public-monitor/key-token-stats?api_key="+clientKey, nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var resp struct {
+		PanelTitle string `json:"panel_title"`
+		CurrentKey struct {
+			APIKey      string `json:"api_key"`
+			APIKeyName  string `json:"api_key_name"`
+			DisplayName string `json:"display_name"`
+		} `json:"current_key"`
+		Items []struct {
+			APIKey       string `json:"api_key"`
+			APIKeyName   string `json:"api_key_name"`
+			DisplayName  string `json:"display_name"`
+			IsCurrentKey bool   `json:"is_current_key"`
+			AuthIndex    string `json:"auth_index"`
+			AuthNote     string `json:"auth_note"`
+			TotalTokens  int64  `json:"total_tokens"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	if resp.PanelTitle != "Bound Credential Note" {
+		t.Fatalf("panel_title = %q, want bound credential note", resp.PanelTitle)
+	}
+	if resp.CurrentKey.APIKey != clientKey || resp.CurrentKey.APIKeyName != "Current Key Name" || resp.CurrentKey.DisplayName != "Current Key Name" {
+		t.Fatalf("unexpected current_key: %+v", resp.CurrentKey)
+	}
+	if len(resp.Items) != 2 {
+		t.Fatalf("public response must contain keys bound to current credential, got %+v", resp.Items)
+	}
+	var item struct {
+		APIKey       string `json:"api_key"`
+		APIKeyName   string `json:"api_key_name"`
+		DisplayName  string `json:"display_name"`
+		IsCurrentKey bool   `json:"is_current_key"`
+		AuthIndex    string `json:"auth_index"`
+		AuthNote     string `json:"auth_note"`
+		TotalTokens  int64  `json:"total_tokens"`
+	}
+	for _, candidate := range resp.Items {
+		if candidate.APIKey == clientKey {
+			item = candidate
+			break
+		}
+	}
+	if item.APIKey != clientKey || item.APIKeyName != "Current Key Name" || item.DisplayName != "Current Key Name" || !item.IsCurrentKey {
+		t.Fatalf("unexpected current key item metadata: %+v", item)
+	}
+	if item.AuthIndex != registered.Index || item.AuthNote != "Bound Credential Note" {
+		t.Fatalf("unexpected auth metadata: %+v", item)
+	}
+	if item.TotalTokens != 30 {
+		t.Fatalf("current key tokens = %d, want 30", item.TotalTokens)
 	}
 }
 

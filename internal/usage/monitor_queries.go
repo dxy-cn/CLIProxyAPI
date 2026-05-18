@@ -24,6 +24,7 @@ type MonitorQueryFilter struct {
 	APIKey         string
 	APIContains    string
 	APIMatchedKeys []string
+	AuthIndex      string
 	Model          string
 	Source         string
 	Status         string
@@ -1399,6 +1400,14 @@ func buildSQLiteMonitorWhere(filter MonitorQueryFilter, includeStatus bool) (str
 			args = append(args, apiKeyLikeArg)
 		}
 	}
+	if filter.AuthIndex != "" {
+		if filter.AuthIndex == "unknown" {
+			clauses = append(clauses, "(auth_index IS NULL OR auth_index = '')")
+		} else {
+			clauses = append(clauses, "auth_index = ?")
+			args = append(args, filter.AuthIndex)
+		}
+	}
 	if filter.Model != "" {
 		clauses = append(clauses, "model = ?")
 		args = append(args, filter.Model)
@@ -1457,6 +1466,7 @@ func normalizeMonitorFilter(filter MonitorQueryFilter) MonitorQueryFilter {
 	} else {
 		filter.APIMatchedKeys = nil
 	}
+	filter.AuthIndex = strings.TrimSpace(filter.AuthIndex)
 	filter.Model = strings.TrimSpace(filter.Model)
 
 	source := strings.TrimSpace(filter.Source)

@@ -42,6 +42,7 @@ type monitorRecordFilter struct {
 	APIKey         string
 	APIContains    string
 	APIMatchedKeys []string
+	AuthIndex      string
 	Model          string
 	Source         string
 	Status         string
@@ -735,6 +736,15 @@ func (f monitorRecordFilter) matches(record monitorRecord) bool {
 			}
 		}
 	}
+	if f.AuthIndex != "" {
+		recordAuthIndex := strings.TrimSpace(record.AuthIndex)
+		if recordAuthIndex == "" {
+			recordAuthIndex = "unknown"
+		}
+		if recordAuthIndex != f.AuthIndex {
+			return false
+		}
+	}
 	if f.Model != "" && record.Model != f.Model {
 		return false
 	}
@@ -802,6 +812,7 @@ func toUsageMonitorFilter(filter monitorRecordFilter) usage.MonitorQueryFilter {
 		APIKey:         strings.TrimSpace(filter.APIKey),
 		APIContains:    strings.TrimSpace(filter.APIContains),
 		APIMatchedKeys: append([]string(nil), filter.APIMatchedKeys...),
+		AuthIndex:      strings.TrimSpace(filter.AuthIndex),
 		Model:          strings.TrimSpace(filter.Model),
 		Source:         strings.TrimSpace(filter.Source),
 		Status:         strings.TrimSpace(filter.Status),
@@ -1178,7 +1189,11 @@ type monitorHourlyPerformanceResponse struct {
 
 type monitorKeyTokenStatsItem struct {
 	APIKey            string           `json:"api_key"`
+	APIKeyName        string           `json:"api_key_name,omitempty"`
+	DisplayName       string           `json:"display_name"`
+	IsCurrentKey      bool             `json:"is_current_key"`
 	AuthIndex         string           `json:"auth_index"`
+	AuthNote          string           `json:"auth_note,omitempty"`
 	Requests          int64            `json:"requests"`
 	TotalTokens       int64            `json:"total_tokens"`
 	AccountTokens     int64            `json:"account_tokens"`
@@ -1194,6 +1209,15 @@ type monitorKeyTokenAcc struct {
 	TotalTokens  int64
 	AuthTokens   map[string]int64
 	SourceTokens map[string]int64
+}
+
+type monitorKeyTokenResponseContext struct {
+	APIKeyNames           map[string]string
+	AuthNotes             map[string]string
+	CurrentAPIKey         string
+	CurrentAPIKeyName     string
+	CurrentKeyDisplayName string
+	PanelTitle            string
 }
 
 // GetMonitorKpi returns aggregated KPI metrics from usage records.
@@ -1500,37 +1524,12 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 	}
 
 	filter := h.buildMonitorRecordFilter(c, start, end, "")
+	responseCtx := h.monitorKeyTokenResponseContext(c)
 
 	accountTotals := make(map[string]int64)
 	keyTotals := make(map[string]*monitorKeyTokenAcc)
 	addRow := func(apiKey, source, authIndex string, requests, totalTokens int64) {
-		apiKey = strings.TrimSpace(apiKey)
-		if apiKey == "" {
-			apiKey = "unknown"
-		}
-		source = strings.TrimSpace(source)
-		if source == "" {
-			source = "unknown"
-		}
-		authIndex = strings.TrimSpace(authIndex)
-		if authIndex == "" {
-			authIndex = "unknown"
-		}
-
-		acc, ok := keyTotals[apiKey]
-		if !ok {
-			acc = &monitorKeyTokenAcc{
-				APIKey:       apiKey,
-				AuthTokens:   make(map[string]int64),
-				SourceTokens: make(map[string]int64),
-			}
-			keyTotals[apiKey] = acc
-		}
-		acc.Requests += requests
-		acc.TotalTokens += totalTokens
-		acc.AuthTokens[authIndex] += totalTokens
-		acc.SourceTokens[source] += totalTokens
-		accountTotals[authIndex] += totalTokens
+		addMonitorKeyTokenStatsRow(keyTotals, accountTotals, apiKey, source, authIndex, requests, totalTokens)
 	}
 
 	if dbPlugin != nil {
@@ -1539,7 +1538,8 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 			for _, row := range rows {
 				addRow(row.APIKey, row.Source, row.AuthIndex, row.Requests, row.TotalTokens)
 			}
-			c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, monitorTimeRange{Start: start, End: end}))
+			ensureCurrentMonitorKeyTokenRow(keyTotals, responseCtx.CurrentAPIKey)
+			c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, monitorTimeRange{Start: start, End: end}, responseCtx))
 			return
 		}
 	}
@@ -1555,13 +1555,122 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 		addRow(record.APIKey, record.Source, record.AuthIndex, 1, tokens)
 	})
 
-	c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, monitorTimeRange{Start: start, End: end}))
+	ensureCurrentMonitorKeyTokenRow(keyTotals, responseCtx.CurrentAPIKey)
+	c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, monitorTimeRange{Start: start, End: end}, responseCtx))
+}
+
+// GetPublicMonitorKeyTokenStats returns token usage for all client keys bound to
+// the same credential as the validated public monitor key.
+func (h *Handler) GetPublicMonitorKeyTokenStats(c *gin.Context) {
+	currentAPIKey := publicMonitorCurrentAPIKey(c)
+	if currentAPIKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing api_key"})
+		return
+	}
+
+	auth := h.boundAuthForMonitorKey(currentAPIKey)
+	if auth == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no credential bound to api key"})
+		return
+	}
+	authIndex := strings.TrimSpace(auth.EnsureIndex())
+	if authIndex == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "bound credential missing auth_index"})
+		return
+	}
+
+	start, end, err := parseMonitorTimeRange(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	dbPlugin := usage.GetDatabasePlugin()
+	if dbPlugin != nil && !isExplicitAllTimeRange(c) {
+		start, end = applyDefaultTimeRange(start, end, 1)
+	}
+
+	filter := monitorRecordFilter{AuthIndex: authIndex, Start: start, End: end}
+	responseCtx := h.monitorKeyTokenResponseContext(c)
+	if responseCtx.PanelTitle == "" {
+		if title := quotaWarningAuthLabel(auth); title != "-" {
+			responseCtx.PanelTitle = title
+		}
+	}
+
+	accountTotals := make(map[string]int64)
+	keyTotals := make(map[string]*monitorKeyTokenAcc)
+	addRow := func(apiKey, source, rowAuthIndex string, requests, totalTokens int64) {
+		addMonitorKeyTokenStatsRow(keyTotals, accountTotals, apiKey, source, rowAuthIndex, requests, totalTokens)
+	}
+
+	if dbPlugin != nil {
+		rows, queryErr := dbPlugin.QueryMonitorKeyTokenStats(c.Request.Context(), toUsageMonitorFilter(filter))
+		if queryErr == nil {
+			for _, row := range rows {
+				addRow(row.APIKey, row.Source, row.AuthIndex, row.Requests, row.TotalTokens)
+			}
+			ensureCurrentMonitorKeyTokenRowForAuth(keyTotals, currentAPIKey, authIndex)
+			c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, monitorTimeRange{Start: start, End: end}, responseCtx))
+			return
+		}
+	}
+
+	visitSnapshotRecords(h.usageSnapshot(), func(record monitorRecord) {
+		if !filter.matches(record) {
+			return
+		}
+		tokens := int64(0)
+		if !record.Failed {
+			tokens = record.TotalTokens
+		}
+		addRow(record.APIKey, record.Source, record.AuthIndex, 1, tokens)
+	})
+
+	ensureCurrentMonitorKeyTokenRowForAuth(keyTotals, currentAPIKey, authIndex)
+	c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, monitorTimeRange{Start: start, End: end}, responseCtx))
+}
+
+func addMonitorKeyTokenStatsRow(
+	keyTotals map[string]*monitorKeyTokenAcc,
+	accountTotals map[string]int64,
+	apiKey, source, authIndex string,
+	requests, totalTokens int64,
+) {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		apiKey = "unknown"
+	}
+	source = strings.TrimSpace(source)
+	if source == "" {
+		source = "unknown"
+	}
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		authIndex = "unknown"
+	}
+
+	acc, ok := keyTotals[apiKey]
+	if !ok {
+		acc = &monitorKeyTokenAcc{
+			APIKey:       apiKey,
+			AuthTokens:   make(map[string]int64),
+			SourceTokens: make(map[string]int64),
+		}
+		keyTotals[apiKey] = acc
+	}
+	acc.Requests += requests
+	acc.TotalTokens += totalTokens
+	acc.AuthTokens[authIndex] += totalTokens
+	acc.SourceTokens[source] += totalTokens
+	accountTotals[authIndex] += totalTokens
 }
 
 func buildMonitorKeyTokenStatsResponse(
 	keyTotals map[string]*monitorKeyTokenAcc,
 	accountTotals map[string]int64,
 	timeRange monitorTimeRange,
+	responseCtx monitorKeyTokenResponseContext,
 ) gin.H {
 	items := make([]monitorKeyTokenStatsItem, 0, len(keyTotals))
 	var totalTokens int64
@@ -1580,9 +1689,14 @@ func buildMonitorKeyTokenStatsResponse(
 		for source, tokens := range acc.SourceTokens {
 			sourceTokens[source] = tokens
 		}
+		apiKeyName := strings.TrimSpace(responseCtx.APIKeyNames[acc.APIKey])
 		items = append(items, monitorKeyTokenStatsItem{
 			APIKey:            acc.APIKey,
+			APIKeyName:        apiKeyName,
+			DisplayName:       monitorAPIKeyDisplayName(acc.APIKey, responseCtx.APIKeyNames),
+			IsCurrentKey:      responseCtx.CurrentAPIKey != "" && acc.APIKey == responseCtx.CurrentAPIKey,
 			AuthIndex:         authIndex,
+			AuthNote:          responseCtx.AuthNotes[authIndex],
 			Requests:          acc.Requests,
 			TotalTokens:       acc.TotalTokens,
 			AccountTokens:     accountTokens,
@@ -1605,12 +1719,87 @@ func buildMonitorKeyTokenStatsResponse(
 		accountResp[account] = tokens
 	}
 
-	return gin.H{
+	resp := gin.H{
 		"items":          items,
 		"total":          len(items),
 		"total_tokens":   totalTokens,
 		"account_totals": accountResp,
 		"time_range":     timeRange,
+	}
+	if responseCtx.CurrentAPIKey != "" {
+		resp["current_key"] = gin.H{
+			"api_key":      responseCtx.CurrentAPIKey,
+			"api_key_name": responseCtx.CurrentAPIKeyName,
+			"display_name": responseCtx.CurrentKeyDisplayName,
+		}
+	}
+	if responseCtx.PanelTitle != "" {
+		resp["panel_title"] = responseCtx.PanelTitle
+	}
+	return resp
+}
+
+func (h *Handler) monitorKeyTokenResponseContext(c *gin.Context) monitorKeyTokenResponseContext {
+	nameMap := h.monitorAPIKeyNameMap()
+	authNotes := h.monitorAuthNoteMap()
+	currentAPIKey := publicMonitorCurrentAPIKey(c)
+	currentName := ""
+	currentDisplayName := ""
+	panelTitle := ""
+	if currentAPIKey != "" {
+		currentName = strings.TrimSpace(nameMap[currentAPIKey])
+		currentDisplayName = monitorAPIKeyDisplayName(currentAPIKey, nameMap)
+		if auth := h.boundAuthForMonitorKey(currentAPIKey); auth != nil {
+			if title := quotaWarningAuthLabel(auth); title != "-" {
+				panelTitle = title
+			}
+		}
+	}
+	return monitorKeyTokenResponseContext{
+		APIKeyNames:           nameMap,
+		AuthNotes:             authNotes,
+		CurrentAPIKey:         currentAPIKey,
+		CurrentAPIKeyName:     currentName,
+		CurrentKeyDisplayName: currentDisplayName,
+		PanelTitle:            panelTitle,
+	}
+}
+
+func ensureCurrentMonitorKeyTokenRow(keyTotals map[string]*monitorKeyTokenAcc, currentAPIKey string) {
+	currentAPIKey = strings.TrimSpace(currentAPIKey)
+	if currentAPIKey == "" {
+		return
+	}
+	if _, ok := keyTotals[currentAPIKey]; ok {
+		return
+	}
+	keyTotals[currentAPIKey] = &monitorKeyTokenAcc{
+		APIKey:       currentAPIKey,
+		AuthTokens:   make(map[string]int64),
+		SourceTokens: make(map[string]int64),
+	}
+}
+
+func ensureCurrentMonitorKeyTokenRowForAuth(
+	keyTotals map[string]*monitorKeyTokenAcc,
+	currentAPIKey string,
+	authIndex string,
+) {
+	currentAPIKey = strings.TrimSpace(currentAPIKey)
+	if currentAPIKey == "" {
+		return
+	}
+	if _, ok := keyTotals[currentAPIKey]; ok {
+		return
+	}
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		authIndex = "unknown"
+	}
+	keyTotals[currentAPIKey] = &monitorKeyTokenAcc{
+		APIKey:       currentAPIKey,
+		AuthTokens:   map[string]int64{authIndex: 0},
+		SourceTokens: make(map[string]int64),
 	}
 }
 

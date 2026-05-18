@@ -70,49 +70,14 @@ func publicMonitorAPIKey(c *gin.Context) string {
 }
 
 func (h *Handler) boundCodexAuthForMonitorKey(clientKey string) *coreauth.Auth {
-	clientKey = strings.TrimSpace(clientKey)
-	if clientKey == "" || h == nil || h.cfg == nil || h.authManager == nil {
+	auth := h.boundAuthForMonitorKey(clientKey)
+	if auth == nil {
 		return nil
 	}
-
-	strategy, _ := coreauth.NormalizeRoutingStrategy(h.cfg.Routing.Strategy)
-	if strategy != coreauth.RoutingStrategyAccountBind {
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
 		return nil
 	}
-
-	auths := h.authManager.List()
-	bindingMap, defaultAuthIndex := coreauth.ResolveBindingIndexes(
-		auths,
-		h.cfg.APIKeyAuthBindings,
-		h.cfg.APIKeyAuthIdentityBindings,
-		h.cfg.Routing.DefaultModelAccount,
-	)
-
-	authIndex := ""
-	if bindingMap != nil {
-		authIndex = strings.TrimSpace(bindingMap[clientKey])
-	}
-	if authIndex == "" {
-		authIndex = strings.TrimSpace(defaultAuthIndex)
-	}
-	if authIndex == "" {
-		return nil
-	}
-
-	for _, auth := range auths {
-		if auth == nil {
-			continue
-		}
-		auth.EnsureIndex()
-		if auth.Index != authIndex {
-			continue
-		}
-		if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
-			return nil
-		}
-		return auth
-	}
-	return nil
+	return auth
 }
 
 func (h *Handler) fetchCodexQuotaPayload(ctx context.Context, auth *coreauth.Auth) (int, gin.H, error) {
