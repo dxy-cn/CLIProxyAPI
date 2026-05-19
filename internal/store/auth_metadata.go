@@ -1,6 +1,6 @@
 package store
 
-import cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+import cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 
 func authDisabledStateFromMetadata(metadata map[string]any) (bool, cliproxyauth.Status) {
 	disabled, _ := metadata["disabled"].(bool)
