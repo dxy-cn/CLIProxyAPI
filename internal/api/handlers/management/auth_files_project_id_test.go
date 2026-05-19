@@ -31,6 +31,11 @@ func TestListAuthFiles_IncludesProjectIDFromManager(t *testing.T) {
 		FileName: fileName,
 		Provider: "gemini-cli",
 		Status:   coreauth.StatusActive,
+		LastError: &coreauth.Error{
+			Code:       "unauthorized",
+			Message:    "refresh token expired",
+			HTTPStatus: http.StatusUnauthorized,
+		},
 		Attributes: map[string]string{
 			"path": filePath,
 		},
@@ -54,6 +59,19 @@ func TestListAuthFiles_IncludesProjectIDFromManager(t *testing.T) {
 	}
 	if got := entry["cost_center"]; got != "ToC" {
 		t.Fatalf("expected cost_center %q, got %#v", "ToC", got)
+	}
+	lastError, ok := entry["last_error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected last_error object, got %#v", entry["last_error"])
+	}
+	if got := lastError["code"]; got != "unauthorized" {
+		t.Fatalf("last_error.code = %#v, want %q", got, "unauthorized")
+	}
+	if got := lastError["message"]; got != "refresh token expired" {
+		t.Fatalf("last_error.message = %#v, want %q", got, "refresh token expired")
+	}
+	if got := lastError["http_status"]; got != float64(http.StatusUnauthorized) {
+		t.Fatalf("last_error.http_status = %#v, want %d", got, http.StatusUnauthorized)
 	}
 }
 

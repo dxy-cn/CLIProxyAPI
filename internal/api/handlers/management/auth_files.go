@@ -430,6 +430,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if !auth.NextRetryAfter.IsZero() {
 		entry["next_retry_after"] = auth.NextRetryAfter
 	}
+	if lastError := authFileLastError(auth.LastError); lastError != nil {
+		entry["last_error"] = lastError
+	}
 	if path != "" {
 		entry["path"] = path
 		entry["source"] = "file"
@@ -488,6 +491,23 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 				entry["cost_center"] = trimmed
 			}
 		}
+	}
+	return entry
+}
+
+func authFileLastError(err *coreauth.Error) gin.H {
+	if err == nil {
+		return nil
+	}
+	entry := gin.H{
+		"message":   err.Message,
+		"retryable": err.Retryable,
+	}
+	if err.Code != "" {
+		entry["code"] = err.Code
+	}
+	if err.HTTPStatus > 0 {
+		entry["http_status"] = err.HTTPStatus
 	}
 	return entry
 }
