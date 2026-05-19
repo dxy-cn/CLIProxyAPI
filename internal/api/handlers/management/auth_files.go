@@ -352,6 +352,11 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 						fileData["note"] = trimmed
 					}
 				}
+				if cv := gjson.GetBytes(data, "cost_center"); cv.Exists() && cv.Type == gjson.String {
+					if trimmed := strings.TrimSpace(cv.String()); trimmed != "" {
+						fileData["cost_center"] = trimmed
+					}
+				}
 			}
 
 			files = append(files, fileData)
@@ -472,6 +477,15 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 		if rawNote, ok := auth.Metadata["note"].(string); ok {
 			if trimmed := strings.TrimSpace(rawNote); trimmed != "" {
 				entry["note"] = trimmed
+			}
+		}
+	}
+	if costCenter := strings.TrimSpace(authAttribute(auth, "cost_center")); costCenter != "" {
+		entry["cost_center"] = costCenter
+	} else if auth.Metadata != nil {
+		if rawCostCenter, ok := auth.Metadata["cost_center"].(string); ok {
+			if trimmed := strings.TrimSpace(rawCostCenter); trimmed != "" {
+				entry["cost_center"] = trimmed
 			}
 		}
 	}
@@ -1153,7 +1167,7 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled})
 }
 
-// PatchAuthFileFields updates editable fields (prefix, proxy_url, headers, priority, note) of an auth file.
+// PatchAuthFileFields updates editable fields (prefix, proxy_url, headers, priority, note, cost_center) of an auth file.
 func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	if h.authManager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
@@ -1161,12 +1175,13 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 
 	var req struct {
-		Name     string            `json:"name"`
-		Prefix   *string           `json:"prefix"`
-		ProxyURL *string           `json:"proxy_url"`
-		Headers  map[string]string `json:"headers"`
-		Priority *int              `json:"priority"`
-		Note     *string           `json:"note"`
+		Name       string            `json:"name"`
+		Prefix     *string           `json:"prefix"`
+		ProxyURL   *string           `json:"proxy_url"`
+		Headers    map[string]string `json:"headers"`
+		Priority   *int              `json:"priority"`
+		Note       *string           `json:"note"`
+		CostCenter *string           `json:"cost_center"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -1303,7 +1318,7 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 			changed = true
 		}
 	}
-	if req.Priority != nil || req.Note != nil {
+	if req.Priority != nil || req.Note != nil || req.CostCenter != nil {
 		if targetAuth.Metadata == nil {
 			targetAuth.Metadata = make(map[string]any)
 		}
@@ -1328,6 +1343,16 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 			} else {
 				targetAuth.Metadata["note"] = trimmedNote
 				targetAuth.Attributes["note"] = trimmedNote
+			}
+		}
+		if req.CostCenter != nil {
+			trimmedCostCenter := strings.TrimSpace(*req.CostCenter)
+			if trimmedCostCenter == "" {
+				delete(targetAuth.Metadata, "cost_center")
+				delete(targetAuth.Attributes, "cost_center")
+			} else {
+				targetAuth.Metadata["cost_center"] = trimmedCostCenter
+				targetAuth.Attributes["cost_center"] = trimmedCostCenter
 			}
 		}
 		changed = true

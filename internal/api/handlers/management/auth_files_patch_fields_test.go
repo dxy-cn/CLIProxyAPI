@@ -135,7 +135,7 @@ func TestPatchAuthFileFields_HeadersEmptyMapIsNoop(t *testing.T) {
 
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
 
-	body := `{"name":"noop.json","note":"hello","headers":{}}`
+	body := `{"name":"noop.json","note":"hello","cost_center":"ToD","headers":{}}`
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
 	req := httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/fields", strings.NewReader(body))
@@ -160,5 +160,11 @@ func TestPatchAuthFileFields_HeadersEmptyMapIsNoop(t *testing.T) {
 	}
 	if got := headersMeta["X-Kee"]; got != "1" {
 		t.Fatalf("metadata.headers.X-Kee = %#v, want %q", got, "1")
+	}
+	if got := updated.Attributes["cost_center"]; got != "ToD" {
+		t.Fatalf("attrs cost_center = %q, want %q", got, "ToD")
+	}
+	if got, _ := updated.Metadata["cost_center"].(string); got != "ToD" {
+		t.Fatalf("metadata.cost_center = %q, want %q", got, "ToD")
 	}
 }

@@ -21,7 +21,7 @@ func TestListAuthFiles_IncludesProjectIDFromManager(t *testing.T) {
 	authDir := t.TempDir()
 	fileName := "gemini-user@example.com-project-a.json"
 	filePath := filepath.Join(authDir, fileName)
-	if errWrite := os.WriteFile(filePath, []byte(`{"type":"gemini","email":"user@example.com","project_id":"project-a"}`), 0o600); errWrite != nil {
+	if errWrite := os.WriteFile(filePath, []byte(`{"type":"gemini","email":"user@example.com","project_id":"project-a","cost_center":"ToC"}`), 0o600); errWrite != nil {
 		t.Fatalf("failed to write auth file: %v", errWrite)
 	}
 
@@ -35,9 +35,10 @@ func TestListAuthFiles_IncludesProjectIDFromManager(t *testing.T) {
 			"path": filePath,
 		},
 		Metadata: map[string]any{
-			"type":       "gemini",
-			"email":      "user@example.com",
-			"project_id": "project-a",
+			"type":        "gemini",
+			"email":       "user@example.com",
+			"project_id":  "project-a",
+			"cost_center": "ToC",
 		},
 	}
 	if _, errRegister := manager.Register(context.Background(), record); errRegister != nil {
@@ -51,6 +52,9 @@ func TestListAuthFiles_IncludesProjectIDFromManager(t *testing.T) {
 	if got := entry["project_id"]; got != "project-a" {
 		t.Fatalf("expected project_id %q, got %#v", "project-a", got)
 	}
+	if got := entry["cost_center"]; got != "ToC" {
+		t.Fatalf("expected cost_center %q, got %#v", "ToC", got)
+	}
 }
 
 func TestListAuthFilesFromDisk_IncludesProjectID(t *testing.T) {
@@ -59,7 +63,7 @@ func TestListAuthFilesFromDisk_IncludesProjectID(t *testing.T) {
 
 	authDir := t.TempDir()
 	filePath := filepath.Join(authDir, "gemini-user@example.com-project-a.json")
-	if errWrite := os.WriteFile(filePath, []byte(`{"type":"gemini","email":"user@example.com","project_id":"project-a"}`), 0o600); errWrite != nil {
+	if errWrite := os.WriteFile(filePath, []byte(`{"type":"gemini","email":"user@example.com","project_id":"project-a","cost_center":"ToD"}`), 0o600); errWrite != nil {
 		t.Fatalf("failed to write auth file: %v", errWrite)
 	}
 
@@ -68,6 +72,9 @@ func TestListAuthFilesFromDisk_IncludesProjectID(t *testing.T) {
 	entry := firstAuthFileEntry(t, h)
 	if got := entry["project_id"]; got != "project-a" {
 		t.Fatalf("expected project_id %q, got %#v", "project-a", got)
+	}
+	if got := entry["cost_center"]; got != "ToD" {
+		t.Fatalf("expected cost_center %q, got %#v", "ToD", got)
 	}
 }
 
