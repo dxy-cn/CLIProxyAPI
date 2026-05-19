@@ -8,11 +8,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -154,7 +156,7 @@ api-keys:
 
 	base := time.Date(2026, 5, 18, 12, 0, 0, 0, time.Local)
 	h := newMonitorTestHandler(
-		testUsageRecordWithAuth(base.Add(-2*time.Hour), clientKey, registered.Index, false),
+		testUsageRecordWithAuthAndSource(base.Add(-2*time.Hour), clientKey, registered.Index, "sk-source-secret", false),
 		testUsageRecordWithAuth(base.Add(-1*time.Hour), "sk-other", registered.Index, false),
 	)
 	h.cfg = &proxyconfig.Config{
@@ -201,12 +203,19 @@ api-keys:
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response failed: %v", err)
 	}
+	body := rr.Body.String()
 
 	if resp.PanelTitle != "Bound Credential Note" {
 		t.Fatalf("panel_title = %q, want bound credential note", resp.PanelTitle)
 	}
-	if resp.CurrentKey.APIKey != clientKey || resp.CurrentKey.APIKeyName != "Current Key Name" || resp.CurrentKey.DisplayName != "Current Key Name" {
+	if resp.CurrentKey.APIKey != util.HideAPIKey(clientKey) || resp.CurrentKey.APIKeyName != "Current Key Name" || resp.CurrentKey.DisplayName != "Current Key Name" {
 		t.Fatalf("unexpected current_key: %+v", resp.CurrentKey)
+	}
+	if strings.Contains(body, clientKey) ||
+		strings.Contains(body, "sk-other") ||
+		strings.Contains(body, "sk-source-secret") ||
+		strings.Contains(body, registered.Index) {
+		t.Fatalf("public key-token-stats leaked raw identifiers: %s", body)
 	}
 	if len(resp.Items) != 2 {
 		t.Fatalf("public response must contain keys bound to current credential, got %+v", resp.Items)
@@ -221,15 +230,15 @@ api-keys:
 		TotalTokens  int64  `json:"total_tokens"`
 	}
 	for _, candidate := range resp.Items {
-		if candidate.APIKey == clientKey {
+		if candidate.APIKey == util.HideAPIKey(clientKey) {
 			item = candidate
 			break
 		}
 	}
-	if item.APIKey != clientKey || item.APIKeyName != "Current Key Name" || item.DisplayName != "Current Key Name" || !item.IsCurrentKey {
+	if item.APIKey != util.HideAPIKey(clientKey) || item.APIKeyName != "Current Key Name" || item.DisplayName != "Current Key Name" || !item.IsCurrentKey {
 		t.Fatalf("unexpected current key item metadata: %+v", item)
 	}
-	if item.AuthIndex != registered.Index || item.AuthNote != "Bound Credential Note" {
+	if item.AuthIndex != "bound" || item.AuthNote != "Bound Credential Note" {
 		t.Fatalf("unexpected auth metadata: %+v", item)
 	}
 	if item.TotalTokens != 30 {
@@ -307,10 +316,10 @@ func TestPublicMonitorKeyTokenStatsUsesBoundKeysWhenAuthIndexMissing(t *testing.
 	for _, item := range resp.Items {
 		got[item.APIKey] = item.TotalTokens
 	}
-	if got[clientKey] != 30 || got[otherKey] != 30 {
+	if got[util.HideAPIKey(clientKey)] != 30 || got[util.HideAPIKey(otherKey)] != 30 {
 		t.Fatalf("bound key totals not included correctly: %+v", got)
 	}
-	if _, ok := got["sk-unbound"]; ok {
+	if _, ok := got[util.HideAPIKey("sk-unbound")]; ok {
 		t.Fatalf("unbound key leaked into public key stats: %+v", got)
 	}
 }

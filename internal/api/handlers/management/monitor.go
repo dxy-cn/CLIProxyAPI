@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 )
 
 const (
@@ -1224,12 +1225,12 @@ type monitorKeyTokenAcc struct {
 }
 
 type monitorKeyTokenResponseContext struct {
-	APIKeyNames           map[string]string
-	AuthNotes             map[string]string
-	CurrentAPIKey         string
-	CurrentAPIKeyName     string
-	CurrentKeyDisplayName string
-	PanelTitle            string
+	APIKeyNames       map[string]string
+	AuthNotes         map[string]string
+	CurrentAPIKey     string
+	CurrentAPIKeyName string
+	PanelTitle        string
+	RedactSecrets     bool
 }
 
 // GetMonitorKpi returns aggregated KPI metrics from usage records.
@@ -1608,6 +1609,7 @@ func (h *Handler) GetPublicMonitorKeyTokenStats(c *gin.Context) {
 		End:            end,
 	}
 	responseCtx := h.monitorKeyTokenResponseContext(c)
+	responseCtx.RedactSecrets = true
 	if responseCtx.PanelTitle == "" {
 		if title := quotaWarningAuthLabel(auth); title != "-" {
 			responseCtx.PanelTitle = title
@@ -1697,21 +1699,18 @@ func buildMonitorKeyTokenStatsResponse(
 	for _, acc := range keyTotals {
 		authIndex := dominantAuthIndex(acc.AuthTokens)
 		accountTokens := accountTotals[authIndex]
-		authTokens := make(map[string]int64, len(acc.AuthTokens))
-		for account, tokens := range acc.AuthTokens {
-			authTokens[account] = tokens
-		}
-		sourceTokens := make(map[string]int64, len(acc.SourceTokens))
-		for source, tokens := range acc.SourceTokens {
-			sourceTokens[source] = tokens
-		}
+		authTokens := monitorKeyTokenBreakdown(acc.AuthTokens, responseCtx.RedactSecrets)
+		sourceTokens := monitorKeyTokenBreakdown(acc.SourceTokens, responseCtx.RedactSecrets)
 		apiKeyName := strings.TrimSpace(responseCtx.APIKeyNames[acc.APIKey])
+		apiKeyName = monitorKeyTokenAPIKeyNameValue(acc.APIKey, apiKeyName, responseCtx.RedactSecrets)
+		apiKey := monitorKeyTokenAPIKeyValue(acc.APIKey, responseCtx.RedactSecrets)
+		displayName := monitorKeyTokenDisplayName(acc.APIKey, apiKeyName, responseCtx.RedactSecrets)
 		items = append(items, monitorKeyTokenStatsItem{
-			APIKey:            acc.APIKey,
+			APIKey:            apiKey,
 			APIKeyName:        apiKeyName,
-			DisplayName:       monitorAPIKeyDisplayName(acc.APIKey, responseCtx.APIKeyNames),
+			DisplayName:       displayName,
 			IsCurrentKey:      responseCtx.CurrentAPIKey != "" && acc.APIKey == responseCtx.CurrentAPIKey,
-			AuthIndex:         authIndex,
+			AuthIndex:         monitorKeyTokenAuthIndexValue(authIndex, responseCtx.RedactSecrets),
 			AuthNote:          responseCtx.AuthNotes[authIndex],
 			Requests:          acc.Requests,
 			TotalTokens:       acc.TotalTokens,
@@ -1732,7 +1731,7 @@ func buildMonitorKeyTokenStatsResponse(
 
 	accountResp := make(map[string]int64, len(accountTotals))
 	for account, tokens := range accountTotals {
-		accountResp[account] = tokens
+		accountResp[monitorKeyTokenAuthIndexValue(account, responseCtx.RedactSecrets)] += tokens
 	}
 
 	resp := gin.H{
@@ -1743,10 +1742,15 @@ func buildMonitorKeyTokenStatsResponse(
 		"time_range":     timeRange,
 	}
 	if responseCtx.CurrentAPIKey != "" {
+		currentAPIKeyName := monitorKeyTokenAPIKeyNameValue(
+			responseCtx.CurrentAPIKey,
+			responseCtx.CurrentAPIKeyName,
+			responseCtx.RedactSecrets,
+		)
 		resp["current_key"] = gin.H{
-			"api_key":      responseCtx.CurrentAPIKey,
-			"api_key_name": responseCtx.CurrentAPIKeyName,
-			"display_name": responseCtx.CurrentKeyDisplayName,
+			"api_key":      monitorKeyTokenAPIKeyValue(responseCtx.CurrentAPIKey, responseCtx.RedactSecrets),
+			"api_key_name": currentAPIKeyName,
+			"display_name": monitorKeyTokenDisplayName(responseCtx.CurrentAPIKey, currentAPIKeyName, responseCtx.RedactSecrets),
 		}
 	}
 	if responseCtx.PanelTitle != "" {
@@ -1755,16 +1759,60 @@ func buildMonitorKeyTokenStatsResponse(
 	return resp
 }
 
+func monitorKeyTokenAPIKeyValue(apiKey string, redact bool) string {
+	apiKey = strings.TrimSpace(apiKey)
+	if !redact {
+		return apiKey
+	}
+	return util.HideAPIKey(apiKey)
+}
+
+func monitorKeyTokenDisplayName(apiKey, apiKeyName string, redact bool) string {
+	if name := strings.TrimSpace(apiKeyName); name != "" {
+		return name
+	}
+	return monitorKeyTokenAPIKeyValue(apiKey, redact)
+}
+
+func monitorKeyTokenAPIKeyNameValue(apiKey, apiKeyName string, redact bool) string {
+	apiKey = strings.TrimSpace(apiKey)
+	apiKeyName = strings.TrimSpace(apiKeyName)
+	if !redact || apiKeyName == "" || apiKeyName != apiKey {
+		return apiKeyName
+	}
+	return monitorKeyTokenAPIKeyValue(apiKey, true)
+}
+
+func monitorKeyTokenAuthIndexValue(authIndex string, redact bool) string {
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		authIndex = "unknown"
+	}
+	if !redact || authIndex == "unknown" {
+		return authIndex
+	}
+	return "bound"
+}
+
+func monitorKeyTokenBreakdown(values map[string]int64, redact bool) map[string]int64 {
+	result := make(map[string]int64, len(values))
+	for key, tokens := range values {
+		if redact {
+			continue
+		}
+		result[key] = tokens
+	}
+	return result
+}
+
 func (h *Handler) monitorKeyTokenResponseContext(c *gin.Context) monitorKeyTokenResponseContext {
 	nameMap := h.monitorAPIKeyNameMap()
 	authNotes := h.monitorAuthNoteMap()
 	currentAPIKey := publicMonitorCurrentAPIKey(c)
 	currentName := ""
-	currentDisplayName := ""
 	panelTitle := ""
 	if currentAPIKey != "" {
 		currentName = strings.TrimSpace(nameMap[currentAPIKey])
-		currentDisplayName = monitorAPIKeyDisplayName(currentAPIKey, nameMap)
 		if auth := h.boundAuthForMonitorKey(currentAPIKey); auth != nil {
 			if title := quotaWarningAuthLabel(auth); title != "-" {
 				panelTitle = title
@@ -1772,12 +1820,11 @@ func (h *Handler) monitorKeyTokenResponseContext(c *gin.Context) monitorKeyToken
 		}
 	}
 	return monitorKeyTokenResponseContext{
-		APIKeyNames:           nameMap,
-		AuthNotes:             authNotes,
-		CurrentAPIKey:         currentAPIKey,
-		CurrentAPIKeyName:     currentName,
-		CurrentKeyDisplayName: currentDisplayName,
-		PanelTitle:            panelTitle,
+		APIKeyNames:       nameMap,
+		AuthNotes:         authNotes,
+		CurrentAPIKey:     currentAPIKey,
+		CurrentAPIKeyName: currentName,
+		PanelTitle:        panelTitle,
 	}
 }
 
