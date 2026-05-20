@@ -1520,11 +1520,7 @@ func (s *Server) accountBindMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		clientKey := ""
-		if raw, ok := c.Get("apiKey"); ok {
-			clientKey, _ = raw.(string)
-		}
-		clientKey = strings.TrimSpace(clientKey)
+		clientKey := clientAPIKeyFromGinContext(c)
 
 		authIdx := ""
 		if clientKey != "" && len(bindingMap) > 0 {
@@ -1548,6 +1544,23 @@ func (s *Server) accountBindMiddleware() gin.HandlerFunc {
 		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	}
+}
+
+func clientAPIKeyFromGinContext(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	for _, key := range []string{"apiKey", "userApiKey"} {
+		raw, ok := c.Get(key)
+		if !ok {
+			continue
+		}
+		value, _ := raw.(string)
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // (management handlers moved to internal/api/handlers/management)
