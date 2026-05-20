@@ -31,6 +31,15 @@ func ApplyPayloadConfigWithRequest(cfg *config.Config, model, protocol, fromProt
 	}
 	out := payload
 
+	// Apply disable-image-generation filtering before payload rules so config payload
+	// overrides can explicitly re-enable image_generation when desired.
+	if cfg.DisableImageGeneration != config.DisableImageGenerationOff {
+		if cfg.DisableImageGeneration != config.DisableImageGenerationChat || !isImagesEndpointRequestPath(requestPath) {
+			out = removeToolTypeFromPayloadWithRoot(out, root, "image_generation")
+			out = removeToolChoiceFromPayloadWithRoot(out, root, "image_generation")
+		}
+	}
+
 	rules := cfg.Payload
 	hasPayloadRules := len(rules.Default) != 0 || len(rules.DefaultRaw) != 0 || len(rules.Override) != 0 || len(rules.OverrideRaw) != 0 || len(rules.Filter) != 0
 	if hasPayloadRules {
@@ -170,6 +179,24 @@ func ApplyPayloadConfigWithRequest(cfg *config.Config, model, protocol, fromProt
 		}
 	}
 	return out
+}
+
+func isImagesEndpointRequestPath(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	if path == "/v1/images/generations" || path == "/v1/images/edits" {
+		return true
+	}
+	// Be tolerant of prefix routers that may report a longer matched route.
+	if strings.HasSuffix(path, "/v1/images/generations") || strings.HasSuffix(path, "/v1/images/edits") {
+		return true
+	}
+	if strings.HasSuffix(path, "/images/generations") || strings.HasSuffix(path, "/images/edits") {
+		return true
+	}
+	return false
 }
 
 func payloadModelRulesMatch(rules []config.PayloadModelRule, protocol string, fromProtocol string, headers http.Header, payload []byte, root string, models []string) bool {
@@ -684,6 +711,95 @@ func payloadQueryTermMatches(item gjson.Result, term string) bool {
 	wrapped = append(wrapped, item.Raw...)
 	wrapped = append(wrapped, ']')
 	return gjson.GetBytes(wrapped, "#("+term+")").Exists()
+}
+
+func removeToolTypeFromPayloadWithRoot(payload []byte, root string, toolType string) []byte {
+	if len(payload) == 0 {
+		return payload
+	}
+	toolType = strings.TrimSpace(toolType)
+	if toolType == "" {
+		return payload
+	}
+	toolsPath := buildPayloadPath(root, "tools")
+	return removeToolTypeFromToolsArray(payload, toolsPath, toolType)
+}
+
+func removeToolChoiceFromPayloadWithRoot(payload []byte, root string, toolType string) []byte {
+	if len(payload) == 0 {
+		return payload
+	}
+	toolType = strings.TrimSpace(toolType)
+	if toolType == "" {
+		return payload
+	}
+	toolChoicePath := buildPayloadPath(root, "tool_choice")
+	return removeToolChoiceFromPayload(payload, toolChoicePath, toolType)
+}
+
+func removeToolChoiceFromPayload(payload []byte, toolChoicePath string, toolType string) []byte {
+	choice := gjson.GetBytes(payload, toolChoicePath)
+	if !choice.Exists() {
+		return payload
+	}
+	if choice.Type == gjson.String {
+		if strings.EqualFold(strings.TrimSpace(choice.String()), toolType) {
+			updated, errDel := sjson.DeleteBytes(payload, toolChoicePath)
+			if errDel == nil {
+				return updated
+			}
+		}
+		return payload
+	}
+	if choice.Type != gjson.JSON {
+		return payload
+	}
+	choiceType := strings.TrimSpace(choice.Get("type").String())
+	if strings.EqualFold(choiceType, toolType) {
+		updated, errDel := sjson.DeleteBytes(payload, toolChoicePath)
+		if errDel == nil {
+			return updated
+		}
+		return payload
+	}
+	if strings.EqualFold(choiceType, "tool") {
+		name := strings.TrimSpace(choice.Get("name").String())
+		if strings.EqualFold(name, toolType) {
+			updated, errDel := sjson.DeleteBytes(payload, toolChoicePath)
+			if errDel == nil {
+				return updated
+			}
+		}
+	}
+	return payload
+}
+
+func removeToolTypeFromToolsArray(payload []byte, toolsPath string, toolType string) []byte {
+	tools := gjson.GetBytes(payload, toolsPath)
+	if !tools.Exists() || !tools.IsArray() {
+		return payload
+	}
+	removed := false
+	filtered := []byte(`[]`)
+	for _, tool := range tools.Array() {
+		if tool.Get("type").String() == toolType {
+			removed = true
+			continue
+		}
+		updated, errSet := sjson.SetRawBytes(filtered, "-1", []byte(tool.Raw))
+		if errSet != nil {
+			continue
+		}
+		filtered = updated
+	}
+	if !removed {
+		return payload
+	}
+	updated, errSet := sjson.SetRawBytes(payload, toolsPath, filtered)
+	if errSet != nil {
+		return payload
+	}
+	return updated
 }
 
 func payloadRawValue(value any) ([]byte, bool) {

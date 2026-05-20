@@ -68,7 +68,7 @@ func TestCodexWebsocketsExecutePreservesPreviousResponseIDUpstream(t *testing.T)
 	}))
 	defer server.Close()
 
-	exec := NewCodexWebsocketsExecutor(&config.Config{})
+	exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
 	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "sk-test", "base_url": server.URL}}
 	req := cliproxyexecutor.Request{
 		Model:   "gpt-5-codex",

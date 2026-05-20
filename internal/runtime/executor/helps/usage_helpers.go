@@ -32,6 +32,7 @@ type UsageReporter struct {
 	authType    string
 	apiKey      string
 	source      string
+	reasoning   string
 	requestedAt time.Time
 	firstChunk  firstChunkLatencyReader
 	once        sync.Once
@@ -52,6 +53,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		source:      resolveUsageSource(auth, apiKey),
 		authType:    resolveUsageAuthType(auth),
 		firstChunk:  firstChunkReaderFromContext(ctx),
+		reasoning:   usage.ReasoningEffortFromContext(ctx),
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
@@ -175,6 +177,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		RequestedAt:       r.requestedAt,
 		Latency:           r.latency(),
 		FirstTokenLatency: firstChunkLatencyFromReporterContext(r),
+		ReasoningEffort:   r.reasoning,
 		Failed:            failed,
 		Fail:              fail,
 		Detail:            detail,
@@ -317,6 +320,14 @@ func resolveUsageAuthType(auth *cliproxyauth.Auth) string {
 
 func ParseCodexUsage(data []byte) (usage.Detail, bool) {
 	usageNode := gjson.ParseBytes(data).Get("response.usage")
+	if !hasOpenAIStyleUsageTokenFields(usageNode) {
+		return usage.Detail{}, false
+	}
+	return parseOpenAIStyleUsageNode(usageNode), true
+}
+
+func ParseCodexImageToolUsage(data []byte) (usage.Detail, bool) {
+	usageNode := gjson.ParseBytes(data).Get("response.tool_usage.image_gen")
 	if !hasOpenAIStyleUsageTokenFields(usageNode) {
 		return usage.Detail{}, false
 	}

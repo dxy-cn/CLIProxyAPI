@@ -1696,7 +1696,11 @@ func hasRequestedModelMetadata(meta map[string]any) bool {
 
 func contextWithRequestedModelAlias(ctx context.Context, opts cliproxyexecutor.Options, fallback string) context.Context {
 	alias := requestedModelAliasFromOptions(opts, fallback)
-	return coreusage.WithRequestedModelAlias(ctx, alias)
+	ctx = coreusage.WithRequestedModelAlias(ctx, alias)
+	if effort := reasoningEffortFromOptions(opts); effort != "" {
+		ctx = coreusage.WithReasoningEffort(ctx, effort)
+	}
+	return ctx
 }
 
 func requestedModelAliasFromOptions(opts cliproxyexecutor.Options, fallback string) string {
@@ -1721,6 +1725,24 @@ func requestedModelAliasFromOptions(opts cliproxyexecutor.Options, fallback stri
 		return strings.TrimSpace(string(value))
 	default:
 		return fallback
+	}
+}
+
+func reasoningEffortFromOptions(opts cliproxyexecutor.Options) string {
+	if len(opts.Metadata) == 0 {
+		return ""
+	}
+	raw, ok := opts.Metadata[cliproxyexecutor.ReasoningEffortMetadataKey]
+	if !ok || raw == nil {
+		return ""
+	}
+	switch value := raw.(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case []byte:
+		return strings.TrimSpace(string(value))
+	default:
+		return ""
 	}
 }
 
@@ -1758,6 +1780,28 @@ func boundAuthIndexFromMetadata(meta map[string]any) string {
 	default:
 		return ""
 	}
+}
+
+func disallowFreeAuthFromMetadata(meta map[string]any) bool {
+	if len(meta) == 0 {
+		return false
+	}
+	raw, ok := meta[cliproxyexecutor.DisallowFreeAuthMetadataKey]
+	if !ok || raw == nil {
+		return false
+	}
+	value, ok := raw.(bool)
+	return ok && value
+}
+
+func isFreeCodexAuth(auth *Auth) bool {
+	if auth == nil || auth.Attributes == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(auth.Attributes["plan_type"]), "free")
 }
 
 func publishSelectedAuthMetadata(meta map[string]any, authID string) {
@@ -3506,6 +3550,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	boundAuthIdx := boundAuthIndexFromMetadata(opts.Metadata)
+	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
 
 	m.mu.RLock()
 	executor, okExecutor := m.executors[provider]
@@ -3525,6 +3570,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	registryRef := registry.GetGlobalRegistry()
 	for _, candidate := range m.auths {
 		if candidate.Provider != provider || candidate.Disabled {
+			continue
+		}
+		if disallowFreeAuth && isFreeCodexAuth(candidate) {
 			continue
 		}
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
@@ -3579,7 +3627,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 }
 
 func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
-	if !m.useSchedulerFastPath() || boundAuthIndexFromMetadata(opts.Metadata) != "" {
+	if !m.useSchedulerFastPath() || boundAuthIndexFromMetadata(opts.Metadata) != "" || disallowFreeAuthFromMetadata(opts.Metadata) {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 	if strings.TrimSpace(model) != "" {
@@ -3632,6 +3680,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	boundAuthIdx := boundAuthIndexFromMetadata(opts.Metadata)
+	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
 
 	providerSet := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
@@ -3658,6 +3707,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	registryRef := registry.GetGlobalRegistry()
 	for _, candidate := range m.auths {
 		if candidate == nil || candidate.Disabled {
+			continue
+		}
+		if disallowFreeAuth && isFreeCodexAuth(candidate) {
 			continue
 		}
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
@@ -3728,7 +3780,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 }
 
 func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
-	if !m.useSchedulerFastPath() || boundAuthIndexFromMetadata(opts.Metadata) != "" {
+	if !m.useSchedulerFastPath() || boundAuthIndexFromMetadata(opts.Metadata) != "" || disallowFreeAuthFromMetadata(opts.Metadata) {
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
 

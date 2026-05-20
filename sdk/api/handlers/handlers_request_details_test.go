@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -159,5 +160,21 @@ func TestFilterProvidersByToolCompatibility(t *testing.T) {
 				t.Fatalf("filterProvidersByToolCompatibility() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGetRequestDetailsRejectsImageModelOutsideImagesEndpoint(t *testing.T) {
+	handler := NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, coreauth.NewManager(nil, nil, nil))
+
+	_, _, errMsg := handler.getRequestDetails("gpt-image-2")
+	if errMsg == nil {
+		t.Fatalf("expected error for gpt-image-2, got nil")
+	}
+	if errMsg.StatusCode == 0 {
+		t.Fatalf("expected status code for gpt-image-2 rejection")
+	}
+	msg := errMsg.Error.Error()
+	if !strings.Contains(msg, "/v1/images/generations") || !strings.Contains(msg, "/v1/images/edits") {
+		t.Fatalf("unexpected error message: %s", msg)
 	}
 }

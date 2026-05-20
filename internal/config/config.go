@@ -37,8 +37,8 @@ type Config struct {
 	// TLS config controls HTTPS server settings.
 	TLS TLSConfig `yaml:"tls" json:"tls"`
 
-	// Home config enables the Redis-based control plane integration.
-	Home HomeConfig `yaml:"home" json:"-"`
+	// Home config is runtime-only and is populated from -home-jwt.
+	Home HomeConfig `yaml:"-" json:"-"`
 
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
@@ -69,7 +69,9 @@ type Config struct {
 	// UsageStatisticsEnabled toggles in-memory usage aggregation; when false, usage data is discarded.
 	UsageStatisticsEnabled bool `yaml:"usage-statistics-enabled" json:"usage-statistics-enabled"`
 
-	// RedisUsageQueueRetentionSeconds limits in-process Redis RESP usage queue retention.
+	// RedisUsageQueueRetentionSeconds controls how long usage queue items are retained
+	// in memory for Management API consumers.
+	// Default: 60. Max: 3600.
 	RedisUsageQueueRetentionSeconds int `yaml:"redis-usage-queue-retention-seconds" json:"redis-usage-queue-retention-seconds"`
 
 	// UsagePersistenceEnabled toggles database persistence for usage statistics; when false (default),
@@ -560,6 +562,9 @@ type OpenAICompatibility struct {
 	// Prefix optionally namespaces model aliases for this provider (e.g., "teamA/kimi-k2").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
+	// Disabled prevents this provider from being used for routing.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+
 	// BaseURL is the base URL for the external OpenAI-compatible API endpoint.
 	BaseURL string `yaml:"base-url" json:"base-url"`
 
@@ -593,6 +598,9 @@ type OpenAICompatibilityModel struct {
 
 	// Alias is the model name alias that clients will use to reference this model.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// Image marks this model as callable through /v1/images/generations and /v1/images/edits.
+	Image bool `yaml:"image,omitempty" json:"image,omitempty"`
 
 	// Thinking configures the thinking/reasoning capability for this model.
 	// If nil, the model defaults to level-based reasoning with levels ["low", "medium", "high"].
@@ -647,6 +655,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.UsageStatisticsEnabled = false
 	cfg.RedisUsageQueueRetentionSeconds = 60
 	cfg.DisableCooling = false
+	cfg.DisableImageGeneration = DisableImageGenerationOff
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient

@@ -57,6 +57,7 @@ type pinnedAuthContextKey struct{}
 type selectedAuthCallbackContextKey struct{}
 type executionSessionContextKey struct{}
 type boundAuthIndexContextKey struct{}
+type disallowFreeAuthContextKey struct{}
 
 // WithPinnedAuthID returns a child context that requests execution on a specific auth ID.
 func WithPinnedAuthID(ctx context.Context, authID string) context.Context {
@@ -104,6 +105,14 @@ func WithExecutionSessionID(ctx context.Context, sessionID string) context.Conte
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, executionSessionContextKey{}, sessionID)
+}
+
+// WithDisallowFreeAuth returns a child context that requests skipping known free-tier credentials.
+func WithDisallowFreeAuth(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, disallowFreeAuthContextKey{}, true)
 }
 
 // BuildErrorResponseBody builds an OpenAI-compatible JSON error response body.
@@ -234,7 +243,34 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if boundAuthIndex := boundAuthIndexFromContext(ctx); boundAuthIndex != "" {
 		meta[coreexecutor.BoundAuthIndexMetadataKey] = boundAuthIndex
 	}
+	if disallowFreeAuthFromContext(ctx) {
+		meta[coreexecutor.DisallowFreeAuthMetadataKey] = true
+	}
 	return meta
+}
+
+func setReasoningEffortMetadata(meta map[string]any, handlerType, model string, rawJSON []byte) {
+	if meta == nil {
+		return
+	}
+	effort := thinking.ExtractReasoningEffort(rawJSON, handlerType, model)
+	if effort == "" {
+		return
+	}
+	meta[coreexecutor.ReasoningEffortMetadataKey] = effort
+}
+
+// headersFromContext extracts the original HTTP request headers from the gin context
+// embedded in the provided context. This allows session affinity selectors to read
+// client headers like X-Amp-Thread-Id.
+func headersFromContext(ctx context.Context) http.Header {
+	if ctx == nil {
+		return nil
+	}
+	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
+		return ginCtx.Request.Header.Clone()
+	}
+	return nil
 }
 
 func pinnedAuthIDFromContext(ctx context.Context) string {
@@ -291,6 +327,14 @@ func boundAuthIndexFromContext(ctx context.Context) string {
 	default:
 		return ""
 	}
+}
+
+func disallowFreeAuthFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	raw, ok := ctx.Value(disallowFreeAuthContextKey{}).(bool)
+	return ok && raw
 }
 
 // BoundAuthIndexFromContext exposes the bound auth_index (if any) for tests and
@@ -546,7 +590,16 @@ func appendAPIResponse(c *gin.Context, data []byte) {
 // ExecuteWithAuthManager executes a non-streaming request via the core auth manager.
 // This path is the only supported execution route.
 func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
-	providers, normalizedModel, errMsg := h.getRequestDetails(modelName)
+	return h.executeWithAuthManager(ctx, handlerType, modelName, rawJSON, alt, false)
+}
+
+// ExecuteImageWithAuthManager executes an OpenAI-compatible image endpoint request.
+func (h *BaseAPIHandler) ExecuteImageWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) ([]byte, http.Header, *interfaces.ErrorMessage) {
+	return h.executeWithAuthManager(ctx, handlerType, modelName, rawJSON, alt, true)
+}
+
+func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string, allowImageModel bool) ([]byte, http.Header, *interfaces.ErrorMessage) {
+	providers, normalizedModel, errMsg := h.getRequestDetailsWithOptions(modelName, allowImageModel)
 	if errMsg != nil {
 		return nil, nil, errMsg
 	}
@@ -556,6 +609,7 @@ func (h *BaseAPIHandler) ExecuteWithAuthManager(ctx context.Context, handlerType
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
+	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -607,6 +661,7 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
+	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -649,7 +704,16 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
 // This path is the only supported execution route.
 // The returned http.Header carries upstream response headers captured before streaming begins.
 func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
-	providers, normalizedModel, errMsg := h.getRequestDetails(modelName)
+	return h.executeStreamWithAuthManager(ctx, handlerType, modelName, rawJSON, alt, false)
+}
+
+// ExecuteImageStreamWithAuthManager executes a streaming OpenAI-compatible image endpoint request.
+func (h *BaseAPIHandler) ExecuteImageStreamWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
+	return h.executeStreamWithAuthManager(ctx, handlerType, modelName, rawJSON, alt, true)
+}
+
+func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string, allowImageModel bool) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
+	providers, normalizedModel, errMsg := h.getRequestDetailsWithOptions(modelName, allowImageModel)
 	if errMsg != nil {
 		errChan := make(chan *interfaces.ErrorMessage, 1)
 		errChan <- errMsg
@@ -665,6 +729,7 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
+	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	payload := rawJSON
 	if len(payload) == 0 {
 		payload = nil
@@ -871,6 +936,10 @@ func statusFromError(err error) int {
 }
 
 func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string, normalizedModel string, err *interfaces.ErrorMessage) {
+	return h.getRequestDetailsWithOptions(modelName, false)
+}
+
+func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowImageModel bool) (providers []string, normalizedModel string, err *interfaces.ErrorMessage) {
 	resolvedModelName := modelName
 	initialSuffix := thinking.ParseSuffix(modelName)
 	if initialSuffix.ModelName == "auto" {
@@ -895,6 +964,13 @@ func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string
 	parsed := thinking.ParseSuffix(resolvedModelName)
 	baseModel := strings.TrimSpace(parsed.ModelName)
 
+	if strings.EqualFold(routeModelBaseName(baseModel), "gpt-image-2") && !allowImageModel {
+		return nil, "", &interfaces.ErrorMessage{
+			StatusCode: http.StatusServiceUnavailable,
+			Error:      fmt.Errorf("model %s is only supported on /v1/images/generations and /v1/images/edits", routeModelBaseName(baseModel)),
+		}
+	}
+
 	if h != nil && h.AuthManager != nil && h.AuthManager.HomeEnabled() {
 		return []string{"home"}, resolvedModelName, nil
 	}
@@ -916,6 +992,14 @@ func (h *BaseAPIHandler) getRequestDetails(modelName string) (providers []string
 	// The thinking suffix is preserved in the model name itself, so no
 	// metadata-based configuration passing is needed.
 	return providers, resolvedModelName, nil
+}
+
+func routeModelBaseName(model string) string {
+	model = strings.TrimSpace(model)
+	if idx := strings.LastIndex(model, "/"); idx >= 0 && idx < len(model)-1 {
+		return strings.TrimSpace(model[idx+1:])
+	}
+	return model
 }
 
 func filterProvidersByToolCompatibility(providers []string, rawJSON []byte) []string {

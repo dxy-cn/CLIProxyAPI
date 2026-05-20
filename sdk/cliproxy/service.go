@@ -1630,8 +1630,12 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		if modelID == "" {
 			continue
 		}
+		modelType := "openai-compatibility"
+		if model.Image {
+			modelType = registry.OpenAIImageModelType
+		}
 		thinking := model.Thinking
-		if thinking == nil {
+		if thinking == nil && !model.Image {
 			thinking = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
 		}
 		models = append(models, &ModelInfo{
@@ -1639,7 +1643,7 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 			Object:      "model",
 			Created:     now,
 			OwnedBy:     compat.Name,
-			Type:        "openai-compatibility",
+			Type:        modelType,
 			DisplayName: modelID,
 			UserDefined: false,
 			Thinking:    thinking,
