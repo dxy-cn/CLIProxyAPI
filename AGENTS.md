@@ -16,11 +16,21 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 ```
 - Common flags: `--config <path>`, `--tui`, `--standalone`, `--local-model`, `--no-browser`, `--oauth-callback-port <port>`
 
+## Verification Guidance
+- Default full test: `go test ./...`
+- Default compile check: `go build -o /tmp/cli-proxy-api-build ./cmd/server`
+- Executor changes: run the package-level executor tests that cover the edited provider.
+- Management API changes: run `go test ./internal/api/handlers/management`.
+- Usage or monitor aggregation changes: run `go test ./internal/api/handlers/management ./internal/usage`.
+
 ## Config
 - Default config: `config.yaml` (template: `config.example.yaml`)
 - `.env` is auto-loaded from the working directory
 - Auth material defaults under `auths/`
 - Storage backends: file-based default; optional Postgres/git/object store (`PGSTORE_*`, `GITSTORE_*`, `OBJECTSTORE_*`)
+
+## Project Map
+See Architecture below for module ownership and runtime boundaries.
 
 ## Architecture
 - `cmd/server/` — Server entrypoint
@@ -56,3 +66,9 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - Use logrus structured logging; avoid leaking secrets/tokens in logs
 - Avoid panics in HTTP handlers; prefer logged errors and meaningful HTTP status codes
 - Timeouts are allowed only during credential acquisition; after an upstream connection is established, do not set timeouts for any subsequent network behavior. Intentional exceptions that must remain allowed are the Codex websocket liveness deadlines in `internal/runtime/executor/codex_websockets_executor.go`, the wsrelay session deadlines in `internal/wsrelay/session.go`, the management APICall timeout in `internal/api/handlers/management/api_tools.go`, and the `cmd/fetch_antigravity_models` utility timeouts
+
+## Hotspot Ownership
+- `sdk/cliproxy/auth/conductor.go`: OAuth/auth conductor. Preserve credential selection and secret-redaction boundaries. Verify with `go test ./sdk/cliproxy/auth ./internal/runtime/executor ./internal/api/handlers/management`.
+- `internal/api/handlers/management/auth_files.go`: management auth-file API surface. Preserve response contracts consumed by the management frontend. Verify with `go test ./internal/api/handlers/management`.
+- `internal/api/handlers/management/monitor.go`: monitor API aggregation. Preserve query/filter contracts consumed by monitor charts. Verify with `go test ./internal/api/handlers/management ./internal/usage`.
+- `internal/runtime/executor/antigravity_executor.go`: Antigravity runtime executor. Keep executor-only logic here; helpers belong under `internal/runtime/executor/helps/`.

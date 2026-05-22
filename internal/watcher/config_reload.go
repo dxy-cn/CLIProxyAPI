@@ -3,15 +3,18 @@
 package watcher
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
 	"reflect"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeys"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/diff"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	"gopkg.in/yaml.v3"
 
 	log "github.com/sirupsen/logrus"
@@ -94,6 +97,14 @@ func (w *Watcher) reloadConfig() bool {
 			log.Errorf("failed to resolve auth directory from config: %v", errResolveAuthDir)
 		} else {
 			newConfig.AuthDir = resolvedAuthDir
+		}
+	}
+	if tokenStore := sdkAuth.GetTokenStore(); tokenStore != nil {
+		if apiKeyStore, ok := tokenStore.(apikeys.Store); ok {
+			if errApply := apikeys.ApplyStoreToConfig(context.Background(), newConfig, apiKeyStore); errApply != nil {
+				log.Errorf("failed to reload api keys from store: %v", errApply)
+				return false
+			}
 		}
 	}
 

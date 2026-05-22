@@ -18,6 +18,7 @@ import (
 
 	"github.com/joho/godotenv"
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeys"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/authbootstrap"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cmd"
@@ -604,6 +605,15 @@ func main() {
 					"skipped":  result.Skipped,
 				}).Info("auth bootstrap completed")
 			}
+		}
+	}
+	if tokenStore := sdkAuth.GetTokenStore(); tokenStore != nil {
+		if apiKeyStore, ok := tokenStore.(apikeys.Store); ok {
+			if errApply := apikeys.ApplyStoreToConfig(context.Background(), cfg, apiKeyStore); errApply != nil {
+				log.Errorf("failed to load api keys from store: %v", errApply)
+				return
+			}
+			managementasset.SetCurrentConfig(cfg)
 		}
 	}
 

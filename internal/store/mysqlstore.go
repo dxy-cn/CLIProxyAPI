@@ -61,7 +61,6 @@ func NewMySQLStore(ctx context.Context, cfg MySQLStoreConfig) (*MySQLStore, erro
 	if cfg.AuthTable == "" {
 		cfg.AuthTable = defaultAuthTable
 	}
-
 	spoolRoot := strings.TrimSpace(cfg.SpoolDir)
 	if spoolRoot == "" {
 		if cwd, err := os.Getwd(); err == nil {
@@ -136,7 +135,7 @@ func (s *MySQLStore) EnsureSchema(ctx context.Context) error {
 				updated_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
 				PRIMARY KEY (id)
 			) DEFAULT CHARACTER SET utf8mb4
-		`, authTable)); err != nil {
+	`, authTable)); err != nil {
 		return fmt.Errorf("mysql store: create auth table: %w", err)
 	}
 	return nil
