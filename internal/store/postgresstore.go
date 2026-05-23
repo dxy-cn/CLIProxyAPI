@@ -152,9 +152,6 @@ func (s *PostgresStore) Bootstrap(ctx context.Context, exampleConfigPath string)
 	if err := s.syncConfigFromDatabase(ctx, exampleConfigPath); err != nil {
 		return err
 	}
-	if err := s.bootstrapAPIKeysFromConfig(ctx); err != nil {
-		return err
-	}
 	if err := s.syncAuthFromDatabase(ctx); err != nil {
 		return err
 	}

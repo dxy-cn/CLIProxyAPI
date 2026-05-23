@@ -129,3 +129,48 @@ func TestPutAPIKeysUsesStoreAndRefreshesRuntimeConfig(t *testing.T) {
 		t.Fatalf("db-backed api keys leaked back into config yaml: %s", string(data))
 	}
 }
+
+func TestConfigYAMLDoesNotExposeOrPersistAPIKeysWhenStoreBacked(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	initial := []byte("routing:\n  strategy: account-bind\napi-keys:\n  - old-yaml-key\n")
+	if err := os.WriteFile(configPath, initial, 0o600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	h := NewHandler(&config.Config{}, configPath, nil)
+	h.apiKeyStore = &fakeAPIKeyStore{}
+
+	getRec := httptest.NewRecorder()
+	getCtx, _ := gin.CreateTestContext(getRec)
+	getCtx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/config.yaml", nil)
+	h.GetConfigYAML(getCtx)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GetConfigYAML status = %d, want %d; body=%s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+	if strings.Contains(getRec.Body.String(), "api-keys") || strings.Contains(getRec.Body.String(), "old-yaml-key") {
+		t.Fatalf("db-backed config yaml exposed api keys: %s", getRec.Body.String())
+	}
+
+	putBody := "routing:\n  strategy: account-bind\napi-keys:\n  - new-yaml-key\n"
+	putRec := httptest.NewRecorder()
+	putCtx, _ := gin.CreateTestContext(putRec)
+	putCtx.Request = httptest.NewRequest(http.MethodPut, "/v0/management/config.yaml", strings.NewReader(putBody))
+	putCtx.Request.Header.Set(configHashHeader, getRec.Header().Get(configHashHeader))
+	h.PutConfigYAML(putCtx)
+
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PutConfigYAML status = %d, want %d; body=%s", putRec.Code, http.StatusOK, putRec.Body.String())
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read config: %v", err)
+	}
+	if strings.Contains(string(data), "api-keys") || strings.Contains(string(data), "new-yaml-key") {
+		t.Fatalf("db-backed config yaml persisted api keys: %s", string(data))
+	}
+}

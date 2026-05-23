@@ -1,6 +1,7 @@
 package apikeys
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"time"
@@ -27,25 +28,29 @@ type Store interface {
 	DeleteAPIKeyRecordByKey(ctx context.Context, key string) error
 }
 
-func ExtractYAMLRecords(data []byte) ([]Record, error) {
-	if len(data) == 0 {
-		return nil, nil
+func StripYAMLConfig(data []byte) ([]byte, error) {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return data, nil
 	}
 	var root yaml.Node
 	if err := yaml.Unmarshal(data, &root); err != nil {
 		return nil, err
 	}
 	if len(root.Content) == 0 || root.Content[0].Kind != yaml.MappingNode {
-		return nil, nil
+		return data, nil
 	}
 	doc := root.Content[0]
 	for i := 0; i+1 < len(doc.Content); i += 2 {
-		if doc.Content[i] == nil || doc.Content[i].Value != "api-keys" {
-			continue
+		if doc.Content[i] != nil && doc.Content[i].Value == "api-keys" {
+			doc.Content = append(doc.Content[:i], doc.Content[i+2:]...)
+			i -= 2
 		}
-		return recordsFromSequence(doc.Content[i+1]), nil
 	}
-	return nil, nil
+	out, err := yaml.Marshal(&root)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func ApplyToConfig(cfg *config.Config, records []Record) {
@@ -137,77 +142,4 @@ func NormalizeTags(tags []string) []string {
 		out = append(out, tag)
 	}
 	return out
-}
-
-func recordsFromSequence(seq *yaml.Node) []Record {
-	if seq == nil || seq.Kind != yaml.SequenceNode {
-		return nil
-	}
-	records := make([]Record, 0, len(seq.Content))
-	for _, item := range seq.Content {
-		switch item.Kind {
-		case yaml.ScalarNode:
-			record := NormalizeRecord(Record{APIKey: item.Value})
-			if record.APIKey != "" {
-				records = append(records, record)
-			}
-		case yaml.MappingNode:
-			record := NormalizeRecord(Record{
-				APIKey:       mappingScalar(item, "api-key", "apiKey", "key", "Key"),
-				Name:         mappingScalar(item, "name"),
-				AuthIdentity: mappingScalar(item, "auth_identity", "auth-identity", "authIdentity"),
-				Tags:         mappingTags(item, "tags"),
-			})
-			if record.APIKey != "" {
-				records = append(records, record)
-			}
-		}
-	}
-	return NormalizeRecords(records)
-}
-
-func mappingScalar(node *yaml.Node, names ...string) string {
-	if node == nil || node.Kind != yaml.MappingNode {
-		return ""
-	}
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		key := node.Content[i]
-		if key == nil {
-			continue
-		}
-		for _, name := range names {
-			if key.Value == name {
-				if value := node.Content[i+1]; value != nil && value.Kind == yaml.ScalarNode {
-					return value.Value
-				}
-			}
-		}
-	}
-	return ""
-}
-
-func mappingTags(node *yaml.Node, name string) []string {
-	if node == nil || node.Kind != yaml.MappingNode {
-		return nil
-	}
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		key := node.Content[i]
-		value := node.Content[i+1]
-		if key == nil || key.Value != name || value == nil {
-			continue
-		}
-		switch value.Kind {
-		case yaml.ScalarNode:
-			return NormalizeTags([]string{value.Value})
-		case yaml.SequenceNode:
-			tags := make([]string, 0, len(value.Content))
-			for _, item := range value.Content {
-				if item != nil && item.Kind == yaml.ScalarNode {
-					tags = append(tags, item.Value)
-				}
-			}
-			return NormalizeTags(tags)
-		}
-	}
-	return nil
 }

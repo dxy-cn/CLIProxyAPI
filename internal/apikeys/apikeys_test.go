@@ -2,32 +2,20 @@ package apikeys
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
-func TestExtractYAMLRecordsAndApplyToConfig(t *testing.T) {
-	data := []byte(`
-api-keys:
-  - sk-plain
-  - api-key: sk-object
-    name: Alice
-    auth_identity: codex:chatgpt:acct-1
-    tags:
-      - Java
-      - ""
-      - Tod
-      - Java
-  - apiKey: sk-camel
-    authIdentity: codex:chatgpt:acct-2
-    tags: Go
-`)
-
-	records, err := ExtractYAMLRecords(data)
-	if err != nil {
-		t.Fatalf("ExtractYAMLRecords returned error: %v", err)
+func TestApplyToConfigUsesDatabaseRecordsOnly(t *testing.T) {
+	records := []Record{
+		{APIKey: " sk-plain "},
+		{APIKey: "sk-object", Name: "Alice", AuthIdentity: " codex:chatgpt:acct-1 ", Tags: []string{"Java", "", "Tod", "Java"}},
+		{APIKey: "sk-camel", AuthIdentity: "codex:chatgpt:acct-2", Tags: []string{"Go"}},
 	}
+
+	records = NormalizeRecords(records)
 	if len(records) != 3 {
 		t.Fatalf("records len = %d, want 3: %#v", len(records), records)
 	}
@@ -52,5 +40,21 @@ api-keys:
 	}
 	if !reflect.DeepEqual(cfg.APIKeyAuthIdentityBindings, wantBindings) {
 		t.Fatalf("identity bindings = %#v, want %#v", cfg.APIKeyAuthIdentityBindings, wantBindings)
+	}
+}
+
+func TestStripYAMLConfigRemovesTopLevelAPIKeys(t *testing.T) {
+	data := []byte("routing:\n  strategy: account-bind\napi-keys:\n  - sk-yaml\nrequest-log: true\n")
+
+	stripped, err := StripYAMLConfig(data)
+	if err != nil {
+		t.Fatalf("StripYAMLConfig returned error: %v", err)
+	}
+	text := string(stripped)
+	if strings.Contains(text, "api-keys") || strings.Contains(text, "sk-yaml") {
+		t.Fatalf("stripped yaml still contains api keys: %s", text)
+	}
+	if !strings.Contains(text, "routing:") || !strings.Contains(text, "request-log: true") {
+		t.Fatalf("stripped yaml lost non-key config: %s", text)
 	}
 }

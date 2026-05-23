@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"io/fs"
 	"strings"
 	"time"
 
@@ -32,25 +31,6 @@ func (s *PostgresStore) ensureAPIKeySchema(ctx context.Context) error {
 		return fmt.Errorf("postgres store: create api key table: %w", err)
 	}
 	return nil
-}
-
-func (s *PostgresStore) bootstrapAPIKeysFromConfig(ctx context.Context) error {
-	count, err := s.countAPIKeyRecords(ctx)
-	if err != nil || count > 0 {
-		return err
-	}
-	records, err := extractAPIKeyRecordsFromFile(s.configPath)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("postgres store: read api keys from config: %w", err)
-	}
-	if len(records) == 0 {
-		return nil
-	}
-	_, err = s.ReplaceAPIKeyRecords(ctx, records)
-	return err
 }
 
 func (s *PostgresStore) countAPIKeyRecords(ctx context.Context) (int, error) {

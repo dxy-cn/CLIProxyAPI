@@ -2,7 +2,6 @@ package store
 
 import (
 	"encoding/json"
-	"os"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeys"
 )
@@ -26,12 +25,4 @@ func parseAPIKeyTags(data []byte) []string {
 		return nil
 	}
 	return apikeys.NormalizeTags(tags)
-}
-
-func extractAPIKeyRecordsFromFile(path string) ([]apikeys.Record, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	return apikeys.ExtractYAMLRecords(data)
 }
