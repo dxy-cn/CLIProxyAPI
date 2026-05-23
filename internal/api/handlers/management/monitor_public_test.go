@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeys"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -243,6 +244,75 @@ api-keys:
 	}
 	if item.TotalTokens != 30 {
 		t.Fatalf("current key tokens = %d, want 30", item.TotalTokens)
+	}
+}
+
+func TestPublicMonitorKeyTokenStatsUsesStoreBackedAPIKeyNames(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	const clientKey = "sk-db-current"
+	manager := coreauth.NewManager(nil, nil, nil)
+	registered, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-bound",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"id_token":     testMonitorCodexJWT(t, "acct-db-bound", "pro"),
+			"access_token": "access-token",
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	base := time.Date(2026, 5, 18, 12, 0, 0, 0, time.Local)
+	h := newMonitorTestHandler(
+		testUsageRecordWithAuth(base.Add(-1*time.Hour), clientKey, registered.Index, false),
+	)
+	h.cfg = &proxyconfig.Config{
+		SDKConfig: proxyconfig.SDKConfig{
+			APIKeys: proxyconfig.FlexAPIKeyList{clientKey},
+			APIKeyAuthIdentityBindings: map[string]string{
+				clientKey: "codex:chatgpt:acct-db-bound",
+			},
+		},
+		Routing: proxyconfig.RoutingConfig{Strategy: "account-bind"},
+	}
+	h.apiKeyStore = &fakeAPIKeyStore{
+		records: []apikeys.Record{
+			{ID: 1, APIKey: clientKey, Name: "DB Key Name", AuthIdentity: "codex:chatgpt:acct-db-bound"},
+		},
+	}
+	h.authManager = manager
+
+	router := gin.New()
+	router.GET("/public-monitor/key-token-stats", h.PublicMonitorAPIKeyMiddleware(), h.GetPublicMonitorKeyTokenStats)
+
+	req := httptest.NewRequest(http.MethodGet, "/public-monitor/key-token-stats?api_key="+clientKey, nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var resp struct {
+		CurrentKey struct {
+			APIKeyName  string `json:"api_key_name"`
+			DisplayName string `json:"display_name"`
+		} `json:"current_key"`
+		Items []struct {
+			APIKeyName  string `json:"api_key_name"`
+			DisplayName string `json:"display_name"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+	if resp.CurrentKey.APIKeyName != "DB Key Name" || resp.CurrentKey.DisplayName != "DB Key Name" {
+		t.Fatalf("store-backed current key metadata not used: %+v", resp.CurrentKey)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].APIKeyName != "DB Key Name" || resp.Items[0].DisplayName != "DB Key Name" {
+		t.Fatalf("store-backed item metadata not used: %+v", resp.Items)
 	}
 }
 

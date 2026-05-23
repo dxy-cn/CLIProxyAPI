@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"sort"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeys"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"gopkg.in/yaml.v3"
 )
@@ -156,9 +158,48 @@ func parseMonitorAPIKeyNameMap(data []byte) map[string]string {
 	return collectMonitorAPIKeyNames(topLevelEntries)
 }
 
-func (h *Handler) monitorAPIKeyConfigMap() map[string]string {
+func monitorAPIKeyRecordConfigMap(records []apikeys.Record, namesOnly bool) map[string]string {
+	if len(records) == 0 {
+		return nil
+	}
+	keys := make(map[string]string, len(records))
+	for _, record := range records {
+		apiKey := strings.TrimSpace(record.APIKey)
+		if apiKey == "" {
+			continue
+		}
+		name := strings.TrimSpace(record.Name)
+		if namesOnly && name == "" {
+			continue
+		}
+		keys[apiKey] = name
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	return keys
+}
+
+func (h *Handler) monitorAPIKeyStoreConfigMap(ctx context.Context, namesOnly bool) map[string]string {
+	if h == nil || h.apiKeyStore == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	records, err := h.apiKeyStore.ListAPIKeyRecords(ctx)
+	if err != nil {
+		return nil
+	}
+	return monitorAPIKeyRecordConfigMap(records, namesOnly)
+}
+
+func (h *Handler) monitorAPIKeyConfigMap(ctx context.Context) map[string]string {
 	if h == nil {
 		return nil
+	}
+	if keys := h.monitorAPIKeyStoreConfigMap(ctx, false); len(keys) > 0 {
+		return keys
 	}
 
 	configFilePath := strings.TrimSpace(h.configFilePath)
@@ -182,9 +223,12 @@ func (h *Handler) monitorAPIKeyConfigMap() map[string]string {
 	return keys
 }
 
-func (h *Handler) monitorAPIKeyNameMap() map[string]string {
+func (h *Handler) monitorAPIKeyNameMap(ctx context.Context) map[string]string {
 	if h == nil {
 		return nil
+	}
+	if names := h.monitorAPIKeyStoreConfigMap(ctx, true); len(names) > 0 {
+		return names
 	}
 	configFilePath := strings.TrimSpace(h.configFilePath)
 	if configFilePath == "" {
@@ -234,7 +278,7 @@ func (h *Handler) PublicMonitorAPIKeyMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		if _, ok := h.monitorAPIKeyConfigMap()[apiKey]; !ok {
+		if _, ok := h.monitorAPIKeyConfigMap(c.Request.Context())[apiKey]; !ok {
 			c.JSON(http.StatusNotFound, gin.H{"error": "api key not found"})
 			c.Abort()
 			return
@@ -332,7 +376,7 @@ func (h *Handler) monitorAPIKeysForBoundAuthIndex(authIndex, currentAPIKey strin
 	if currentAPIKey != "" {
 		candidates[currentAPIKey] = struct{}{}
 	}
-	for apiKey := range h.monitorAPIKeyConfigMap() {
+	for apiKey := range h.monitorAPIKeyConfigMap(context.Background()) {
 		if trimmed := strings.TrimSpace(apiKey); trimmed != "" {
 			candidates[trimmed] = struct{}{}
 		}
@@ -386,7 +430,9 @@ func lookupMonitorAPIKeysByName(query string, nameMap map[string]string) []strin
 
 func (h *Handler) buildMonitorRecordFilter(c *gin.Context, start, end *time.Time, status string) monitorRecordFilter {
 	apiKey := firstQuery(c, "api", "api_key")
+	ctx := context.Background()
 	if c != nil {
+		ctx = c.Request.Context()
 		if value, exists := c.Get(publicMonitorAPIKeyContextKey); exists {
 			if publicAPIKey, ok := value.(string); ok {
 				apiKey = publicAPIKey
@@ -403,6 +449,6 @@ func (h *Handler) buildMonitorRecordFilter(c *gin.Context, start, end *time.Time
 		Start:       start,
 		End:         end,
 	}
-	filter.APIMatchedKeys = lookupMonitorAPIKeysByName(filter.APIContains, h.monitorAPIKeyNameMap())
+	filter.APIMatchedKeys = lookupMonitorAPIKeysByName(filter.APIContains, h.monitorAPIKeyNameMap(ctx))
 	return filter
 }

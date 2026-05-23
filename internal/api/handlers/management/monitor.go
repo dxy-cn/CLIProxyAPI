@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"math"
 	"net/http"
 	"sort"
@@ -1806,7 +1807,11 @@ func monitorKeyTokenBreakdown(values map[string]int64, redact bool) map[string]i
 }
 
 func (h *Handler) monitorKeyTokenResponseContext(c *gin.Context) monitorKeyTokenResponseContext {
-	nameMap := h.monitorAPIKeyNameMap()
+	ctx := context.Background()
+	if c != nil {
+		ctx = c.Request.Context()
+	}
+	nameMap := h.monitorAPIKeyNameMap(ctx)
 	authNotes := h.monitorAuthNoteMap()
 	currentAPIKey := publicMonitorCurrentAPIKey(c)
 	currentName := ""
