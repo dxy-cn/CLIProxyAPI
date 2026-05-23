@@ -695,6 +695,63 @@ func TestAccountBindMiddleware_AuthIdentityBindingResolvesCurrentAuthIndex(t *te
 	}
 }
 
+func TestUpdateClientsRefreshesAccountBindBindings(t *testing.T) {
+	const clientKey = "sk-client"
+
+	gin.SetMode(gin.TestMode)
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+
+	cfg := &proxyconfig.Config{
+		SDKConfig: sdkconfig.SDKConfig{
+			APIKeys: sdkconfig.FlexAPIKeyList{clientKey},
+		},
+		Port:                   0,
+		AuthDir:                authDir,
+		Debug:                  true,
+		LoggingToFile:          false,
+		UsageStatisticsEnabled: false,
+		RemoteManagement:       proxyconfig.RemoteManagement{DisableControlPanel: true},
+		Routing:                proxyconfig.RoutingConfig{Strategy: "account-bind"},
+	}
+
+	authManager := auth.NewManager(nil, nil, nil)
+	registered, err := authManager.Register(context.Background(), &auth.Auth{
+		ID:       "auth-codex",
+		Provider: "codex",
+		FileName: "codex-after-api-key-save.json",
+		Metadata: map[string]any{
+			"id_token": testCodexJWT(t, "acct-after-save"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	s := NewServer(cfg, authManager, sdkaccess.NewManager(), filepath.Join(tmpDir, "config.yaml"))
+	updated := *cfg
+	updated.SDKConfig.APIKeyAuthIdentityBindings = map[string]string{
+		clientKey: "codex:chatgpt:acct-after-save",
+	}
+	s.UpdateClients(&updated)
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Set("apiKey", clientKey)
+
+	s.accountBindMiddleware()(c)
+
+	if c.IsAborted() {
+		t.Fatalf("middleware should not abort after UpdateClients refreshes binding config; status=%d", c.Writer.Status())
+	}
+	if got := sdkapi.BoundAuthIndexFromContext(c.Request.Context()); got != registered.Index {
+		t.Fatalf("updated auth_identity binding resolved to %q, want current auth_index %q", got, registered.Index)
+	}
+}
+
 func TestAccountBindMiddleware_UsesAuthenticatedUserAPIKey(t *testing.T) {
 	const clientKey = "sk-client"
 
