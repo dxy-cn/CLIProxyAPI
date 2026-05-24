@@ -1,6 +1,7 @@
 package apikeys
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
@@ -43,6 +44,60 @@ func TestApplyToConfigUsesDatabaseRecordsOnly(t *testing.T) {
 	}
 }
 
+func TestApplyStoreToConfigMergesExistingConfigKeysMissingFromStore(t *testing.T) {
+	cfg := &config.Config{
+		SDKConfig: config.SDKConfig{
+			APIKeys: config.FlexAPIKeyList{"sk-yaml", "sk-db"},
+			APIKeyAuthIdentityBindings: map[string]string{
+				"sk-yaml": "codex:chatgpt:acct-yaml",
+				"sk-db":   "codex:chatgpt:acct-yaml-db",
+			},
+		},
+	}
+	store := staticStore{
+		records: []Record{{APIKey: "sk-db", AuthIdentity: "codex:chatgpt:acct-db"}},
+	}
+	if err := ApplyStoreToConfig(nil, cfg, store); err != nil {
+		t.Fatalf("ApplyStoreToConfig returned error: %v", err)
+	}
+	if !reflect.DeepEqual([]string(cfg.APIKeys), []string{"sk-db", "sk-yaml"}) {
+		t.Fatalf("cfg APIKeys = %#v", []string(cfg.APIKeys))
+	}
+	if got := cfg.APIKeyAuthIdentityBindings["sk-db"]; got != "codex:chatgpt:acct-db" {
+		t.Fatalf("db identity binding = %q", got)
+	}
+	if got := cfg.APIKeyAuthIdentityBindings["sk-yaml"]; got != "codex:chatgpt:acct-yaml" {
+		t.Fatalf("yaml identity binding = %q", got)
+	}
+}
+
+func TestExtractYAMLRecordsReadsLegacyAPIKeys(t *testing.T) {
+	data := []byte(`
+api-keys:
+  - sk-plain
+  - name: Alice
+    api-key: sk-alice
+    auth_identity: codex:chatgpt:acct-alice
+  - name: Bob
+    key: sk-bob
+    auth-identity: codex:chatgpt:acct-bob
+`)
+
+	records := ExtractYAMLRecords(data)
+	if len(records) != 3 {
+		t.Fatalf("records len = %d, want 3: %#v", len(records), records)
+	}
+	if records[0].APIKey != "sk-plain" {
+		t.Fatalf("scalar key = %#v", records[0])
+	}
+	if records[1].APIKey != "sk-alice" || records[1].Name != "Alice" || records[1].AuthIdentity != "codex:chatgpt:acct-alice" {
+		t.Fatalf("object record = %#v", records[1])
+	}
+	if records[2].APIKey != "sk-bob" || records[2].Name != "Bob" || records[2].AuthIdentity != "codex:chatgpt:acct-bob" {
+		t.Fatalf("alternate object record = %#v", records[2])
+	}
+}
+
 func TestStripYAMLConfigRemovesTopLevelAPIKeys(t *testing.T) {
 	data := []byte("routing:\n  strategy: account-bind\napi-keys:\n  - sk-yaml\nrequest-log: true\n")
 
@@ -57,4 +112,28 @@ func TestStripYAMLConfigRemovesTopLevelAPIKeys(t *testing.T) {
 	if !strings.Contains(text, "routing:") || !strings.Contains(text, "request-log: true") {
 		t.Fatalf("stripped yaml lost non-key config: %s", text)
 	}
+}
+
+type staticStore struct {
+	records []Record
+}
+
+func (s staticStore) ListAPIKeyRecords(context.Context) ([]Record, error) {
+	return append([]Record(nil), s.records...), nil
+}
+
+func (s staticStore) ReplaceAPIKeyRecords(context.Context, []Record) ([]Record, error) {
+	return nil, nil
+}
+
+func (s staticStore) UpsertAPIKeyRecord(context.Context, Record) (Record, error) {
+	return Record{}, nil
+}
+
+func (s staticStore) DeleteAPIKeyRecord(context.Context, int64) error {
+	return nil
+}
+
+func (s staticStore) DeleteAPIKeyRecordByKey(context.Context, string) error {
+	return nil
 }

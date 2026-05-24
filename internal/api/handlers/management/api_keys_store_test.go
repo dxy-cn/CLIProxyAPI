@@ -130,6 +130,94 @@ func TestPutAPIKeysUsesStoreAndRefreshesRuntimeConfig(t *testing.T) {
 	}
 }
 
+func TestGetAPIKeysFallsBackToYAMLWhenStoreEmpty(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	initial := []byte(`
+api-keys:
+  - name: YAML Owner
+    api-key: sk-yaml
+    auth_identity: codex:chatgpt:acct-yaml
+`)
+	if err := os.WriteFile(configPath, initial, 0o600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	h := NewHandler(&config.Config{}, configPath, nil)
+	h.apiKeyStore = &fakeAPIKeyStore{}
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/api-keys", nil)
+	h.GetAPIKeys(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GetAPIKeys status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		APIKeys []apikeys.Record `json:"api-keys"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response JSON invalid: %v", err)
+	}
+	if len(payload.APIKeys) != 1 {
+		t.Fatalf("fallback records = %#v", payload.APIKeys)
+	}
+	got := payload.APIKeys[0]
+	if got.APIKey != "sk-yaml" || got.Name != "YAML Owner" || got.AuthIdentity != "codex:chatgpt:acct-yaml" {
+		t.Fatalf("fallback record = %#v", got)
+	}
+}
+
+func TestGetAPIKeysMergesStoreWithMissingYAMLKeys(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+api-keys:
+  - name: YAML Owner
+    api-key: sk-yaml
+  - name: YAML DB Owner
+    api-key: sk-db
+`), 0o600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	h := NewHandler(&config.Config{}, configPath, nil)
+	h.apiKeyStore = &fakeAPIKeyStore{
+		records: []apikeys.Record{{ID: 1, APIKey: "sk-db", Name: "DB Owner"}},
+	}
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/api-keys", nil)
+	h.GetAPIKeys(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GetAPIKeys status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		APIKeys []apikeys.Record `json:"api-keys"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response JSON invalid: %v", err)
+	}
+	if len(payload.APIKeys) != 2 {
+		t.Fatalf("merged records = %#v", payload.APIKeys)
+	}
+	if payload.APIKeys[0].APIKey != "sk-db" || payload.APIKeys[0].Name != "DB Owner" {
+		t.Fatalf("store record not preferred: %#v", payload.APIKeys)
+	}
+	if payload.APIKeys[1].APIKey != "sk-yaml" || payload.APIKeys[1].Name != "YAML Owner" {
+		t.Fatalf("yaml missing key not merged: %#v", payload.APIKeys)
+	}
+}
+
 func TestConfigYAMLDoesNotExposeOrPersistAPIKeysWhenStoreBacked(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 	gin.SetMode(gin.TestMode)

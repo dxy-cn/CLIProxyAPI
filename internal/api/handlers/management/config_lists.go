@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -115,6 +116,7 @@ func (h *Handler) GetAPIKeys(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to load api keys: %v", err)})
 			return
 		}
+		records = apikeys.MergeMissingRecords(records, h.fallbackYAMLAPIKeyRecords())
 		c.JSON(http.StatusOK, gin.H{"api-keys": records})
 		return
 	}
@@ -317,6 +319,21 @@ func parseAPIKeyRecords(data []byte) ([]apikeys.Record, error) {
 		}
 		return recordsFromKeys(stringWrapper.Value), nil
 	}
+}
+
+func (h *Handler) fallbackYAMLAPIKeyRecords() []apikeys.Record {
+	if h == nil {
+		return nil
+	}
+	configFilePath := strings.TrimSpace(h.configFilePath)
+	if configFilePath == "" {
+		return nil
+	}
+	data, err := os.ReadFile(configFilePath)
+	if err != nil {
+		return nil
+	}
+	return apikeys.ExtractYAMLRecords(data)
 }
 
 func recordsFromKeys(keys []string) []apikeys.Record {

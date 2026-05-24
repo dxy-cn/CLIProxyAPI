@@ -53,6 +53,31 @@ func StripYAMLConfig(data []byte) ([]byte, error) {
 	return out, nil
 }
 
+func ExtractYAMLRecords(data []byte) []Record {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil || len(root.Content) == 0 {
+		return nil
+	}
+	doc := root.Content[0]
+	if doc.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(doc.Content); i += 2 {
+		if doc.Content[i] == nil || doc.Content[i].Value != "api-keys" {
+			continue
+		}
+		seq := doc.Content[i+1]
+		if seq == nil || seq.Kind != yaml.SequenceNode {
+			return nil
+		}
+		return NormalizeRecords(recordsFromYAMLSequence(seq))
+	}
+	return nil
+}
+
 func ApplyToConfig(cfg *config.Config, records []Record) {
 	if cfg == nil {
 		return
@@ -92,8 +117,30 @@ func ApplyStoreToConfig(ctx context.Context, cfg *config.Config, store Store) er
 	if err != nil {
 		return err
 	}
-	ApplyToConfig(cfg, records)
+	ApplyToConfig(cfg, MergeMissingRecords(records, recordsFromConfig(cfg)))
 	return nil
+}
+
+func MergeMissingRecords(primary, fallback []Record) []Record {
+	normalizedPrimary := NormalizeRecords(primary)
+	normalizedFallback := NormalizeRecords(fallback)
+	if len(normalizedFallback) == 0 {
+		return normalizedPrimary
+	}
+	out := make([]Record, 0, len(normalizedPrimary)+len(normalizedFallback))
+	seen := make(map[string]struct{}, len(normalizedPrimary)+len(normalizedFallback))
+	for _, record := range normalizedPrimary {
+		seen[record.APIKey] = struct{}{}
+		out = append(out, record)
+	}
+	for _, record := range normalizedFallback {
+		if _, ok := seen[record.APIKey]; ok {
+			continue
+		}
+		seen[record.APIKey] = struct{}{}
+		out = append(out, record)
+	}
+	return out
 }
 
 func NormalizeRecords(records []Record) []Record {
@@ -142,4 +189,58 @@ func NormalizeTags(tags []string) []string {
 		out = append(out, tag)
 	}
 	return out
+}
+
+func recordsFromConfig(cfg *config.Config) []Record {
+	if cfg == nil || len(cfg.APIKeys) == 0 {
+		return nil
+	}
+	records := make([]Record, 0, len(cfg.APIKeys))
+	for _, key := range cfg.APIKeys {
+		record := Record{APIKey: key}
+		if cfg.APIKeyAuthIdentityBindings != nil {
+			record.AuthIdentity = cfg.APIKeyAuthIdentityBindings[key]
+		}
+		records = append(records, record)
+	}
+	return NormalizeRecords(records)
+}
+
+func recordsFromYAMLSequence(seq *yaml.Node) []Record {
+	if seq == nil || seq.Kind != yaml.SequenceNode {
+		return nil
+	}
+	records := make([]Record, 0, len(seq.Content))
+	for _, item := range seq.Content {
+		switch item.Kind {
+		case yaml.ScalarNode:
+			records = append(records, Record{APIKey: item.Value})
+		case yaml.MappingNode:
+			records = append(records, recordFromYAMLMapping(item))
+		}
+	}
+	return records
+}
+
+func recordFromYAMLMapping(node *yaml.Node) Record {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return Record{}
+	}
+	record := Record{}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		value := node.Content[i+1]
+		if key == nil || value == nil || key.Kind != yaml.ScalarNode || value.Kind != yaml.ScalarNode {
+			continue
+		}
+		switch key.Value {
+		case "api-key", "apiKey", "key", "Key":
+			record.APIKey = value.Value
+		case "name":
+			record.Name = value.Value
+		case "auth_identity", "auth-identity", "authIdentity":
+			record.AuthIdentity = value.Value
+		}
+	}
+	return record
 }
