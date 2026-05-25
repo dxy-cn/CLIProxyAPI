@@ -1159,9 +1159,13 @@ type monitorKpiResponse struct {
 }
 
 type monitorModelDistributionItem struct {
-	Model    string `json:"model"`
-	Requests int64  `json:"requests"`
-	Tokens   int64  `json:"tokens"`
+	Model           string `json:"model"`
+	Requests        int64  `json:"requests"`
+	Tokens          int64  `json:"tokens"`
+	InputTokens     int64  `json:"input_tokens"`
+	OutputTokens    int64  `json:"output_tokens"`
+	ReasoningTokens int64  `json:"reasoning_tokens"`
+	CachedTokens    int64  `json:"cached_tokens"`
 }
 
 type monitorDailyTrendItem struct {
@@ -1360,9 +1364,13 @@ func (h *Handler) GetMonitorModelDistribution(c *gin.Context) {
 			items := make([]monitorModelDistributionItem, 0, len(result))
 			for _, row := range result {
 				items = append(items, monitorModelDistributionItem{
-					Model:    row.Model,
-					Requests: row.Requests,
-					Tokens:   row.Tokens,
+					Model:           row.Model,
+					Requests:        row.Requests,
+					Tokens:          row.Tokens,
+					InputTokens:     row.InputTokens,
+					OutputTokens:    row.OutputTokens,
+					ReasoningTokens: row.ReasoningTokens,
+					CachedTokens:    row.CachedTokens,
 				})
 			}
 			c.JSON(http.StatusOK, gin.H{
@@ -1374,8 +1382,12 @@ func (h *Handler) GetMonitorModelDistribution(c *gin.Context) {
 	}
 
 	type modelAcc struct {
-		Requests int64
-		Tokens   int64
+		Requests        int64
+		Tokens          int64
+		InputTokens     int64
+		OutputTokens    int64
+		ReasoningTokens int64
+		CachedTokens    int64
 	}
 	modelMap := make(map[string]*modelAcc)
 
@@ -1389,15 +1401,25 @@ func (h *Handler) GetMonitorModelDistribution(c *gin.Context) {
 			modelMap[record.Model] = acc
 		}
 		acc.Requests++
-		acc.Tokens += record.TotalTokens
+		if !record.Failed {
+			acc.Tokens += record.TotalTokens
+			acc.InputTokens += record.InputTokens
+			acc.OutputTokens += record.OutputTokens
+			acc.ReasoningTokens += record.ReasoningTokens
+			acc.CachedTokens += record.CachedTokens
+		}
 	})
 
 	items := make([]monitorModelDistributionItem, 0, len(modelMap))
 	for model, acc := range modelMap {
 		items = append(items, monitorModelDistributionItem{
-			Model:    model,
-			Requests: acc.Requests,
-			Tokens:   acc.Tokens,
+			Model:           model,
+			Requests:        acc.Requests,
+			Tokens:          acc.Tokens,
+			InputTokens:     acc.InputTokens,
+			OutputTokens:    acc.OutputTokens,
+			ReasoningTokens: acc.ReasoningTokens,
+			CachedTokens:    acc.CachedTokens,
 		})
 	}
 
