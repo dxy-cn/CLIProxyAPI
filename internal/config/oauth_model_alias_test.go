@@ -29,21 +29,21 @@ func TestSanitizeOAuthModelAlias_PreservesForkFlag(t *testing.T) {
 func TestSanitizeOAuthModelAlias_AllowsMultipleAliasesForSameName(t *testing.T) {
 	cfg := &Config{
 		OAuthModelAlias: map[string][]OAuthModelAlias{
-			"antigravity": {
-				{Name: "gemini-claude-opus-4-5-thinking", Alias: "claude-opus-4-5-20251101", Fork: true},
-				{Name: "gemini-claude-opus-4-5-thinking", Alias: "claude-opus-4-5-20251101-thinking", Fork: true},
-				{Name: "gemini-claude-opus-4-5-thinking", Alias: "claude-opus-4-5", Fork: true},
+			"codex": {
+				{Name: "gpt-5", Alias: "gpt-5-latest", Fork: true},
+				{Name: "gpt-5", Alias: "gpt-5-thinking", Fork: true},
+				{Name: "gpt-5", Alias: "g5", Fork: true},
 			},
 		},
 	}
 
 	cfg.SanitizeOAuthModelAlias()
 
-	aliases := cfg.OAuthModelAlias["antigravity"]
+	aliases := cfg.OAuthModelAlias["codex"]
 	expected := []OAuthModelAlias{
-		{Name: "gemini-claude-opus-4-5-thinking", Alias: "claude-opus-4-5-20251101", Fork: true},
-		{Name: "gemini-claude-opus-4-5-thinking", Alias: "claude-opus-4-5-20251101-thinking", Fork: true},
-		{Name: "gemini-claude-opus-4-5-thinking", Alias: "claude-opus-4-5", Fork: true},
+		{Name: "gpt-5", Alias: "gpt-5-latest", Fork: true},
+		{Name: "gpt-5", Alias: "gpt-5-thinking", Fork: true},
+		{Name: "gpt-5", Alias: "g5", Fork: true},
 	}
 	if len(aliases) != len(expected) {
 		t.Fatalf("expected %d sanitized aliases, got %d", len(expected), len(aliases))

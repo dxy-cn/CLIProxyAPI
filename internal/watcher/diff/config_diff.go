@@ -86,9 +86,6 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.QuotaExceeded.SwitchPreviewModel != newCfg.QuotaExceeded.SwitchPreviewModel {
 		changes = append(changes, fmt.Sprintf("quota-exceeded.switch-preview-model: %t -> %t", oldCfg.QuotaExceeded.SwitchPreviewModel, newCfg.QuotaExceeded.SwitchPreviewModel))
 	}
-	if oldCfg.QuotaExceeded.AntigravityCredits != newCfg.QuotaExceeded.AntigravityCredits {
-		changes = append(changes, fmt.Sprintf("quota-exceeded.antigravity-credits: %t -> %t", oldCfg.QuotaExceeded.AntigravityCredits, newCfg.QuotaExceeded.AntigravityCredits))
-	}
 	if strings.TrimSpace(oldCfg.QuotaWarning.WebhookURL) != strings.TrimSpace(newCfg.QuotaWarning.WebhookURL) {
 		changes = append(changes, fmt.Sprintf("quota-warning.webhook-url: %s", redactedPresenceChange(oldCfg.QuotaWarning.WebhookURL, newCfg.QuotaWarning.WebhookURL)))
 	}

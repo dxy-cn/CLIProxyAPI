@@ -531,39 +531,6 @@ func firstExistingUsageNode(root gjson.Result, paths ...string) gjson.Result {
 	return gjson.Result{}
 }
 
-func ParseAntigravityUsage(data []byte) usage.Detail {
-	usageNode := gjson.ParseBytes(data)
-	node := usageNode.Get("response.usageMetadata")
-	if !node.Exists() {
-		node = usageNode.Get("usageMetadata")
-	}
-	if !node.Exists() {
-		node = usageNode.Get("usage_metadata")
-	}
-	if !node.Exists() {
-		return usage.Detail{}
-	}
-	return parseGeminiFamilyUsageDetail(node)
-}
-
-func ParseAntigravityStreamUsage(line []byte) (usage.Detail, bool) {
-	payload := jsonPayload(line)
-	if len(payload) == 0 || !gjson.ValidBytes(payload) {
-		return usage.Detail{}, false
-	}
-	node := gjson.GetBytes(payload, "response.usageMetadata")
-	if !node.Exists() {
-		node = gjson.GetBytes(payload, "usageMetadata")
-	}
-	if !node.Exists() {
-		node = gjson.GetBytes(payload, "usage_metadata")
-	}
-	if !node.Exists() {
-		return usage.Detail{}, false
-	}
-	return parseGeminiFamilyUsageDetail(node), true
-}
-
 var stopChunkWithoutUsage sync.Map
 
 func rememberStopWithoutUsage(traceID string) {
@@ -573,7 +540,7 @@ func rememberStopWithoutUsage(traceID string) {
 
 // FilterSSEUsageMetadata removes usageMetadata from SSE events that are not
 // terminal (finishReason != "stop"). Stop chunks are left untouched. This
-// function is shared between aistudio and antigravity executors.
+// function is shared by Gemini-family executors.
 func FilterSSEUsageMetadata(payload []byte) []byte {
 	if len(payload) == 0 {
 		return payload
@@ -635,16 +602,14 @@ func FilterSSEUsageMetadata(payload []byte) []byte {
 }
 
 // StripUsageMetadataFromJSON drops usageMetadata unless finishReason is present (terminal).
-// It handles both formats:
-// - Aistudio: candidates.0.finishReason
-// - Antigravity: response.candidates.0.finishReason
+// It handles both direct and response-wrapped Gemini-family formats.
 func StripUsageMetadataFromJSON(rawJSON []byte) ([]byte, bool) {
 	jsonBytes := bytes.TrimSpace(rawJSON)
 	if len(jsonBytes) == 0 || !gjson.ValidBytes(jsonBytes) {
 		return rawJSON, false
 	}
 
-	// Check for finishReason in both aistudio and antigravity formats
+	// Check for finishReason in both direct and response-wrapped formats.
 	finishReason := gjson.GetBytes(jsonBytes, "candidates.0.finishReason")
 	if !finishReason.Exists() {
 		finishReason = gjson.GetBytes(jsonBytes, "response.candidates.0.finishReason")

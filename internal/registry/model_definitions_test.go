@@ -70,18 +70,17 @@ func TestValidateModelsCatalogRejectsInvalidDefinitions(t *testing.T) {
 func validTestModelsCatalog() *staticModelsJSON {
 	models := []*ModelInfo{{ID: "test-model"}}
 	return &staticModelsJSON{
-		Claude:      models,
-		Gemini:      models,
-		Vertex:      models,
-		GeminiCLI:   models,
-		AIStudio:    models,
-		CodexFree:   models,
-		CodexTeam:   models,
-		CodexPlus:   models,
-		CodexPro:    models,
-		Kimi:        models,
-		Antigravity: models,
-		XAI:         models,
+		Claude:    models,
+		Gemini:    models,
+		Vertex:    models,
+		GeminiCLI: models,
+		AIStudio:  models,
+		CodexFree: models,
+		CodexTeam: models,
+		CodexPlus: models,
+		CodexPro:  models,
+		Kimi:      models,
+		XAI:       models,
 	}
 }
 

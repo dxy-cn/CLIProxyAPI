@@ -259,8 +259,7 @@ func performGeminiCLISetup(ctx context.Context, httpClient *http.Client, storage
 	}
 	if projectID == "" {
 		// Auto-discovery: try onboardUser without specifying a project
-		// to let Google auto-provision one (matches Gemini CLI headless behavior
-		// and Antigravity's FetchProjectID pattern).
+		// to let Google auto-provision one.
 		autoOnboardReq := map[string]any{
 			"tierId":   tierID,
 			"metadata": metadata,

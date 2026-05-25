@@ -875,7 +875,7 @@ func cloneModelMapValue(value any) any {
 
 // GetAvailableModelsByProvider returns models available for the given provider identifier.
 // Parameters:
-//   - provider: Provider identifier (e.g., "codex", "gemini", "antigravity")
+//   - provider: Provider identifier (e.g., "codex", "gemini", "claude")
 //
 // Returns:
 //   - []*ModelInfo: List of available models for the provider

@@ -26,10 +26,7 @@ var aiAPIPrefixes = []string{
 	"/api/provider/",
 }
 
-const (
-	skipGinLogKey  = "__gin_skip_request_logging__"
-	creditsUsedKey = "__antigravity_credits_used__"
-)
+const skipGinLogKey = "__gin_skip_request_logging__"
 
 // GinLogrusLogger returns a Gin middleware handler that logs HTTP requests and responses
 // using logrus. It captures request details including method, path, status code, latency,
@@ -81,9 +78,6 @@ func GinLogrusLogger() gin.HandlerFunc {
 			requestID = "--------"
 		}
 		logLine := fmt.Sprintf("%3d | %13v | %15s | %-7s \"%s\"", statusCode, latency, clientIP, method, path)
-		if creditsUsed(c) {
-			logLine += " [credits]"
-		}
 		if errorMessage != "" {
 			logLine = logLine + " | " + errorMessage
 		}
@@ -148,18 +142,6 @@ func shouldSkipGinRequestLogging(c *gin.Context) bool {
 		return false
 	}
 	val, exists := c.Get(skipGinLogKey)
-	if !exists {
-		return false
-	}
-	flag, ok := val.(bool)
-	return ok && flag
-}
-
-func creditsUsed(c *gin.Context) bool {
-	if c == nil {
-		return false
-	}
-	val, exists := c.Get(creditsUsedKey)
 	if !exists {
 		return false
 	}

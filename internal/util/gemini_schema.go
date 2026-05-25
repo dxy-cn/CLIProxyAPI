@@ -11,16 +11,7 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-var gjsonPathKeyReplacer = strings.NewReplacer(".", "\\.", "*", "\\*", "?", "\\?")
-
 const placeholderReasonDescription = "Brief explanation of why you are calling this tool"
-
-// CleanJSONSchemaForAntigravity transforms a JSON schema to be compatible with Antigravity API.
-// It handles unsupported keywords, type flattening, and schema simplification while preserving
-// semantic information as description hints.
-func CleanJSONSchemaForAntigravity(jsonStr string) string {
-	return cleanJSONSchema(jsonStr, true)
-}
 
 // CleanJSONSchemaForGemini transforms a JSON schema to be compatible with Gemini tool calling.
 // It removes unsupported keywords and simplifies schemas, without adding empty-schema placeholders.
@@ -201,7 +192,7 @@ func convertEnumValuesToStrings(jsonStr string) string {
 		}
 
 		// Always update enum values to strings and set type to "string"
-		// This ensures compatibility with Antigravity Gemini which only allows enum for STRING type
+		// This ensures compatibility with Gemini APIs that only allow enum for STRING type
 		updated, _ := sjson.SetBytes([]byte(jsonStr), p, stringVals)
 		jsonStr = string(updated)
 		parentPath := trimSuffix(p, ".enum")
@@ -733,13 +724,6 @@ func orDefault(val, def string) string {
 		return def
 	}
 	return val
-}
-
-func escapeGJSONPathKey(key string) string {
-	if strings.IndexAny(key, ".*?") == -1 {
-		return key
-	}
-	return gjsonPathKeyReplacer.Replace(key)
 }
 
 func unescapeGJSONPathKey(key string) string {

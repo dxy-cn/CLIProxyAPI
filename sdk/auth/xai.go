@@ -20,6 +20,12 @@ import (
 // XAIAuthenticator implements the xAI Grok OAuth loopback flow.
 type XAIAuthenticator struct{}
 
+type callbackResult struct {
+	Code  string
+	State string
+	Error string
+}
+
 // NewXAIAuthenticator constructs a new xAI authenticator.
 func NewXAIAuthenticator() Authenticator {
 	return &XAIAuthenticator{}

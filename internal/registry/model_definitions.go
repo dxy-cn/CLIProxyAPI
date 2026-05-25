@@ -15,18 +15,17 @@ const (
 
 // staticModelsJSON mirrors the top-level structure of models.json.
 type staticModelsJSON struct {
-	Claude      []*ModelInfo `json:"claude"`
-	Gemini      []*ModelInfo `json:"gemini"`
-	Vertex      []*ModelInfo `json:"vertex"`
-	GeminiCLI   []*ModelInfo `json:"gemini-cli"`
-	AIStudio    []*ModelInfo `json:"aistudio"`
-	CodexFree   []*ModelInfo `json:"codex-free"`
-	CodexTeam   []*ModelInfo `json:"codex-team"`
-	CodexPlus   []*ModelInfo `json:"codex-plus"`
-	CodexPro    []*ModelInfo `json:"codex-pro"`
-	Kimi        []*ModelInfo `json:"kimi"`
-	Antigravity []*ModelInfo `json:"antigravity"`
-	XAI         []*ModelInfo `json:"xai"`
+	Claude    []*ModelInfo `json:"claude"`
+	Gemini    []*ModelInfo `json:"gemini"`
+	Vertex    []*ModelInfo `json:"vertex"`
+	GeminiCLI []*ModelInfo `json:"gemini-cli"`
+	AIStudio  []*ModelInfo `json:"aistudio"`
+	CodexFree []*ModelInfo `json:"codex-free"`
+	CodexTeam []*ModelInfo `json:"codex-team"`
+	CodexPlus []*ModelInfo `json:"codex-plus"`
+	CodexPro  []*ModelInfo `json:"codex-pro"`
+	Kimi      []*ModelInfo `json:"kimi"`
+	XAI       []*ModelInfo `json:"xai"`
 }
 
 // GetClaudeModels returns the standard Claude model definitions.
@@ -77,11 +76,6 @@ func GetCodexProModels() []*ModelInfo {
 // GetKimiModels returns the standard Kimi (Moonshot AI) model definitions.
 func GetKimiModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Kimi)
-}
-
-// GetAntigravityModels returns the standard Antigravity model definitions.
-func GetAntigravityModels() []*ModelInfo {
-	return cloneModelInfos(getModels().Antigravity)
 }
 
 // GetXAIModels returns the standard xAI Grok model definitions.
@@ -222,7 +216,6 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 //   - aistudio
 //   - codex
 //   - kimi
-//   - antigravity
 //   - xai
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
@@ -241,8 +234,6 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetCodexProModels()
 	case "kimi":
 		return GetKimiModels()
-	case "antigravity":
-		return GetAntigravityModels()
 	case "xai", "x-ai", "grok":
 		return GetXAIModels()
 	default:
@@ -266,7 +257,6 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.AIStudio,
 		data.CodexPro,
 		data.Kimi,
-		data.Antigravity,
 		data.XAI,
 	}
 	for _, models := range allModels {
