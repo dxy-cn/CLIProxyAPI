@@ -297,7 +297,7 @@ func TestPatchAPIKeysUpdatesCurrentRecordByIndexWithoutOverwritingDuplicateKey(t
 	}
 }
 
-func TestGetAPIKeysFallsBackToYAMLWhenStoreEmpty(t *testing.T) {
+func TestGetAPIKeysDoesNotFallBackToYAMLWhenStoreBacked(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 	gin.SetMode(gin.TestMode)
 
@@ -330,16 +330,12 @@ api-keys:
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("response JSON invalid: %v", err)
 	}
-	if len(payload.APIKeys) != 1 {
-		t.Fatalf("fallback records = %#v", payload.APIKeys)
-	}
-	got := payload.APIKeys[0]
-	if got.APIKey != "sk-yaml" || got.Name != "YAML Owner" || got.AuthIdentity != "codex:chatgpt:acct-yaml" {
-		t.Fatalf("fallback record = %#v", got)
+	if len(payload.APIKeys) != 0 {
+		t.Fatalf("expected no YAML fallback records, got %#v", payload.APIKeys)
 	}
 }
 
-func TestGetAPIKeysMergesStoreWithMissingYAMLKeys(t *testing.T) {
+func TestGetAPIKeysUsesStoreRecordsOnly(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 	gin.SetMode(gin.TestMode)
 
@@ -374,14 +370,11 @@ api-keys:
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("response JSON invalid: %v", err)
 	}
-	if len(payload.APIKeys) != 2 {
-		t.Fatalf("merged records = %#v", payload.APIKeys)
+	if len(payload.APIKeys) != 1 {
+		t.Fatalf("store records = %#v", payload.APIKeys)
 	}
-	if payload.APIKeys[0].APIKey != "sk-db" || payload.APIKeys[0].Name != "YAML DB Owner" {
-		t.Fatalf("yaml duplicate record not preferred: %#v", payload.APIKeys)
-	}
-	if payload.APIKeys[1].APIKey != "sk-yaml" || payload.APIKeys[1].Name != "YAML Owner" {
-		t.Fatalf("yaml missing key not merged: %#v", payload.APIKeys)
+	if payload.APIKeys[0].APIKey != "sk-db" || payload.APIKeys[0].Name != "DB Owner" {
+		t.Fatalf("store record not returned: %#v", payload.APIKeys)
 	}
 }
 

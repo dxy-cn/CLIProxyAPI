@@ -44,7 +44,7 @@ func TestApplyToConfigUsesDatabaseRecordsOnly(t *testing.T) {
 	}
 }
 
-func TestApplyStoreToConfigGivesYAMLRecordsPrecedence(t *testing.T) {
+func TestApplyStoreToConfigUsesStoreRecordsOnly(t *testing.T) {
 	cfg := &config.Config{
 		SDKConfig: config.SDKConfig{
 			APIKeys: config.FlexAPIKeyList{"sk-yaml", "sk-db"},
@@ -60,14 +60,11 @@ func TestApplyStoreToConfigGivesYAMLRecordsPrecedence(t *testing.T) {
 	if err := ApplyStoreToConfig(nil, cfg, store); err != nil {
 		t.Fatalf("ApplyStoreToConfig returned error: %v", err)
 	}
-	if !reflect.DeepEqual([]string(cfg.APIKeys), []string{"sk-db", "sk-yaml"}) {
+	if !reflect.DeepEqual([]string(cfg.APIKeys), []string{"sk-db"}) {
 		t.Fatalf("cfg APIKeys = %#v", []string(cfg.APIKeys))
 	}
-	if got := cfg.APIKeyAuthIdentityBindings["sk-db"]; got != "codex:chatgpt:acct-yaml-db" {
-		t.Fatalf("yaml identity binding = %q", got)
-	}
-	if got := cfg.APIKeyAuthIdentityBindings["sk-yaml"]; got != "codex:chatgpt:acct-yaml" {
-		t.Fatalf("yaml identity binding = %q", got)
+	if got := cfg.APIKeyAuthIdentityBindings["sk-db"]; got != "codex:chatgpt:acct-db" {
+		t.Fatalf("db identity binding = %q", got)
 	}
 }
 

@@ -121,53 +121,8 @@ func ApplyStoreToConfig(ctx context.Context, cfg *config.Config, store Store) er
 	if err != nil {
 		return err
 	}
-	ApplyToConfig(cfg, MergeRecordsWithOverride(records, recordsFromConfig(cfg)))
+	ApplyToConfig(cfg, records)
 	return nil
-}
-
-func MergeRecordsWithOverride(primary, override []Record) []Record {
-	normalizedPrimary := NormalizeRecords(primary)
-	normalizedOverride := NormalizeRecords(override)
-	if len(normalizedOverride) == 0 {
-		return normalizedPrimary
-	}
-	out := make([]Record, 0, len(normalizedPrimary)+len(normalizedOverride))
-	positions := make(map[string]int, len(normalizedPrimary)+len(normalizedOverride))
-	for _, record := range normalizedPrimary {
-		positions[record.APIKey] = len(out)
-		out = append(out, record)
-	}
-	for _, record := range normalizedOverride {
-		if pos, ok := positions[record.APIKey]; ok {
-			out[pos] = record
-			continue
-		}
-		positions[record.APIKey] = len(out)
-		out = append(out, record)
-	}
-	return out
-}
-
-func MergeMissingRecords(primary, fallback []Record) []Record {
-	normalizedPrimary := NormalizeRecords(primary)
-	normalizedFallback := NormalizeRecords(fallback)
-	if len(normalizedFallback) == 0 {
-		return normalizedPrimary
-	}
-	out := make([]Record, 0, len(normalizedPrimary)+len(normalizedFallback))
-	seen := make(map[string]struct{}, len(normalizedPrimary)+len(normalizedFallback))
-	for _, record := range normalizedPrimary {
-		seen[record.APIKey] = struct{}{}
-		out = append(out, record)
-	}
-	for _, record := range normalizedFallback {
-		if _, ok := seen[record.APIKey]; ok {
-			continue
-		}
-		seen[record.APIKey] = struct{}{}
-		out = append(out, record)
-	}
-	return out
 }
 
 func NormalizeRecords(records []Record) []Record {
@@ -216,21 +171,6 @@ func NormalizeTags(tags []string) []string {
 		out = append(out, tag)
 	}
 	return out
-}
-
-func recordsFromConfig(cfg *config.Config) []Record {
-	if cfg == nil || len(cfg.APIKeys) == 0 {
-		return nil
-	}
-	records := make([]Record, 0, len(cfg.APIKeys))
-	for _, key := range cfg.APIKeys {
-		record := Record{APIKey: key}
-		if cfg.APIKeyAuthIdentityBindings != nil {
-			record.AuthIdentity = cfg.APIKeyAuthIdentityBindings[key]
-		}
-		records = append(records, record)
-	}
-	return NormalizeRecords(records)
 }
 
 func recordsFromYAMLSequence(seq *yaml.Node) []Record {

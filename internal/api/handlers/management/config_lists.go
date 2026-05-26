@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 
@@ -117,7 +116,6 @@ func (h *Handler) GetAPIKeys(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to load api keys: %v", err)})
 			return
 		}
-		records = h.mergeStoredAndYAMLAPIKeys(records)
 		c.JSON(http.StatusOK, gin.H{"api-keys": records})
 		return
 	}
@@ -284,7 +282,6 @@ func (h *Handler) bindAPIKeyRecordPatch(c *gin.Context) (apikeys.Record, *int, b
 }
 
 func (h *Handler) applyStoredAPIKeys(c *gin.Context, records []apikeys.Record) {
-	records = h.mergeStoredAndYAMLAPIKeys(records)
 	apikeys.ApplyToConfig(h.cfg, records)
 	if h.configUpdateHook != nil {
 		h.configUpdateHook(h.cfg)
@@ -294,10 +291,6 @@ func (h *Handler) applyStoredAPIKeys(c *gin.Context, records []apikeys.Record) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "api-keys": apikeys.NormalizeRecords(records)})
-}
-
-func (h *Handler) mergeStoredAndYAMLAPIKeys(records []apikeys.Record) []apikeys.Record {
-	return apikeys.MergeRecordsWithOverride(records, h.fallbackYAMLAPIKeyRecords())
 }
 
 func parseAPIKeyRecords(data []byte) ([]apikeys.Record, error) {
@@ -337,21 +330,6 @@ func parseAPIKeyRecords(data []byte) ([]apikeys.Record, error) {
 		}
 		return recordsFromKeys(stringWrapper.Value), nil
 	}
-}
-
-func (h *Handler) fallbackYAMLAPIKeyRecords() []apikeys.Record {
-	if h == nil {
-		return nil
-	}
-	configFilePath := strings.TrimSpace(h.configFilePath)
-	if configFilePath == "" {
-		return nil
-	}
-	data, err := os.ReadFile(configFilePath)
-	if err != nil {
-		return nil
-	}
-	return apikeys.ExtractYAMLRecords(data)
 }
 
 func recordsFromKeys(keys []string) []apikeys.Record {
