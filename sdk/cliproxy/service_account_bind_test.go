@@ -85,6 +85,41 @@ func TestServiceLookupBoundAuthIndexAppliesResolvedIdentityBindingsWithAccountBi
 	}
 }
 
+func TestServiceLookupBoundAuthIndexAppliesNonCodexIdentityBindingsWithAccountBindStrategy(t *testing.T) {
+	const clientKey = "sk-client"
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	boundAuth, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "auth-claude",
+		Provider: "claude",
+		FileName: "claude-user.json",
+		Attributes: map[string]string{
+			"path": "/tmp/auths/claude-user.json",
+		},
+	})
+	if err != nil {
+		t.Fatalf("register bound auth: %v", err)
+	}
+
+	service := &Service{
+		cfg:         &config.Config{},
+		coreManager: manager,
+	}
+	service.rebuildBindingMap(&config.Config{
+		SDKConfig: config.SDKConfig{
+			APIKeys: config.FlexAPIKeyList{clientKey},
+			APIKeyAuthIdentityBindings: map[string]string{
+				clientKey: "claude:file:claude-user.json",
+			},
+		},
+		Routing: internalconfig.RoutingConfig{Strategy: "account-bind"},
+	})
+
+	if got, ok := service.LookupBoundAuthIndex(clientKey); !ok || got != boundAuth.Index {
+		t.Fatalf("non-codex binding not active in account-bind: got=%q ok=%v", got, ok)
+	}
+}
+
 func TestServiceLookupBoundAuthIndexIgnoresLegacyAuthIndexReferencesWithAccountBindStrategy(t *testing.T) {
 	const clientKey = "sk-client"
 

@@ -336,9 +336,20 @@ func (a *Auth) StableIdentity() string {
 	if provider == "" && a.Attributes != nil {
 		provider = strings.ToLower(strings.TrimSpace(a.Attributes["provider_key"]))
 	}
+	if identity := strings.TrimSpace(a.metadataString("auth_identity", "authIdentity", "auth-identity")); identity != "" {
+		return identity
+	}
 	if provider == "codex" {
 		if accountID := strings.TrimSpace(a.codexChatGPTAccountID()); accountID != "" {
 			return "codex:chatgpt:" + accountID
+		}
+	}
+	if provider != "" {
+		if email := strings.TrimSpace(a.metadataString("email", "account")); email != "" {
+			return provider + ":account:" + strings.ToLower(email)
+		}
+		if fileName := strings.TrimSpace(a.stableFileName()); fileName != "" {
+			return provider + ":file:" + fileName
 		}
 	}
 	return ""
@@ -361,6 +372,44 @@ func (a *Auth) codexChatGPTAccountID() string {
 		return ""
 	}
 	return strings.TrimSpace(claims.CodexAuthInfo.ChatgptAccountID)
+}
+
+func (a *Auth) metadataString(keys ...string) string {
+	if a == nil || a.Metadata == nil {
+		return ""
+	}
+	for _, key := range keys {
+		if raw, ok := a.Metadata[key]; ok {
+			if value, ok := raw.(string); ok {
+				if trimmed := strings.TrimSpace(value); trimmed != "" {
+					return trimmed
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func (a *Auth) stableFileName() string {
+	if a == nil {
+		return ""
+	}
+	candidates := []string{a.FileName}
+	if a.Attributes != nil {
+		candidates = append(candidates, a.Attributes["path"], a.Attributes["source"])
+	}
+	candidates = append(candidates, a.ID)
+	for _, candidate := range candidates {
+		trimmed := strings.TrimSpace(candidate)
+		if trimmed == "" {
+			continue
+		}
+		base := filepath.Base(trimmed)
+		if base != "." && base != string(filepath.Separator) {
+			return base
+		}
+	}
+	return ""
 }
 
 // EnsureIndex returns a stable index derived from the auth file name or credential identity.

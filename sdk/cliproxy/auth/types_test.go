@@ -248,6 +248,42 @@ func TestStableIdentityDoesNotFollowCodexFileName(t *testing.T) {
 	}
 }
 
+func TestStableIdentityUsesNonCodexEmail(t *testing.T) {
+	t.Parallel()
+
+	auth := &Auth{
+		Provider: "claude",
+		FileName: "claude-before.json",
+		Metadata: map[string]any{
+			"email": " User@Example.COM ",
+		},
+	}
+
+	got := auth.StableIdentity()
+	want := "claude:account:user@example.com"
+	if got != want {
+		t.Fatalf("StableIdentity() = %q, want %q", got, want)
+	}
+}
+
+func TestStableIdentityFallsBackToFileForNonCodexOAuth(t *testing.T) {
+	t.Parallel()
+
+	auth := &Auth{
+		Provider: "claude",
+		ID:       "auths/claude-user.json",
+		Attributes: map[string]string{
+			"path": "/tmp/auths/claude-user.json",
+		},
+	}
+
+	got := auth.StableIdentity()
+	want := "claude:file:claude-user.json"
+	if got != want {
+		t.Fatalf("StableIdentity() = %q, want %q", got, want)
+	}
+}
+
 func testJWT(t *testing.T, claims map[string]any) string {
 	t.Helper()
 

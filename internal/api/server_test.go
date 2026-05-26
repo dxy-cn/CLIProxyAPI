@@ -695,6 +695,66 @@ func TestAccountBindMiddleware_AuthIdentityBindingResolvesCurrentAuthIndex(t *te
 	}
 }
 
+func TestAccountBindMiddleware_NonCodexAuthIdentityBindingResolvesCurrentAuthIndex(t *testing.T) {
+	const clientKey = "sk-client"
+
+	gin.SetMode(gin.TestMode)
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+
+	cfg := &proxyconfig.Config{
+		SDKConfig: sdkconfig.SDKConfig{
+			APIKeys: sdkconfig.FlexAPIKeyList{clientKey},
+			APIKeyAuthIdentityBindings: map[string]string{
+				clientKey: "claude:file:claude-user.json",
+			},
+		},
+		Port:                   0,
+		AuthDir:                authDir,
+		Debug:                  true,
+		LoggingToFile:          false,
+		UsageStatisticsEnabled: false,
+		RemoteManagement:       proxyconfig.RemoteManagement{DisableControlPanel: true},
+		Routing:                proxyconfig.RoutingConfig{Strategy: "account-bind"},
+	}
+
+	authManager := auth.NewManager(nil, nil, nil)
+	registered, err := authManager.Register(context.Background(), &auth.Auth{
+		ID:       "auth-claude",
+		Provider: "claude",
+		FileName: "claude-user.json",
+		Attributes: map[string]string{
+			"path": filepath.Join(authDir, "claude-user.json"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	if registered.Index == "" {
+		t.Fatalf("registered auth_index must not be empty")
+	}
+
+	s := NewServer(cfg, authManager, sdkaccess.NewManager(), filepath.Join(tmpDir, "config.yaml"))
+	s.UpdateBindingConfig(cfg)
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Set("apiKey", clientKey)
+
+	s.accountBindMiddleware()(c)
+
+	if c.IsAborted() {
+		t.Fatalf("middleware should not abort when non-codex auth_identity resolves; status=%d", c.Writer.Status())
+	}
+	got := sdkapi.BoundAuthIndexFromContext(c.Request.Context())
+	if got != registered.Index {
+		t.Fatalf("non-codex auth_identity binding resolved to %q, want current auth_index %q", got, registered.Index)
+	}
+}
+
 func TestUpdateClientsRefreshesAccountBindBindings(t *testing.T) {
 	const clientKey = "sk-client"
 
