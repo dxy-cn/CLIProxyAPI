@@ -480,6 +480,8 @@ func (s *Server) registerPublicMonitorRoutes() {
 		monitor.GET("/kpi", s.mgmt.GetMonitorKpi)
 		monitor.GET("/quota", s.mgmt.GetPublicMonitorCodexQuota)
 		monitor.GET("/daily-trend", s.mgmt.GetMonitorDailyTrend)
+		monitor.GET("/daily-model-tokens", s.mgmt.GetMonitorDailyModelTokens)
+		monitor.GET("/hourly-model-tokens", s.mgmt.GetMonitorHourlyModelTokens)
 		monitor.GET("/hourly-tokens", s.mgmt.GetMonitorHourlyTokens)
 	}
 }
@@ -541,7 +543,9 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/custom/monitor/kpi", s.mgmt.GetMonitorKpi)
 		mgmt.GET("/custom/monitor/model-distribution", s.mgmt.GetMonitorModelDistribution)
 		mgmt.GET("/custom/monitor/daily-trend", s.mgmt.GetMonitorDailyTrend)
+		mgmt.GET("/custom/monitor/daily-model-tokens", s.mgmt.GetMonitorDailyModelTokens)
 		mgmt.GET("/custom/monitor/hourly-models", s.mgmt.GetMonitorHourlyModels)
+		mgmt.GET("/custom/monitor/hourly-model-tokens", s.mgmt.GetMonitorHourlyModelTokens)
 		mgmt.GET("/custom/monitor/hourly-tokens", s.mgmt.GetMonitorHourlyTokens)
 		mgmt.GET("/custom/monitor/hourly-performance", s.mgmt.GetMonitorHourlyPerformance)
 		mgmt.GET("/custom/monitor/service-health", s.mgmt.GetMonitorServiceHealth)

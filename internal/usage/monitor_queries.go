@@ -130,7 +130,9 @@ type monitorQueryableStore interface {
 	QueryMonitorKpi(ctx context.Context, filter MonitorQueryFilter) (MonitorKpiResult, error)
 	QueryMonitorModelDistribution(ctx context.Context, filter MonitorQueryFilter, limit int, sortByTokens bool) ([]MonitorModelDistItem, error)
 	QueryMonitorDailyTrend(ctx context.Context, filter MonitorQueryFilter) ([]MonitorDailyTrendItem, error)
+	QueryMonitorDailyModelTokenSlots(ctx context.Context, filter MonitorQueryFilter) ([]MonitorDailyModelTokenSlot, error)
 	QueryMonitorHourlySlots(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorHourlySlot, error)
+	QueryMonitorHourlyModelTokenSlots(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorHourlyModelTokenSlot, error)
 	QueryMonitorHourlyTokenSlots(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorHourlyTokenSlot, error)
 	QueryMonitorPerformanceSlots(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorPerformanceSlot, error)
 	QueryMonitorHealthBlocks(ctx context.Context, windowStartUnix, windowEndUnix int64, blockSeconds int) ([]MonitorHealthBlock, error)
@@ -182,12 +184,30 @@ type MonitorDailyTrendItem struct {
 	CachedTokens    int64
 }
 
+// MonitorDailyModelTokenSlot represents per-day per-model token aggregates.
+type MonitorDailyModelTokenSlot struct {
+	Date         string
+	Model        string
+	InputTokens  int64
+	OutputTokens int64
+	CachedTokens int64
+}
+
 // MonitorHourlySlot represents per-slot per-model counts for hourly-models.
 type MonitorHourlySlot struct {
 	SlotIndex int
 	Model     string
 	Total     int64
 	Success   int64
+}
+
+// MonitorHourlyModelTokenSlot represents per-slot per-model token aggregates.
+type MonitorHourlyModelTokenSlot struct {
+	SlotIndex    int
+	Model        string
+	InputTokens  int64
+	OutputTokens int64
+	CachedTokens int64
 }
 
 // MonitorHourlyTokenSlot represents per-slot token breakdowns for hourly-tokens.
@@ -333,6 +353,18 @@ func (p *DatabasePlugin) QueryMonitorDailyTrend(ctx context.Context, filter Moni
 	return queryable.QueryMonitorDailyTrend(ctx, normalizeMonitorFilter(filter))
 }
 
+// QueryMonitorDailyModelTokenSlots queries per-day per-model token aggregates directly from persistence layer.
+func (p *DatabasePlugin) QueryMonitorDailyModelTokenSlots(ctx context.Context, filter MonitorQueryFilter) ([]MonitorDailyModelTokenSlot, error) {
+	queryable, err := p.monitorQueryableStore()
+	if err != nil {
+		return nil, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return queryable.QueryMonitorDailyModelTokenSlots(ctx, normalizeMonitorFilter(filter))
+}
+
 // QueryMonitorHourlySlots queries per-slot per-model counts directly from persistence layer.
 func (p *DatabasePlugin) QueryMonitorHourlySlots(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorHourlySlot, error) {
 	queryable, err := p.monitorQueryableStore()
@@ -343,6 +375,18 @@ func (p *DatabasePlugin) QueryMonitorHourlySlots(ctx context.Context, filter Mon
 		ctx = context.Background()
 	}
 	return queryable.QueryMonitorHourlySlots(ctx, normalizeMonitorFilter(filter), cutoffUnix, nowUnix, slotSeconds)
+}
+
+// QueryMonitorHourlyModelTokenSlots queries per-slot per-model token aggregates directly from persistence layer.
+func (p *DatabasePlugin) QueryMonitorHourlyModelTokenSlots(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorHourlyModelTokenSlot, error) {
+	queryable, err := p.monitorQueryableStore()
+	if err != nil {
+		return nil, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return queryable.QueryMonitorHourlyModelTokenSlots(ctx, normalizeMonitorFilter(filter), cutoffUnix, nowUnix, slotSeconds)
 }
 
 // QueryMonitorHourlyTokenSlots queries per-slot token breakdowns directly from persistence layer.
@@ -454,11 +498,25 @@ func (s *mirrorUsageStore) QueryMonitorDailyTrend(ctx context.Context, filter Mo
 	return s.local.QueryMonitorDailyTrend(ctx, filter)
 }
 
+func (s *mirrorUsageStore) QueryMonitorDailyModelTokenSlots(ctx context.Context, filter MonitorQueryFilter) ([]MonitorDailyModelTokenSlot, error) {
+	if s == nil || s.local == nil {
+		return nil, fmt.Errorf("usage store: mirror store not initialized")
+	}
+	return s.local.QueryMonitorDailyModelTokenSlots(ctx, filter)
+}
+
 func (s *mirrorUsageStore) QueryMonitorHourlySlots(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorHourlySlot, error) {
 	if s == nil || s.local == nil {
 		return nil, fmt.Errorf("usage store: mirror store not initialized")
 	}
 	return s.local.QueryMonitorHourlySlots(ctx, filter, cutoffUnix, nowUnix, slotSeconds)
+}
+
+func (s *mirrorUsageStore) QueryMonitorHourlyModelTokenSlots(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorHourlyModelTokenSlot, error) {
+	if s == nil || s.local == nil {
+		return nil, fmt.Errorf("usage store: mirror store not initialized")
+	}
+	return s.local.QueryMonitorHourlyModelTokenSlots(ctx, filter, cutoffUnix, nowUnix, slotSeconds)
 }
 
 func (s *mirrorUsageStore) QueryMonitorHourlyTokenSlots(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorHourlyTokenSlot, error) {
@@ -1774,6 +1832,44 @@ func (s *sqliteUsageStore) QueryMonitorDailyTrend(ctx context.Context, filter Mo
 	return items, nil
 }
 
+func (s *sqliteUsageStore) QueryMonitorDailyModelTokenSlots(ctx context.Context, filter MonitorQueryFilter) ([]MonitorDailyModelTokenSlot, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("usage store: sqlite store not initialized")
+	}
+
+	whereClause, args := buildSQLiteMonitorWhere(filter, false)
+	query := fmt.Sprintf(`
+		SELECT DATE(requested_at, 'unixepoch', 'localtime') AS date_key,
+			model,
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(cached_tokens), 0)
+		FROM usage_records
+		WHERE %s AND failed = 0
+		GROUP BY date_key, model
+		ORDER BY date_key ASC, model ASC
+	`, whereClause)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("usage store: query monitor daily model token slots: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]MonitorDailyModelTokenSlot, 0)
+	for rows.Next() {
+		var item MonitorDailyModelTokenSlot
+		if err = rows.Scan(&item.Date, &item.Model, &item.InputTokens, &item.OutputTokens, &item.CachedTokens); err != nil {
+			return nil, fmt.Errorf("usage store: scan monitor daily model token slot: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("usage store: iterate monitor daily model token slots: %w", err)
+	}
+	return items, nil
+}
+
 func (s *sqliteUsageStore) QueryMonitorHourlySlots(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorHourlySlot, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("usage store: sqlite store not initialized")
@@ -1814,6 +1910,51 @@ func (s *sqliteUsageStore) QueryMonitorHourlySlots(ctx context.Context, filter M
 	}
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("usage store: iterate monitor hourly slots: %w", err)
+	}
+	return items, nil
+}
+
+func (s *sqliteUsageStore) QueryMonitorHourlyModelTokenSlots(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorHourlyModelTokenSlot, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("usage store: sqlite store not initialized")
+	}
+	if slotSeconds <= 0 {
+		slotSeconds = 3600
+	}
+
+	whereClause, args := buildSQLiteMonitorWhere(filter, false)
+	query := fmt.Sprintf(`
+		SELECT (requested_at - ?) / ? AS slot_idx,
+			model,
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(cached_tokens), 0)
+		FROM usage_records
+		WHERE %s AND requested_at >= ? AND requested_at <= ? AND failed = 0
+		GROUP BY slot_idx, model
+	`, whereClause)
+
+	queryArgs := make([]any, 0, len(args)+4)
+	queryArgs = append(queryArgs, cutoffUnix, slotSeconds)
+	queryArgs = append(queryArgs, args...)
+	queryArgs = append(queryArgs, cutoffUnix, nowUnix)
+
+	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("usage store: query monitor hourly model token slots: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]MonitorHourlyModelTokenSlot, 0)
+	for rows.Next() {
+		var item MonitorHourlyModelTokenSlot
+		if err = rows.Scan(&item.SlotIndex, &item.Model, &item.InputTokens, &item.OutputTokens, &item.CachedTokens); err != nil {
+			return nil, fmt.Errorf("usage store: scan monitor hourly model token slot: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("usage store: iterate monitor hourly model token slots: %w", err)
 	}
 	return items, nil
 }

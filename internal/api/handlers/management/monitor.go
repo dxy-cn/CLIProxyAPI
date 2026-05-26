@@ -1168,6 +1168,15 @@ type monitorHourlyTokensResponse struct {
 	TimeRange       monitorTimeRange `json:"time_range"`
 }
 
+type monitorModelTokenSeriesResponse struct {
+	Slots        []string           `json:"slots"`
+	Models       []string           `json:"models"`
+	InputTokens  map[string][]int64 `json:"input_tokens"`
+	OutputTokens map[string][]int64 `json:"output_tokens"`
+	CachedTokens map[string][]int64 `json:"cached_tokens"`
+	TimeRange    monitorTimeRange   `json:"time_range"`
+}
+
 type monitorHourlyPerformanceResponse struct {
 	Slots                  []string         `json:"slots"`
 	AvgRPM                 []float64        `json:"avg_rpm"`
@@ -1632,6 +1641,242 @@ func dominantAuthIndex(authTokens map[string]int64) string {
 	return bestAuth
 }
 
+func buildMonitorDateSlots(start, end time.Time) ([]string, map[string]int) {
+	startLocal := time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, start.Location())
+	endLocal := time.Date(end.Year(), end.Month(), end.Day(), 0, 0, 0, 0, end.Location())
+	if endLocal.Before(startLocal) {
+		startLocal = endLocal
+	}
+
+	slotCount := int(endLocal.Sub(startLocal)/(24*time.Hour)) + 1
+	if slotCount < 1 {
+		slotCount = 1
+	}
+
+	slots := make([]string, 0, slotCount)
+	slotIndex := make(map[string]int, slotCount)
+	for current := startLocal; !current.After(endLocal); current = current.AddDate(0, 0, 1) {
+		key := current.Format("2006-01-02")
+		slotIndex[key] = len(slots)
+		slots = append(slots, key)
+	}
+	return slots, slotIndex
+}
+
+func buildMonitorModelOrder(
+	modelTotals map[string]int64,
+	inputTokens map[string][]int64,
+	outputTokens map[string][]int64,
+	cachedTokens map[string][]int64,
+) []string {
+	models := make([]string, 0, len(modelTotals))
+	for model := range modelTotals {
+		models = append(models, model)
+	}
+	sort.Slice(models, func(i, j int) bool {
+		if modelTotals[models[i]] == modelTotals[models[j]] {
+			return models[i] < models[j]
+		}
+		return modelTotals[models[i]] > modelTotals[models[j]]
+	})
+	if inputTokens == nil {
+		inputTokens = make(map[string][]int64)
+	}
+	if outputTokens == nil {
+		outputTokens = make(map[string][]int64)
+	}
+	if cachedTokens == nil {
+		cachedTokens = make(map[string][]int64)
+	}
+	for _, model := range models {
+		if _, ok := inputTokens[model]; !ok {
+			inputTokens[model] = nil
+		}
+		if _, ok := outputTokens[model]; !ok {
+			outputTokens[model] = nil
+		}
+		if _, ok := cachedTokens[model]; !ok {
+			cachedTokens[model] = nil
+		}
+	}
+	return models
+}
+
+// GetMonitorDailyModelTokens returns per-day per-model token aggregates for cost views.
+func (h *Handler) GetMonitorDailyModelTokens(c *gin.Context) {
+	start, end, err := parseMonitorTimeRange(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	dbPlugin := usage.GetDatabasePlugin()
+	if !isExplicitAllTimeRange(c) {
+		start, end = applyDefaultTimeRange(start, end, 30)
+	}
+	if start == nil || end == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing time range"})
+		return
+	}
+
+	filter := h.buildMonitorRecordFilter(c, start, end, "")
+	slots, slotIndex := buildMonitorDateSlots(start.Local(), end.Local())
+	slotCount := len(slots)
+
+	inputTokens := make(map[string][]int64)
+	outputTokens := make(map[string][]int64)
+	cachedTokens := make(map[string][]int64)
+	modelTotals := make(map[string]int64)
+
+	ensureSeries := func(model string) {
+		if _, ok := inputTokens[model]; !ok {
+			inputTokens[model] = make([]int64, slotCount)
+			outputTokens[model] = make([]int64, slotCount)
+			cachedTokens[model] = make([]int64, slotCount)
+		}
+	}
+	addSlot := func(slotKey, model string, input, output, cached int64) {
+		idx, ok := slotIndex[slotKey]
+		if !ok {
+			return
+		}
+		ensureSeries(model)
+		inputTokens[model][idx] += input
+		outputTokens[model][idx] += output
+		cachedTokens[model][idx] += cached
+		modelTotals[model] += input + output
+	}
+
+	if dbPlugin != nil {
+		rows, queryErr := dbPlugin.QueryMonitorDailyModelTokenSlots(c.Request.Context(), toUsageMonitorFilter(filter))
+		if queryErr == nil {
+			for _, row := range rows {
+				addSlot(row.Date, row.Model, row.InputTokens, row.OutputTokens, row.CachedTokens)
+			}
+			c.JSON(http.StatusOK, monitorModelTokenSeriesResponse{
+				Slots:        slots,
+				Models:       buildMonitorModelOrder(modelTotals, inputTokens, outputTokens, cachedTokens),
+				InputTokens:  inputTokens,
+				OutputTokens: outputTokens,
+				CachedTokens: cachedTokens,
+				TimeRange:    monitorTimeRange{Start: start, End: end},
+			})
+			return
+		}
+	}
+
+	visitSnapshotRecords(h.usageSnapshot(), func(record monitorRecord) {
+		if !filter.matches(record) || record.Failed {
+			return
+		}
+		addSlot(record.Timestamp.Local().Format("2006-01-02"), record.Model, record.InputTokens, record.OutputTokens, record.CachedTokens)
+	})
+
+	c.JSON(http.StatusOK, monitorModelTokenSeriesResponse{
+		Slots:        slots,
+		Models:       buildMonitorModelOrder(modelTotals, inputTokens, outputTokens, cachedTokens),
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+		CachedTokens: cachedTokens,
+		TimeRange:    monitorTimeRange{Start: start, End: end},
+	})
+}
+
+// GetMonitorHourlyModelTokens returns per-hour per-model token aggregates for cost views.
+func (h *Handler) GetMonitorHourlyModelTokens(c *gin.Context) {
+	start, end, err := parseMonitorTimeRange(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	hours, err := parseHoursParam(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	filter := h.buildMonitorRecordFilter(c, start, end, "")
+
+	now := time.Now()
+	anchor := now
+	if end != nil && end.Before(anchor) {
+		anchor = *end
+	}
+	alignedAnchor := anchor.Local().Truncate(time.Hour)
+	cutoff := alignedAnchor.Add(-time.Duration(hours-1) * time.Hour)
+
+	slots := make([]string, 0, hours)
+	slotIndex := make(map[string]int, hours)
+	for current := cutoff; !current.After(alignedAnchor); current = current.Add(time.Hour) {
+		key := current.Format("2006-01-02T15:04:05-07:00")
+		slotIndex[key] = len(slots)
+		slots = append(slots, key)
+	}
+	slotCount := len(slots)
+
+	inputTokens := make(map[string][]int64)
+	outputTokens := make(map[string][]int64)
+	cachedTokens := make(map[string][]int64)
+	modelTotals := make(map[string]int64)
+
+	ensureSeries := func(model string) {
+		if _, ok := inputTokens[model]; !ok {
+			inputTokens[model] = make([]int64, slotCount)
+			outputTokens[model] = make([]int64, slotCount)
+			cachedTokens[model] = make([]int64, slotCount)
+		}
+	}
+	addSlot := func(idx int, model string, input, output, cached int64) {
+		if idx < 0 || idx >= slotCount {
+			return
+		}
+		ensureSeries(model)
+		inputTokens[model][idx] += input
+		outputTokens[model][idx] += output
+		cachedTokens[model][idx] += cached
+		modelTotals[model] += input + output
+	}
+
+	if dbPlugin := usage.GetDatabasePlugin(); dbPlugin != nil {
+		rows, queryErr := dbPlugin.QueryMonitorHourlyModelTokenSlots(c.Request.Context(), toUsageMonitorFilter(filter), cutoff.Unix(), anchor.Unix(), 3600)
+		if queryErr == nil {
+			for _, row := range rows {
+				addSlot(row.SlotIndex, row.Model, row.InputTokens, row.OutputTokens, row.CachedTokens)
+			}
+			c.JSON(http.StatusOK, monitorModelTokenSeriesResponse{
+				Slots:        slots,
+				Models:       buildMonitorModelOrder(modelTotals, inputTokens, outputTokens, cachedTokens),
+				InputTokens:  inputTokens,
+				OutputTokens: outputTokens,
+				CachedTokens: cachedTokens,
+				TimeRange:    monitorTimeRange{Start: start, End: end},
+			})
+			return
+		}
+	}
+
+	visitSnapshotRecords(h.usageSnapshot(), func(record monitorRecord) {
+		if record.Timestamp.Before(cutoff) || !filter.matches(record) || record.Failed {
+			return
+		}
+		slotKey := record.Timestamp.Local().Truncate(time.Hour).Format("2006-01-02T15:04:05-07:00")
+		idx, ok := slotIndex[slotKey]
+		if !ok {
+			return
+		}
+		addSlot(idx, record.Model, record.InputTokens, record.OutputTokens, record.CachedTokens)
+	})
+
+	c.JSON(http.StatusOK, monitorModelTokenSeriesResponse{
+		Slots:        slots,
+		Models:       buildMonitorModelOrder(modelTotals, inputTokens, outputTokens, cachedTokens),
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+		CachedTokens: cachedTokens,
+		TimeRange:    monitorTimeRange{Start: start, End: end},
+	})
+}
+
 // GetMonitorHourlyModels returns per-hour per-model request counts for the top N models.
 func (h *Handler) GetMonitorHourlyModels(c *gin.Context) {
 	start, end, err := parseMonitorTimeRange(c)
@@ -1839,7 +2084,7 @@ func (h *Handler) GetMonitorHourlyTokens(c *gin.Context) {
 	slotCount := len(hourSlots)
 
 	if dbPlugin := usage.GetDatabasePlugin(); dbPlugin != nil {
-		tokenSlots, queryErr := dbPlugin.QueryMonitorHourlyTokenSlots(c.Request.Context(), toUsageMonitorFilter(filter), cutoff.Unix(), alignedAnchor.Unix(), 3600)
+		tokenSlots, queryErr := dbPlugin.QueryMonitorHourlyTokenSlots(c.Request.Context(), toUsageMonitorFilter(filter), cutoff.Unix(), anchor.Unix(), 3600)
 		if queryErr == nil {
 			totalTokens := make([]int64, slotCount)
 			inputTokens := make([]int64, slotCount)
