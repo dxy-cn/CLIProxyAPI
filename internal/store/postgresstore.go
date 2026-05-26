@@ -134,6 +134,9 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 	`, authTable)); err != nil {
 		return fmt.Errorf("postgres store: create auth table: %w", err)
 	}
+	if err := s.ensureAPIKeySchema(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/apikeys"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -48,6 +49,8 @@ type Handler struct {
 	envSecret           string
 	logDir              string
 	postAuthHook        coreauth.PostAuthHook
+	apiKeyStore         apikeys.Store
+	configUpdateHook    func(*config.Config)
 }
 
 // NewHandler creates a new management handler instance.
@@ -64,6 +67,9 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		tokenStore:          sdkAuth.GetTokenStore(),
 		allowRemoteOverride: envSecret != "",
 		envSecret:           envSecret,
+	}
+	if store, ok := h.tokenStore.(apikeys.Store); ok {
+		h.apiKeyStore = store
 	}
 	h.startAttemptCleanup()
 	return h
@@ -146,6 +152,13 @@ func (h *Handler) SetLogDirectory(dir string) {
 // SetPostAuthHook registers a hook to be called after auth record creation but before persistence.
 func (h *Handler) SetPostAuthHook(hook coreauth.PostAuthHook) {
 	h.postAuthHook = hook
+}
+
+func (h *Handler) SetConfigUpdateHook(fn func(*config.Config)) {
+	if h == nil {
+		return
+	}
+	h.configUpdateHook = fn
 }
 
 // Middleware enforces access control for management endpoints.
@@ -295,12 +308,27 @@ func (h *Handler) persist(c *gin.Context) bool {
 // It expects the caller to hold h.mu.
 func (h *Handler) persistLocked(c *gin.Context) bool {
 	// Preserve comments when writing
-	if err := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); err != nil {
+	if err := config.SaveConfigPreserveComments(h.configFilePath, h.configForPersistenceLocked()); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
 		return false
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	return true
+}
+
+func (h *Handler) persistConfigOnly() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return config.SaveConfigPreserveComments(h.configFilePath, h.configForPersistenceLocked())
+}
+
+func (h *Handler) configForPersistenceLocked() *config.Config {
+	if h == nil || h.cfg == nil || h.apiKeyStore == nil {
+		return h.cfg
+	}
+	cfg := *h.cfg
+	apikeys.ClearConfig(&cfg)
+	return &cfg
 }
 
 // Helper methods for simple types

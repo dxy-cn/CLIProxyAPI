@@ -3,9 +3,11 @@ package management
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/apikeys"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
 
@@ -105,8 +107,32 @@ func (h *Handler) deleteFromStringList(c *gin.Context, target *[]string, after f
 }
 
 // api-keys
-func (h *Handler) GetAPIKeys(c *gin.Context) { c.JSON(200, gin.H{"api-keys": h.cfg.APIKeys}) }
+func (h *Handler) GetAPIKeys(c *gin.Context) {
+	if h.apiKeyStore != nil {
+		records, err := h.apiKeyStore.ListAPIKeyRecords(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to load api keys: %v", err)})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"api-keys": records})
+		return
+	}
+	c.JSON(200, gin.H{"api-keys": h.cfg.APIKeys})
+}
 func (h *Handler) PutAPIKeys(c *gin.Context) {
+	if h.apiKeyStore != nil {
+		records, ok := h.bindAPIKeyRecords(c)
+		if !ok {
+			return
+		}
+		saved, err := h.apiKeyStore.ReplaceAPIKeyRecords(c.Request.Context(), records)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save api keys: %v", err)})
+			return
+		}
+		h.applyStoredAPIKeys(c, saved)
+		return
+	}
 	h.putStringList(c, func(v []string) {
 		h.cfg.APIKeys = config.FlexAPIKeyList(v)
 	}, nil)
@@ -122,6 +148,79 @@ func (h *Handler) DeleteAPIKeys(c *gin.Context) {
 	h.deleteFromStringList(c, &asSlice, func() {
 		h.cfg.APIKeys = config.FlexAPIKeyList(asSlice)
 	})
+}
+
+func (h *Handler) bindAPIKeyRecords(c *gin.Context) ([]apikeys.Record, bool) {
+	data, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+		return nil, false
+	}
+	records, err := parseAPIKeyRecords(data)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return nil, false
+	}
+	return apikeys.NormalizeRecords(records), true
+}
+
+func (h *Handler) applyStoredAPIKeys(c *gin.Context, records []apikeys.Record) {
+	apikeys.ApplyToConfig(h.cfg, records)
+	if h.configUpdateHook != nil {
+		h.configUpdateHook(h.cfg)
+	}
+	if err := h.persistConfigOnly(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "api-keys": apikeys.NormalizeRecords(records)})
+}
+
+func parseAPIKeyRecords(data []byte) ([]apikeys.Record, error) {
+	var records []apikeys.Record
+	if err := json.Unmarshal(data, &records); err == nil {
+		return records, nil
+	}
+	var keys []string
+	if err := json.Unmarshal(data, &keys); err == nil {
+		return recordsFromKeys(keys), nil
+	}
+	var wrapper struct {
+		APIKeys []apikeys.Record `json:"api-keys"`
+		Items   []apikeys.Record `json:"items"`
+		Value   []apikeys.Record `json:"value"`
+	}
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		return nil, err
+	}
+	switch {
+	case len(wrapper.APIKeys) > 0:
+		return wrapper.APIKeys, nil
+	case len(wrapper.Items) > 0:
+		return wrapper.Items, nil
+	case len(wrapper.Value) > 0:
+		return wrapper.Value, nil
+	default:
+		var stringWrapper struct {
+			Items []string `json:"items"`
+			Value []string `json:"value"`
+		}
+		if err := json.Unmarshal(data, &stringWrapper); err != nil {
+			return nil, err
+		}
+		if len(stringWrapper.Items) > 0 {
+			return recordsFromKeys(stringWrapper.Items), nil
+		}
+		return recordsFromKeys(stringWrapper.Value), nil
+	}
+}
+
+func recordsFromKeys(keys []string) []apikeys.Record {
+	records := make([]apikeys.Record, 0, len(keys))
+	for _, key := range keys {
+		records = append(records, apikeys.Record{APIKey: key})
+	}
+	return records
 }
 
 // gemini-api-key: []GeminiKey
