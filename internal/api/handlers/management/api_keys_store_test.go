@@ -35,6 +35,23 @@ func (s *fakeAPIKeyStore) ReplaceAPIKeyRecords(_ context.Context, records []apik
 }
 
 func (s *fakeAPIKeyStore) UpsertAPIKeyRecord(_ context.Context, record apikeys.Record) (apikeys.Record, error) {
+	if record.ID != 0 {
+		for i := range s.records {
+			if s.records[i].ID == record.ID {
+				s.records[i] = record
+				return record, nil
+			}
+		}
+	}
+	for i := range s.records {
+		if s.records[i].APIKey == record.APIKey {
+			if record.ID == 0 {
+				record.ID = s.records[i].ID
+			}
+			s.records[i] = record
+			return record, nil
+		}
+	}
 	if record.ID == 0 {
 		record.ID = int64(len(s.records) + 1)
 	}
@@ -127,6 +144,62 @@ func TestPutAPIKeysUsesStoreAndRefreshesRuntimeConfig(t *testing.T) {
 	}
 	if strings.Contains(string(data), "sk-java") || strings.Contains(string(data), "sk-go") {
 		t.Fatalf("db-backed api keys leaked back into config yaml: %s", string(data))
+	}
+}
+
+func TestPatchAPIKeysUsesStoreRecordPayload(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("routing:\n  strategy: account-bind\napi-keys:\n  - old-key\n"), 0o600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	cfg := &config.Config{}
+	h := NewHandler(cfg, configPath, nil)
+	h.apiKeyStore = &fakeAPIKeyStore{
+		records: []apikeys.Record{
+			{ID: 1, APIKey: "sk-one", Name: "One"},
+			{ID: 2, APIKey: "sk-two", Name: "Two"},
+		},
+	}
+
+	body := `{"id":2,"index":1,"api-key":"sk-two-new","name":"Two New","auth_identity":"claude:account:dyf1269651709@gmail.com"}`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/api-keys", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.PatchAPIKeys(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PatchAPIKeys status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !reflect.DeepEqual([]string(cfg.APIKeys), []string{"sk-one", "sk-two-new"}) {
+		t.Fatalf("cfg APIKeys = %#v", []string(cfg.APIKeys))
+	}
+	if got := cfg.APIKeyAuthIdentityBindings["sk-two-new"]; got != "claude:account:dyf1269651709@gmail.com" {
+		t.Fatalf("auth identity binding = %q", got)
+	}
+
+	var payload struct {
+		APIKeys []apikeys.Record `json:"api-keys"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response JSON invalid: %v", err)
+	}
+	if len(payload.APIKeys) != 2 || payload.APIKeys[1].ID != 2 || payload.APIKeys[1].Name != "Two New" {
+		t.Fatalf("response records not returned: %#v", payload.APIKeys)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read config: %v", err)
+	}
+	if strings.Contains(string(data), "sk-two-new") {
+		t.Fatalf("db-backed api key leaked back into config yaml: %s", string(data))
 	}
 }
 

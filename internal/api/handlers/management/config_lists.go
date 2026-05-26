@@ -124,100 +124,93 @@ func (h *Handler) GetAPIKeys(c *gin.Context) {
 }
 
 func (h *Handler) PutAPIKeys(c *gin.Context) {
-	if h.apiKeyStore != nil {
-		records, ok := h.bindAPIKeyRecords(c)
-		if !ok {
-			return
-		}
-		saved, err := h.apiKeyStore.ReplaceAPIKeyRecords(c.Request.Context(), records)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save api keys: %v", err)})
-			return
-		}
-		h.applyStoredAPIKeys(c, saved)
+	if h.apiKeyStore == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "api key store is unavailable"})
 		return
 	}
-	h.putStringList(c, func(v []string) {
-		h.cfg.APIKeys = config.FlexAPIKeyList(v)
-	}, nil)
+	records, ok := h.bindAPIKeyRecords(c)
+	if !ok {
+		return
+	}
+	saved, err := h.apiKeyStore.ReplaceAPIKeyRecords(c.Request.Context(), records)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save api keys: %v", err)})
+		return
+	}
+	h.applyStoredAPIKeys(c, saved)
 }
 
 func (h *Handler) PatchAPIKeys(c *gin.Context) {
-	if h.apiKeyStore != nil {
-		record, ok := h.bindAPIKeyRecordPatch(c)
-		if !ok {
-			return
-		}
-		if _, err := h.apiKeyStore.UpsertAPIKeyRecord(c.Request.Context(), record); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save api key: %v", err)})
-			return
-		}
-		records, err := h.apiKeyStore.ListAPIKeyRecords(c.Request.Context())
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to reload api keys: %v", err)})
-			return
-		}
-		h.applyStoredAPIKeys(c, records)
+	if h.apiKeyStore == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "api key store is unavailable"})
 		return
 	}
-	asSlice := []string(h.cfg.APIKeys)
-	h.patchStringList(c, &asSlice, func() {
-		h.cfg.APIKeys = config.FlexAPIKeyList(asSlice)
-	})
+
+	record, ok := h.bindAPIKeyRecordPatch(c)
+	if !ok {
+		return
+	}
+	if _, err := h.apiKeyStore.UpsertAPIKeyRecord(c.Request.Context(), record); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save api key: %v", err)})
+		return
+	}
+	records, err := h.apiKeyStore.ListAPIKeyRecords(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to reload api keys: %v", err)})
+		return
+	}
+	h.applyStoredAPIKeys(c, records)
 }
 
 func (h *Handler) DeleteAPIKeys(c *gin.Context) {
-	if h.apiKeyStore != nil {
-		if idStr := strings.TrimSpace(c.Query("id")); idStr != "" {
-			id, err := strconv.ParseInt(idStr, 10, 64)
-			if err != nil || id <= 0 {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
-				return
-			}
-			if err = h.apiKeyStore.DeleteAPIKeyRecord(c.Request.Context(), id); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to delete api key: %v", err)})
-				return
-			}
-		} else if value := strings.TrimSpace(c.Query("value")); value != "" {
-			if err := h.apiKeyStore.DeleteAPIKeyRecordByKey(c.Request.Context(), value); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to delete api key: %v", err)})
-				return
-			}
-		} else if idxStr := strings.TrimSpace(c.Query("index")); idxStr != "" {
-			idx, err := strconv.Atoi(idxStr)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid index"})
-				return
-			}
-			records, err := h.apiKeyStore.ListAPIKeyRecords(c.Request.Context())
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to load api keys: %v", err)})
-				return
-			}
-			if idx < 0 || idx >= len(records) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid index"})
-				return
-			}
-			if err = h.apiKeyStore.DeleteAPIKeyRecord(c.Request.Context(), records[idx].ID); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to delete api key: %v", err)})
-				return
-			}
-		} else {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "missing id, index or value"})
+	if h.apiKeyStore == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "api key store is unavailable"})
+		return
+	}
+	if idStr := strings.TrimSpace(c.Query("id")); idStr != "" {
+		id, err := strconv.ParseInt(idStr, 10, 64)
+		if err != nil || id <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+			return
+		}
+		if err = h.apiKeyStore.DeleteAPIKeyRecord(c.Request.Context(), id); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to delete api key: %v", err)})
+			return
+		}
+	} else if value := strings.TrimSpace(c.Query("value")); value != "" {
+		if err := h.apiKeyStore.DeleteAPIKeyRecordByKey(c.Request.Context(), value); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to delete api key: %v", err)})
+			return
+		}
+	} else if idxStr := strings.TrimSpace(c.Query("index")); idxStr != "" {
+		idx, err := strconv.Atoi(idxStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid index"})
 			return
 		}
 		records, err := h.apiKeyStore.ListAPIKeyRecords(c.Request.Context())
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to reload api keys: %v", err)})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to load api keys: %v", err)})
 			return
 		}
-		h.applyStoredAPIKeys(c, records)
+		if idx < 0 || idx >= len(records) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid index"})
+			return
+		}
+		if err = h.apiKeyStore.DeleteAPIKeyRecord(c.Request.Context(), records[idx].ID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to delete api key: %v", err)})
+			return
+		}
+	} else {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing id, index or value"})
 		return
 	}
-	asSlice := []string(h.cfg.APIKeys)
-	h.deleteFromStringList(c, &asSlice, func() {
-		h.cfg.APIKeys = config.FlexAPIKeyList(asSlice)
-	})
+	records, err := h.apiKeyStore.ListAPIKeyRecords(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to reload api keys: %v", err)})
+		return
+	}
+	h.applyStoredAPIKeys(c, records)
 }
 
 func (h *Handler) bindAPIKeyRecords(c *gin.Context) ([]apikeys.Record, bool) {
