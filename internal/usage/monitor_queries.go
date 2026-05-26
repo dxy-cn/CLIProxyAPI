@@ -166,9 +166,13 @@ type MonitorKpiResult struct {
 
 // MonitorModelDistItem represents a single model in the distribution.
 type MonitorModelDistItem struct {
-	Model    string
-	Requests int64
-	Tokens   int64
+	Model           string
+	Requests        int64
+	Tokens          int64
+	InputTokens     int64
+	OutputTokens    int64
+	ReasoningTokens int64
+	CachedTokens    int64
 }
 
 // MonitorDailyTrendItem represents a single day in the daily trend.
@@ -1710,7 +1714,13 @@ func (s *sqliteUsageStore) QueryMonitorModelDistribution(ctx context.Context, fi
 		orderBy = "tokens DESC, model ASC"
 	}
 	query := fmt.Sprintf(`
-		SELECT model, COUNT(*) AS cnt, COALESCE(SUM(%s), 0) AS tokens
+		SELECT model,
+			COUNT(*) AS cnt,
+			COALESCE(SUM(%s), 0) AS tokens,
+			COALESCE(SUM(CASE WHEN failed=0 THEN input_tokens ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN failed=0 THEN output_tokens ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN failed=0 THEN reasoning_tokens ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN failed=0 THEN cached_tokens ELSE 0 END), 0)
 		FROM usage_records
 		WHERE %s
 		GROUP BY model
@@ -1728,7 +1738,15 @@ func (s *sqliteUsageStore) QueryMonitorModelDistribution(ctx context.Context, fi
 	items := make([]MonitorModelDistItem, 0)
 	for rows.Next() {
 		var item MonitorModelDistItem
-		if err = rows.Scan(&item.Model, &item.Requests, &item.Tokens); err != nil {
+		if err = rows.Scan(
+			&item.Model,
+			&item.Requests,
+			&item.Tokens,
+			&item.InputTokens,
+			&item.OutputTokens,
+			&item.ReasoningTokens,
+			&item.CachedTokens,
+		); err != nil {
 			return nil, fmt.Errorf("usage store: scan monitor model distribution: %w", err)
 		}
 		items = append(items, item)

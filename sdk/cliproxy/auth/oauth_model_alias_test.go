@@ -155,8 +155,6 @@ func createAuthForChannel(channel string) *Auth {
 		return &Auth{Provider: "codex", Attributes: map[string]string{"auth_kind": "oauth"}}
 	case "aistudio":
 		return &Auth{Provider: "aistudio"}
-	case "antigravity":
-		return &Auth{Provider: "antigravity"}
 	case "kimi":
 		return &Auth{Provider: "kimi"}
 	default:

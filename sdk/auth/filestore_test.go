@@ -11,7 +11,7 @@ func TestExtractAccessToken(t *testing.T) {
 		expected string
 	}{
 		{
-			"antigravity top-level access_token",
+			"top-level access_token",
 			map[string]any{"access_token": "tok-abc"},
 			"tok-abc",
 		},

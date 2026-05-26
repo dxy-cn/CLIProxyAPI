@@ -101,3 +101,30 @@ auth:
 		}
 	}
 }
+
+func TestLoadConfigParsesModelPrices(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	configYAML := strings.TrimSpace(`
+model-prices:
+  gpt-5.5:
+    input: 5
+    output: 30
+    cache: 0.5
+`) + "\n"
+	if err := os.WriteFile(configPath, []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	cfg, err := LoadConfigOptional(configPath, false)
+	if err != nil {
+		t.Fatalf("LoadConfigOptional() error = %v", err)
+	}
+
+	price := cfg.ModelPrices["gpt-5.5"]
+	if price.Input != 5 || price.Output != 30 || price.Cache != 0.5 {
+		t.Fatalf("unexpected model price: %#v", price)
+	}
+}

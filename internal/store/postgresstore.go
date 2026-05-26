@@ -25,6 +25,7 @@ type PostgresStoreConfig struct {
 	Schema      string
 	ConfigTable string
 	AuthTable   string
+	APIKeyTable string
 	SpoolDir    string
 }
 
@@ -51,6 +52,9 @@ func NewPostgresStore(ctx context.Context, cfg PostgresStoreConfig) (*PostgresSt
 	}
 	if cfg.AuthTable == "" {
 		cfg.AuthTable = defaultAuthTable
+	}
+	if cfg.APIKeyTable == "" {
+		cfg.APIKeyTable = defaultAPIKeyTable
 	}
 
 	spoolRoot := strings.TrimSpace(cfg.SpoolDir)
@@ -133,6 +137,9 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 		)
 	`, authTable)); err != nil {
 		return fmt.Errorf("postgres store: create auth table: %w", err)
+	}
+	if err := s.ensureAPIKeySchema(ctx); err != nil {
+		return err
 	}
 	return nil
 }

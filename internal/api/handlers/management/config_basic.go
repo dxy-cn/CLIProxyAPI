@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeys"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -151,6 +152,13 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_yaml", "message": "cannot read request body"})
 		return
 	}
+	if h.apiKeyStore != nil {
+		body, err = apikeys.StripYAMLConfig(body)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_yaml", "message": err.Error()})
+			return
+		}
+	}
 	var cfg config.Config
 	if err = yaml.Unmarshal(body, &cfg); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_yaml", "message": err.Error()})
@@ -194,6 +202,14 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed", "message": err.Error()})
 		return
 	}
+	if h.apiKeyStore != nil {
+		currentData, err = apikeys.StripYAMLConfig(currentData)
+		if err != nil {
+			h.mu.Unlock()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed", "message": err.Error()})
+			return
+		}
+	}
 	currentHash := configContentHash(currentData)
 	setConfigVersionHeaders(c, currentHash)
 
@@ -228,6 +244,13 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "reload_failed", "message": err.Error()})
 		return
 	}
+	if h.apiKeyStore != nil {
+		if errApply := apikeys.ApplyStoreToConfig(c.Request.Context(), newCfg, h.apiKeyStore); errApply != nil {
+			h.mu.Unlock()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "reload_failed", "message": errApply.Error()})
+			return
+		}
+	}
 	oldCfg := h.cfg
 	h.cfg = newCfg
 	dispatchQuotaWarnings := h.shouldDispatchQuotaWarningsAfterConfigChange(oldCfg, newCfg)
@@ -236,6 +259,11 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		go h.dispatchQuotaWarningsForCurrentCodexAuths(context.Background())
 	}
 	if updatedData, errRead := os.ReadFile(h.configFilePath); errRead == nil {
+		if h.apiKeyStore != nil {
+			if stripped, errStrip := apikeys.StripYAMLConfig(updatedData); errStrip == nil {
+				updatedData = stripped
+			}
+		}
 		setConfigVersionHeaders(c, configContentHash(updatedData))
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "changed": []string{"config"}})
@@ -252,6 +280,13 @@ func (h *Handler) GetConfigYAML(c *gin.Context) {
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed", "message": err.Error()})
 		return
+	}
+	if h.apiKeyStore != nil {
+		data, err = apikeys.StripYAMLConfig(data)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed", "message": err.Error()})
+			return
+		}
 	}
 	setConfigVersionHeaders(c, configContentHash(data))
 	c.Header("Content-Type", "application/yaml; charset=utf-8")

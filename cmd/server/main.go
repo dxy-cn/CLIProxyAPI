@@ -18,6 +18,7 @@ import (
 
 	"github.com/joho/godotenv"
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeys"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/authbootstrap"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cmd"
@@ -64,7 +65,6 @@ func main() {
 	var claudeLogin bool
 	var noBrowser bool
 	var oauthCallbackPort int
-	var antigravityLogin bool
 	var kimiLogin bool
 	var xaiLogin bool
 	var projectID string
@@ -85,7 +85,6 @@ func main() {
 	flag.BoolVar(&claudeLogin, "claude-login", false, "Login to Claude using OAuth")
 	flag.BoolVar(&noBrowser, "no-browser", false, "Don't open browser automatically for OAuth")
 	flag.IntVar(&oauthCallbackPort, "oauth-callback-port", 0, "Override OAuth callback port (defaults to provider-specific port)")
-	flag.BoolVar(&antigravityLogin, "antigravity-login", false, "Login to Antigravity using OAuth")
 	flag.BoolVar(&kimiLogin, "kimi-login", false, "Login to Kimi using OAuth")
 	flag.BoolVar(&xaiLogin, "xai-login", false, "Login to xAI using OAuth")
 	flag.StringVar(&projectID, "project_id", "", "Project ID (Gemini only, not required)")
@@ -606,6 +605,15 @@ func main() {
 			}
 		}
 	}
+	if tokenStore := sdkAuth.GetTokenStore(); tokenStore != nil {
+		if apiKeyStore, ok := tokenStore.(apikeys.Store); ok {
+			if errApply := apikeys.ApplyStoreToConfig(context.Background(), cfg, apiKeyStore); errApply != nil {
+				log.Errorf("failed to load api keys from store: %v", errApply)
+				return
+			}
+			managementasset.SetCurrentConfig(cfg)
+		}
+	}
 
 	// Register built-in access providers before constructing services.
 	configaccess.Register(&cfg.SDKConfig)
@@ -618,9 +626,6 @@ func main() {
 	} else if login {
 		// Handle Google/Gemini login
 		cmd.DoLogin(cfg, projectID, options)
-	} else if antigravityLogin {
-		// Handle Antigravity login
-		cmd.DoAntigravityLogin(cfg, options)
 	} else if codexLogin {
 		// Handle Codex login
 		cmd.DoCodexLogin(cfg, options)
@@ -649,7 +654,6 @@ func main() {
 			if standalone {
 				// Standalone mode: start an embedded local server and connect TUI client to it.
 				managementasset.StartAutoUpdater(context.Background(), configFilePath)
-				misc.StartAntigravityVersionUpdater(context.Background())
 				if !localModel && !cfg.Home.Enabled {
 					registry.StartModelsUpdater(context.Background())
 				} else if cfg.Home.Enabled {
@@ -727,7 +731,6 @@ func main() {
 		} else {
 			// Start the main proxy service
 			managementasset.StartAutoUpdater(context.Background(), configFilePath)
-			misc.StartAntigravityVersionUpdater(context.Background())
 			if !localModel && !cfg.Home.Enabled {
 				registry.StartModelsUpdater(context.Background())
 			} else if cfg.Home.Enabled {

@@ -33,6 +33,27 @@ func TestBuildAuthFileEntryExposesStableAuthIdentity(t *testing.T) {
 	}
 }
 
+func TestBuildAuthFileEntryExposesNonCodexStableAuthIdentity(t *testing.T) {
+	t.Parallel()
+
+	handler := NewHandler(&config.Config{}, "", nil)
+	entry := handler.buildAuthFileEntry(&coreauth.Auth{
+		ID:       "claude-user.json",
+		Provider: "claude",
+		FileName: "claude-user.json",
+		Attributes: map[string]string{
+			"path": t.TempDir() + "/claude-user.json",
+		},
+	})
+
+	if entry == nil {
+		t.Fatalf("buildAuthFileEntry returned nil")
+	}
+	if got := entry["auth_identity"]; got != "claude:file:claude-user.json" {
+		t.Fatalf("auth_identity = %v, want %q", got, "claude:file:claude-user.json")
+	}
+}
+
 func testManagementCodexJWT(t *testing.T, accountID string) string {
 	t.Helper()
 

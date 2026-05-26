@@ -22,7 +22,6 @@ var oauthProviders = []oauthProvider{
 	{"Gemini CLI", "gemini-cli-auth-url", "🟦"},
 	{"Claude (Anthropic)", "anthropic-auth-url", "🟧"},
 	{"Codex (OpenAI)", "codex-auth-url", "🟩"},
-	{"Antigravity", "antigravity-auth-url", "🟪"},
 	{"Kimi", "kimi-auth-url", "🟫"},
 	{"xAI", "xai-auth-url", "⬛"},
 }
@@ -277,8 +276,6 @@ func (m oauthTabModel) submitCallback(callbackURL string) tea.Cmd {
 					providerKey = "anthropic"
 				case "codex-auth-url":
 					providerKey = "codex"
-				case "antigravity-auth-url":
-					providerKey = "antigravity"
 				case "kimi-auth-url":
 					providerKey = "kimi"
 				case "xai-auth-url":

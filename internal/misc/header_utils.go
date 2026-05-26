@@ -80,8 +80,7 @@ func ScrubProxyAndFingerprintHeaders(req *http.Request) {
 	req.Header.Del("Referer")
 
 	// --- Browser / Chromium fingerprint headers ---
-	// These are sent by Electron-based clients (e.g. CherryStudio) using the
-	// Fetch API, but NOT by Node.js https module (which Antigravity uses).
+	// These are sent by Electron-based clients (e.g. CherryStudio) using the Fetch API.
 	req.Header.Del("Sec-Ch-Ua")
 	req.Header.Del("Sec-Ch-Ua-Mobile")
 	req.Header.Del("Sec-Ch-Ua-Platform")
@@ -91,7 +90,6 @@ func ScrubProxyAndFingerprintHeaders(req *http.Request) {
 	req.Header.Del("Priority")
 
 	// --- Encoding negotiation ---
-	// Antigravity (Node.js) sends "gzip, deflate, br" by default;
 	// Electron-based clients may add "zstd" which is a fingerprint mismatch.
 	req.Header.Del("Accept-Encoding")
 }

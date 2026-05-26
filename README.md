@@ -12,15 +12,6 @@ So you can use local or multi-account CLI access with OpenAI(include Responses)/
 
 This fork includes the following enhancements not available in the upstream repository:
 
-### Web Search Support via Gemini (Antigravity)
-
-Enables web search capabilities for Antigravity provider through Gemini's googleSearch tool:
-- Auto-detects `web_search` tool requests from Claude/OpenAI API formats
-- Automatically switches model to `gemini-2.5-flash` for search queries
-- Converts search requests to Gemini's native googleSearch tool format
-- Parses `groundingMetadata` and transforms results to compatible format
-- Supports both Claude `tool_result` and OpenAI function response formats
-
 ### Sequential Fill (SF) Routing Strategy
 
 A sticky credential selection strategy (`sf` or `sequential-fill`) that optimizes credential usage:
@@ -210,15 +201,15 @@ A cross-platform desktop and web app to translate and validate SRT subtitles usi
 
 ### [CCS (Claude Code Switch)](https://github.com/kaitranntt/ccs)
 
-CLI wrapper for instant switching between multiple Claude accounts and alternative models (Gemini, Codex, Antigravity) via CLIProxyAPI OAuth - no API keys needed
+CLI wrapper for instant switching between multiple Claude accounts and alternative models (Gemini, Codex) via CLIProxyAPI OAuth - no API keys needed
 
 ### [Quotio](https://github.com/nguyenphutrong/quotio)
 
-Native macOS menu bar app that unifies Claude, Gemini, OpenAI, Qwen, and Antigravity subscriptions with real-time quota tracking and smart auto-failover for AI coding tools like Claude Code, OpenCode, and Droid - no API keys needed.
+Native macOS menu bar app that unifies Claude, Gemini, OpenAI, and Qwen subscriptions with real-time quota tracking and smart auto-failover for AI coding tools like Claude Code, OpenCode, and Droid - no API keys needed.
 
 ### [CodMate](https://github.com/loocor/CodMate)
 
-Native macOS SwiftUI app for managing CLI AI sessions (Codex, Claude Code, Gemini CLI) with unified provider management, Git review, project organization, global search, and terminal integration. Integrates CLIProxyAPI to provide OAuth authentication for Codex, Claude, Gemini, Antigravity, and Qwen Code, with built-in and third-party provider rerouting through a single proxy endpoint - no API keys needed for OAuth providers.
+Native macOS SwiftUI app for managing CLI AI sessions (Codex, Claude Code, Gemini CLI) with unified provider management, Git review, project organization, global search, and terminal integration. Integrates CLIProxyAPI to provide OAuth authentication for Codex, Claude, Gemini, and Qwen Code, with built-in and third-party provider rerouting through a single proxy endpoint - no API keys needed for OAuth providers.
 
 ### [ProxyPilot](https://github.com/Finesssee/ProxyPilot)
 
@@ -230,7 +221,7 @@ VSCode extension for quick switching between Claude Code models, featuring integ
 
 ### [ZeroLimit](https://github.com/0xtbug/zero-limit)
 
-Windows desktop app built with Tauri + React for monitoring AI coding assistant quotas via CLIProxyAPI. Track usage across Gemini, Claude, OpenAI Codex, and Antigravity accounts with real-time dashboard, system tray integration, and one-click proxy control - no API keys needed.
+Windows desktop app built with Tauri + React for monitoring AI coding assistant quotas via CLIProxyAPI. Track usage across Gemini, Claude, and OpenAI Codex accounts with real-time dashboard, system tray integration, and one-click proxy control - no API keys needed.
 
 ### [CPA-XXX Panel](https://github.com/ferretgeek/CPA-X)
 

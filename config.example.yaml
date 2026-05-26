@@ -66,6 +66,17 @@ error-logs-max-files: 10
 # When false, disable in-memory usage statistics aggregation
 usage-statistics-enabled: false
 
+# USD prices per 1M tokens for the management monitor cost cards.
+# model-prices:
+#   gpt-5.5:
+#     input: 5
+#     output: 30
+#     cache: 0.5
+#   gpt-5.4:
+#     input: 2.5
+#     output: 15
+#     cache: 0.25
+
 # How long (in seconds) usage queue items are retained in memory for the Management API.
 # The local Redis RESP usage output is disabled.
 # Default: 60. Max: 3600.
@@ -112,7 +123,6 @@ disable-image-generation: false
 quota-exceeded:
   switch-project: true # Whether to automatically switch to another project when a quota is exceeded
   switch-preview-model: true # Whether to automatically switch to a preview model when a quota is exceeded
-  antigravity-credits: true # Whether to retry Antigravity quota_exhausted 429s once with enabledCreditTypes=["GOOGLE_ONE_AI"]
 
 # Credential quota warning. threshold is remaining quota percentage.
 # Codex credentials are scanned every 30 minutes when this is enabled.
@@ -137,16 +147,6 @@ nonstream-keepalive-interval: 0
 # streaming:
 #   keepalive-seconds: 15   # Default: 0 (disabled). <= 0 disables keep-alives.
 #   bootstrap-retries: 1    # Default: 0 (disabled). Retries before first byte is sent.
-
-# Signature cache validation for thinking blocks (Antigravity/Claude).
-# When true (default), cached signatures are preferred and validated.
-# When false, client signatures are used directly after normalization (bypass mode for testing).
-# antigravity-signature-cache-enabled: true
-
-# Bypass mode signature validation strictness (only applies when signature cache is disabled).
-# When true, validates full Claude protobuf tree (Field 2 -> Field 1 structure).
-# When false (default), only checks R/E prefix + base64 + first byte 0x12.
-# antigravity-signature-bypass-strict: false
 
 # Gemini API keys
 # gemini-api-key:
@@ -326,7 +326,7 @@ nonstream-keepalive-interval: 0
 
 # Global OAuth model name aliases (per channel)
 # These aliases rename model IDs for both model listing and request routing.
-# Supported channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, kimi, xai.
+# Supported channels: gemini-cli, vertex, aistudio, claude, codex, kimi, xai.
 # NOTE: Aliases do not apply to gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, or ampcode.
 # NOTE: Because aliases affect the merged /v1 model list and merged request routing, overlapping
 # client-visible names can become ambiguous across providers. /api/provider/{provider}/... helps
@@ -344,9 +344,6 @@ nonstream-keepalive-interval: 0
 #   aistudio:
 #     - name: "gemini-2.5-pro"
 #       alias: "g2.5p"
-#   antigravity:
-#     - name: "gemini-3-pro-high"
-#       alias: "gemini-3-pro-preview"
 #   claude:
 #     - name: "claude-sonnet-4-5-20250929"
 #       alias: "cs4.5"
@@ -371,8 +368,6 @@ nonstream-keepalive-interval: 0
 #     - "gemini-3-pro-preview"
 #   aistudio:
 #     - "gemini-3-pro-preview"
-#   antigravity:
-#     - "gemini-3-pro-preview"
 #   claude:
 #     - "claude-3-5-haiku-20241022"
 #   codex:
@@ -387,7 +382,7 @@ nonstream-keepalive-interval: 0
 #   default: # Default rules only set parameters when they are missing in the payload.
 #     - models:
 #         - name: "gemini-2.5-pro" # Supports wildcards (e.g., "gemini-*")
-#           protocol: "gemini" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity
+#           protocol: "gemini" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex
 #           from-protocol: "responses" # restricts the rule to the source protocol, options: openai, responses, gemini, claude
 #           headers: # all configured request headers must match; values support "*" wildcards
 #             X-Client-Tier: "tenant-*-region-*"
@@ -404,25 +399,25 @@ nonstream-keepalive-interval: 0
 #   default-raw: # Default raw rules set parameters using raw JSON when missing (must be valid JSON).
 #     - models:
 #         - name: "gemini-2.5-pro" # Supports wildcards (e.g., "gemini-*")
-#           protocol: "gemini" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity
+#           protocol: "gemini" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex
 #       params: # JSON path (gjson/sjson syntax) -> raw JSON value (strings are used as-is, must be valid JSON)
 #         "generationConfig.responseJsonSchema": "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}}}"
 #   override: # Override rules always set parameters, overwriting any existing values.
 #     - models:
 #         - name: "gpt-*" # Supports wildcards (e.g., "gpt-*")
-#           protocol: "codex" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity
+#           protocol: "codex" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex
 #       params: # JSON path (gjson/sjson syntax) -> value
 #         "reasoning.effort": "high"
 #   override-raw: # Override raw rules always set parameters using raw JSON (must be valid JSON).
 #     - models:
 #         - name: "gpt-*" # Supports wildcards (e.g., "gpt-*")
-#           protocol: "codex" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity
+#           protocol: "codex" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex
 #       params: # JSON path (gjson/sjson syntax) -> raw JSON value (strings are used as-is, must be valid JSON)
 #         "response_format": "{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"answer\",\"schema\":{\"type\":\"object\"}}}"
 #   filter: # Filter rules remove specified parameters from the payload.
 #     - models:
 #         - name: "gemini-2.5-pro" # Supports wildcards (e.g., "gemini-*")
-#           protocol: "gemini" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity
+#           protocol: "gemini" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex
 #       params: # JSON paths (gjson/sjson syntax) to remove from the payload
 #         - "generationConfig.thinkingConfig.thinkingBudget"
 #         - "generationConfig.responseJsonSchema"
