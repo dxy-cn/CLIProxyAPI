@@ -3,12 +3,15 @@ package apikeys
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"gopkg.in/yaml.v3"
 )
+
+var ErrDuplicateAPIKey = errors.New("api key already exists")
 
 type Record struct {
 	ID           int64     `json:"id"`
@@ -23,6 +26,7 @@ type Record struct {
 type Store interface {
 	ListAPIKeyRecords(ctx context.Context) ([]Record, error)
 	ReplaceAPIKeyRecords(ctx context.Context, records []Record) ([]Record, error)
+	CreateAPIKeyRecord(ctx context.Context, record Record) (Record, error)
 	UpsertAPIKeyRecord(ctx context.Context, record Record) (Record, error)
 	DeleteAPIKeyRecord(ctx context.Context, id int64) error
 	DeleteAPIKeyRecordByKey(ctx context.Context, key string) error
@@ -117,8 +121,31 @@ func ApplyStoreToConfig(ctx context.Context, cfg *config.Config, store Store) er
 	if err != nil {
 		return err
 	}
-	ApplyToConfig(cfg, MergeMissingRecords(records, recordsFromConfig(cfg)))
+	ApplyToConfig(cfg, MergeRecordsWithOverride(records, recordsFromConfig(cfg)))
 	return nil
+}
+
+func MergeRecordsWithOverride(primary, override []Record) []Record {
+	normalizedPrimary := NormalizeRecords(primary)
+	normalizedOverride := NormalizeRecords(override)
+	if len(normalizedOverride) == 0 {
+		return normalizedPrimary
+	}
+	out := make([]Record, 0, len(normalizedPrimary)+len(normalizedOverride))
+	positions := make(map[string]int, len(normalizedPrimary)+len(normalizedOverride))
+	for _, record := range normalizedPrimary {
+		positions[record.APIKey] = len(out)
+		out = append(out, record)
+	}
+	for _, record := range normalizedOverride {
+		if pos, ok := positions[record.APIKey]; ok {
+			out[pos] = record
+			continue
+		}
+		positions[record.APIKey] = len(out)
+		out = append(out, record)
+	}
+	return out
 }
 
 func MergeMissingRecords(primary, fallback []Record) []Record {

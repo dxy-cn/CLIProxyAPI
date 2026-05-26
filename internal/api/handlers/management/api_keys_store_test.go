@@ -34,6 +34,19 @@ func (s *fakeAPIKeyStore) ReplaceAPIKeyRecords(_ context.Context, records []apik
 	return append([]apikeys.Record(nil), s.records...), nil
 }
 
+func (s *fakeAPIKeyStore) CreateAPIKeyRecord(_ context.Context, record apikeys.Record) (apikeys.Record, error) {
+	for i := range s.records {
+		if s.records[i].APIKey == record.APIKey {
+			return apikeys.Record{}, apikeys.ErrDuplicateAPIKey
+		}
+	}
+	if record.ID == 0 {
+		record.ID = int64(len(s.records) + 1)
+	}
+	s.records = append(s.records, record)
+	return record, nil
+}
+
 func (s *fakeAPIKeyStore) UpsertAPIKeyRecord(_ context.Context, record apikeys.Record) (apikeys.Record, error) {
 	if record.ID != 0 {
 		for i := range s.records {
@@ -85,7 +98,7 @@ func TestPutAPIKeysUsesStoreAndRefreshesRuntimeConfig(t *testing.T) {
 
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(configPath, []byte("routing:\n  strategy: account-bind\napi-keys:\n  - old-key\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("routing:\n  strategy: account-bind\n"), 0o600); err != nil {
 		t.Fatalf("failed to write config: %v", err)
 	}
 
@@ -153,7 +166,7 @@ func TestPatchAPIKeysUsesStoreRecordPayload(t *testing.T) {
 
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(configPath, []byte("routing:\n  strategy: account-bind\napi-keys:\n  - old-key\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("routing:\n  strategy: account-bind\n"), 0o600); err != nil {
 		t.Fatalf("failed to write config: %v", err)
 	}
 
@@ -200,6 +213,87 @@ func TestPatchAPIKeysUsesStoreRecordPayload(t *testing.T) {
 	}
 	if strings.Contains(string(data), "sk-two-new") {
 		t.Fatalf("db-backed api key leaked back into config yaml: %s", string(data))
+	}
+}
+
+func TestPatchAPIKeysCreatesNewKeyAndRejectsDuplicate(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("routing:\n  strategy: account-bind\n"), 0o600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	cfg := &config.Config{}
+	h := NewHandler(cfg, configPath, nil)
+	h.apiKeyStore = &fakeAPIKeyStore{
+		records: []apikeys.Record{{ID: 1, APIKey: "sk-one", Name: "One"}},
+	}
+
+	createRec := httptest.NewRecorder()
+	createCtx, _ := gin.CreateTestContext(createRec)
+	createCtx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/api-keys", strings.NewReader(`{"api-key":"sk-two","name":"Two"}`))
+	createCtx.Request.Header.Set("Content-Type", "application/json")
+	h.PatchAPIKeys(createCtx)
+
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want %d; body=%s", createRec.Code, http.StatusOK, createRec.Body.String())
+	}
+	if !reflect.DeepEqual([]string(cfg.APIKeys), []string{"sk-one", "sk-two"}) {
+		t.Fatalf("cfg APIKeys after create = %#v", []string(cfg.APIKeys))
+	}
+
+	duplicateRec := httptest.NewRecorder()
+	duplicateCtx, _ := gin.CreateTestContext(duplicateRec)
+	duplicateCtx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/api-keys", strings.NewReader(`{"api-key":"sk-one","name":"Overwrite"}`))
+	duplicateCtx.Request.Header.Set("Content-Type", "application/json")
+	h.PatchAPIKeys(duplicateCtx)
+
+	if duplicateRec.Code != http.StatusConflict {
+		t.Fatalf("duplicate status = %d, want %d; body=%s", duplicateRec.Code, http.StatusConflict, duplicateRec.Body.String())
+	}
+	if got := h.apiKeyStore.(*fakeAPIKeyStore).records[0].Name; got != "One" {
+		t.Fatalf("duplicate create overwrote existing record name = %q", got)
+	}
+}
+
+func TestPatchAPIKeysUpdatesCurrentRecordByIndexWithoutOverwritingDuplicateKey(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("routing:\n  strategy: account-bind\n"), 0o600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	cfg := &config.Config{}
+	h := NewHandler(cfg, configPath, nil)
+	h.apiKeyStore = &fakeAPIKeyStore{
+		records: []apikeys.Record{
+			{ID: 1, APIKey: "sk-one", Name: "One"},
+			{ID: 2, APIKey: "sk-two", Name: "Two"},
+		},
+	}
+
+	body := `{"index":1,"api-key":"sk-two","name":"Two Updated","auth_identity":"claude:account:dyf1269651709@gmail.com"}`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/api-keys", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.PatchAPIKeys(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PatchAPIKeys status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	records := h.apiKeyStore.(*fakeAPIKeyStore).records
+	if records[0].Name != "One" {
+		t.Fatalf("first record was modified: %#v", records[0])
+	}
+	if records[1].ID != 2 || records[1].Name != "Two Updated" {
+		t.Fatalf("second record not updated by index: %#v", records[1])
 	}
 }
 
@@ -283,8 +377,8 @@ api-keys:
 	if len(payload.APIKeys) != 2 {
 		t.Fatalf("merged records = %#v", payload.APIKeys)
 	}
-	if payload.APIKeys[0].APIKey != "sk-db" || payload.APIKeys[0].Name != "DB Owner" {
-		t.Fatalf("store record not preferred: %#v", payload.APIKeys)
+	if payload.APIKeys[0].APIKey != "sk-db" || payload.APIKeys[0].Name != "YAML DB Owner" {
+		t.Fatalf("yaml duplicate record not preferred: %#v", payload.APIKeys)
 	}
 	if payload.APIKeys[1].APIKey != "sk-yaml" || payload.APIKeys[1].Name != "YAML Owner" {
 		t.Fatalf("yaml missing key not merged: %#v", payload.APIKeys)

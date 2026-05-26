@@ -44,7 +44,7 @@ func TestApplyToConfigUsesDatabaseRecordsOnly(t *testing.T) {
 	}
 }
 
-func TestApplyStoreToConfigMergesExistingConfigKeysMissingFromStore(t *testing.T) {
+func TestApplyStoreToConfigGivesYAMLRecordsPrecedence(t *testing.T) {
 	cfg := &config.Config{
 		SDKConfig: config.SDKConfig{
 			APIKeys: config.FlexAPIKeyList{"sk-yaml", "sk-db"},
@@ -63,8 +63,8 @@ func TestApplyStoreToConfigMergesExistingConfigKeysMissingFromStore(t *testing.T
 	if !reflect.DeepEqual([]string(cfg.APIKeys), []string{"sk-db", "sk-yaml"}) {
 		t.Fatalf("cfg APIKeys = %#v", []string(cfg.APIKeys))
 	}
-	if got := cfg.APIKeyAuthIdentityBindings["sk-db"]; got != "codex:chatgpt:acct-db" {
-		t.Fatalf("db identity binding = %q", got)
+	if got := cfg.APIKeyAuthIdentityBindings["sk-db"]; got != "codex:chatgpt:acct-yaml-db" {
+		t.Fatalf("yaml identity binding = %q", got)
 	}
 	if got := cfg.APIKeyAuthIdentityBindings["sk-yaml"]; got != "codex:chatgpt:acct-yaml" {
 		t.Fatalf("yaml identity binding = %q", got)
@@ -124,6 +124,10 @@ func (s staticStore) ListAPIKeyRecords(context.Context) ([]Record, error) {
 
 func (s staticStore) ReplaceAPIKeyRecords(context.Context, []Record) ([]Record, error) {
 	return nil, nil
+}
+
+func (s staticStore) CreateAPIKeyRecord(context.Context, Record) (Record, error) {
+	return Record{}, nil
 }
 
 func (s staticStore) UpsertAPIKeyRecord(context.Context, Record) (Record, error) {

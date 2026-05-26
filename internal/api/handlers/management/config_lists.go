@@ -2,6 +2,7 @@ package management
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -116,7 +117,7 @@ func (h *Handler) GetAPIKeys(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to load api keys: %v", err)})
 			return
 		}
-		records = apikeys.MergeMissingRecords(records, h.fallbackYAMLAPIKeyRecords())
+		records = h.mergeStoredAndYAMLAPIKeys(records)
 		c.JSON(http.StatusOK, gin.H{"api-keys": records})
 		return
 	}
@@ -146,11 +147,32 @@ func (h *Handler) PatchAPIKeys(c *gin.Context) {
 		return
 	}
 
-	record, ok := h.bindAPIKeyRecordPatch(c)
+	record, index, ok := h.bindAPIKeyRecordPatch(c)
 	if !ok {
 		return
 	}
-	if _, err := h.apiKeyStore.UpsertAPIKeyRecord(c.Request.Context(), record); err != nil {
+	if record.ID == 0 && index != nil {
+		records, err := h.apiKeyStore.ListAPIKeyRecords(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to load api keys: %v", err)})
+			return
+		}
+		if *index < 0 || *index >= len(records) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid index"})
+			return
+		}
+		record.ID = records[*index].ID
+	}
+	if record.ID > 0 {
+		if _, err := h.apiKeyStore.UpsertAPIKeyRecord(c.Request.Context(), record); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save api key: %v", err)})
+			return
+		}
+	} else if _, err := h.apiKeyStore.CreateAPIKeyRecord(c.Request.Context(), record); err != nil {
+		if errors.Is(err, apikeys.ErrDuplicateAPIKey) {
+			c.JSON(http.StatusConflict, gin.H{"error": "api key already exists"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save api key: %v", err)})
 		return
 	}
@@ -227,43 +249,42 @@ func (h *Handler) bindAPIKeyRecords(c *gin.Context) ([]apikeys.Record, bool) {
 	return apikeys.NormalizeRecords(records), true
 }
 
-func (h *Handler) bindAPIKeyRecordPatch(c *gin.Context) (apikeys.Record, bool) {
+func (h *Handler) bindAPIKeyRecordPatch(c *gin.Context) (apikeys.Record, *int, bool) {
 	data, err := c.GetRawData()
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
-		return apikeys.Record{}, false
+		return apikeys.Record{}, nil, false
 	}
-	var record apikeys.Record
-	if err = json.Unmarshal(data, &record); err != nil || strings.TrimSpace(record.APIKey) == "" {
-		var body struct {
-			ID           int64    `json:"id"`
-			Value        string   `json:"value"`
-			APIKey       string   `json:"api-key"`
-			Name         string   `json:"name"`
-			AuthIdentity string   `json:"auth_identity"`
-			Tags         []string `json:"tags"`
-		}
-		if err = json.Unmarshal(data, &body); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-			return apikeys.Record{}, false
-		}
-		record = apikeys.Record{
-			ID:           body.ID,
-			APIKey:       firstNonEmpty(body.APIKey, body.Value),
-			Name:         body.Name,
-			AuthIdentity: body.AuthIdentity,
-			Tags:         body.Tags,
-		}
+	var body struct {
+		ID           int64    `json:"id"`
+		Index        *int     `json:"index"`
+		Value        string   `json:"value"`
+		APIKey       string   `json:"api-key"`
+		Name         string   `json:"name"`
+		AuthIdentity string   `json:"auth_identity"`
+		Tags         []string `json:"tags"`
+	}
+	if err = json.Unmarshal(data, &body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return apikeys.Record{}, nil, false
+	}
+	record := apikeys.Record{
+		ID:           body.ID,
+		APIKey:       firstNonEmpty(body.APIKey, body.Value),
+		Name:         body.Name,
+		AuthIdentity: body.AuthIdentity,
+		Tags:         body.Tags,
 	}
 	record = apikeys.NormalizeRecord(record)
 	if record.APIKey == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "api-key is required"})
-		return apikeys.Record{}, false
+		return apikeys.Record{}, nil, false
 	}
-	return record, true
+	return record, body.Index, true
 }
 
 func (h *Handler) applyStoredAPIKeys(c *gin.Context, records []apikeys.Record) {
+	records = h.mergeStoredAndYAMLAPIKeys(records)
 	apikeys.ApplyToConfig(h.cfg, records)
 	if h.configUpdateHook != nil {
 		h.configUpdateHook(h.cfg)
@@ -273,6 +294,10 @@ func (h *Handler) applyStoredAPIKeys(c *gin.Context, records []apikeys.Record) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "api-keys": apikeys.NormalizeRecords(records)})
+}
+
+func (h *Handler) mergeStoredAndYAMLAPIKeys(records []apikeys.Record) []apikeys.Record {
+	return apikeys.MergeRecordsWithOverride(records, h.fallbackYAMLAPIKeyRecords())
 }
 
 func parseAPIKeyRecords(data []byte) ([]apikeys.Record, error) {

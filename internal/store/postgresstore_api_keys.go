@@ -85,6 +85,27 @@ func (s *PostgresStore) ReplaceAPIKeyRecords(ctx context.Context, records []apik
 	return s.ListAPIKeyRecords(ctx)
 }
 
+func (s *PostgresStore) CreateAPIKeyRecord(ctx context.Context, record apikeys.Record) (apikeys.Record, error) {
+	record = apikeys.NormalizeRecord(record)
+	if record.APIKey == "" {
+		return apikeys.Record{}, fmt.Errorf("postgres store: api key is required")
+	}
+	query := fmt.Sprintf(`
+		INSERT INTO %s (api_key, name, auth_identity, tags)
+		VALUES ($1, $2, $3, $4::jsonb)
+		RETURNING id, api_key, name, auth_identity, COALESCE(tags, '[]'::jsonb), created_time, updated_time
+	`, s.fullTableName(s.cfg.APIKeyTable))
+	row := s.db.QueryRowContext(ctx, query, record.APIKey, record.Name, record.AuthIdentity, apiKeyTagsJSON(record.Tags))
+	created, err := scanPostgresAPIKeyRecord(row)
+	if err != nil {
+		if isPostgresUniqueViolation(err) {
+			return apikeys.Record{}, apikeys.ErrDuplicateAPIKey
+		}
+		return apikeys.Record{}, err
+	}
+	return created, nil
+}
+
 func (s *PostgresStore) UpsertAPIKeyRecord(ctx context.Context, record apikeys.Record) (apikeys.Record, error) {
 	record = apikeys.NormalizeRecord(record)
 	if record.APIKey == "" {
@@ -189,4 +210,12 @@ func scanPostgresAPIKeyRecord(scanner postgresAPIKeyScanner) (apikeys.Record, er
 	record.CreatedTime = createdTime
 	record.UpdatedTime = updatedTime
 	return apikeys.NormalizeRecord(record), nil
+}
+
+func isPostgresUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "SQLSTATE 23505") ||
+		strings.Contains(err.Error(), "duplicate key value violates unique constraint")
 }
