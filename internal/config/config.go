@@ -144,8 +144,18 @@ type Config struct {
 	// gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, vertex-api-key, and ampcode.
 	OAuthModelAlias map[string][]OAuthModelAlias `yaml:"oauth-model-alias,omitempty" json:"oauth-model-alias,omitempty"`
 
+	// ModelPrices configures per-model token prices used by the management monitor cost view.
+	ModelPrices map[string]ModelPrice `yaml:"model-prices,omitempty" json:"model-prices,omitempty"`
+
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+}
+
+// ModelPrice stores USD prices per 1M tokens for monitor cost calculations.
+type ModelPrice struct {
+	Input  float64 `yaml:"input" json:"input"`
+	Output float64 `yaml:"output" json:"output"`
+	Cache  float64 `yaml:"cache" json:"cache"`
 }
 
 // ClaudeHeaderDefaults configures default header values injected into Claude API requests.
