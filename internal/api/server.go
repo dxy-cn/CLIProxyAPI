@@ -290,7 +290,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
 	s.mgmt.SetConfigUpdateHook(func(updated *config.Config) {
-		s.UpdateClients(updated)
+		s.applyManagementConfigUpdate(updated)
 	})
 	if optionState.localPassword != "" {
 		s.mgmt.SetLocalPassword(optionState.localPassword)
@@ -1182,6 +1182,18 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		vertexAICompatCount,
 		openAICompatCount,
 	)
+}
+
+func (s *Server) applyManagementConfigUpdate(cfg *config.Config) {
+	if s == nil || cfg == nil {
+		return
+	}
+	s.UpdateClients(cfg)
+	s.UpdateBindingConfig(cfg)
+	if s.authManager != nil {
+		s.authManager.SetConfig(cfg)
+		s.authManager.ResetSelectorState()
+	}
 }
 
 func (s *Server) SetWebsocketAuthChangeHandler(fn func(bool, bool)) {

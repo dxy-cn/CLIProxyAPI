@@ -20,8 +20,26 @@ import (
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
 	sdkapi "github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 )
+
+type resetCaptureSelector struct {
+	resetCalls int
+}
+
+func (s *resetCaptureSelector) Pick(_ context.Context, _ string, _ string, _ coreexecutor.Options, auths []*auth.Auth) (*auth.Auth, error) {
+	for _, item := range auths {
+		if item != nil {
+			return item, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *resetCaptureSelector) Reset() {
+	s.resetCalls++
+}
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
@@ -548,6 +566,91 @@ func TestAccountBindMiddleware_DefaultModelAccountAppliesWithAccountBindStrategy
 	}
 	if got := sdkapi.BoundAuthIndexFromContext(c.Request.Context()); got != registered.Index {
 		t.Fatalf("default-model-account not injected: got %q, want %q", got, registered.Index)
+	}
+}
+
+func TestApplyManagementConfigUpdateRefreshesBindingMapAndSelectorState(t *testing.T) {
+	const clientKey = "sk-client"
+
+	gin.SetMode(gin.TestMode)
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+
+	cfg := &proxyconfig.Config{
+		SDKConfig: sdkconfig.SDKConfig{
+			APIKeys: sdkconfig.FlexAPIKeyList{clientKey},
+			APIKeyAuthIdentityBindings: map[string]string{
+				clientKey: "codex:chatgpt:acct-old",
+			},
+		},
+		Port:                   0,
+		AuthDir:                authDir,
+		Debug:                  true,
+		LoggingToFile:          false,
+		UsageStatisticsEnabled: false,
+		RemoteManagement:       proxyconfig.RemoteManagement{DisableControlPanel: true},
+		Routing:                proxyconfig.RoutingConfig{Strategy: "account-bind"},
+	}
+
+	selector := &resetCaptureSelector{}
+	authManager := auth.NewManager(nil, selector, nil)
+	oldAuth, err := authManager.Register(context.Background(), &auth.Auth{
+		ID:       "auth-old",
+		Provider: "codex",
+		FileName: "codex-old.json",
+		Metadata: map[string]any{
+			"id_token": testCodexJWT(t, "acct-old"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("register old auth: %v", err)
+	}
+	newAuth, err := authManager.Register(context.Background(), &auth.Auth{
+		ID:       "auth-new",
+		Provider: "codex",
+		FileName: "codex-new.json",
+		Metadata: map[string]any{
+			"id_token": testCodexJWT(t, "acct-new"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("register new auth: %v", err)
+	}
+
+	s := NewServer(cfg, authManager, sdkaccess.NewManager(), filepath.Join(tmpDir, "config.yaml"))
+
+	reqOld := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	recOld := httptest.NewRecorder()
+	ctxOld, _ := gin.CreateTestContext(recOld)
+	ctxOld.Request = reqOld
+	ctxOld.Set("apiKey", clientKey)
+	s.accountBindMiddleware()(ctxOld)
+	if got := sdkapi.BoundAuthIndexFromContext(ctxOld.Request.Context()); got != oldAuth.Index {
+		t.Fatalf("initial binding = %q, want %q", got, oldAuth.Index)
+	}
+
+	updated := *cfg
+	updated.SDKConfig = cfg.SDKConfig
+	updated.APIKeyAuthIdentityBindings = map[string]string{
+		clientKey: "codex:chatgpt:acct-new",
+	}
+
+	s.applyManagementConfigUpdate(&updated)
+
+	reqNew := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	recNew := httptest.NewRecorder()
+	ctxNew, _ := gin.CreateTestContext(recNew)
+	ctxNew.Request = reqNew
+	ctxNew.Set("apiKey", clientKey)
+	s.accountBindMiddleware()(ctxNew)
+	if got := sdkapi.BoundAuthIndexFromContext(ctxNew.Request.Context()); got != newAuth.Index {
+		t.Fatalf("updated binding = %q, want %q", got, newAuth.Index)
+	}
+	if selector.resetCalls != 1 {
+		t.Fatalf("selector reset calls = %d, want 1", selector.resetCalls)
 	}
 }
 
