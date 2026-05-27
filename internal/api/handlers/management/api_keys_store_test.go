@@ -101,3 +101,70 @@ func TestPutAPIKeysUsesStoreAndKeepsYamlClean(t *testing.T) {
 		t.Fatalf("db-backed api keys leaked back into config yaml: %s", string(data))
 	}
 }
+
+func TestPutAPIKeysWithoutStoreAcceptsRecordBindings(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("routing:\n  strategy: account-bind\napi-keys:\n  - old-key\n"), 0o600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	cfg := &config.Config{}
+	h := NewHandler(cfg, configPath, nil)
+	var hookCalled bool
+	h.SetConfigUpdateHook(func(updated *config.Config) {
+		hookCalled = true
+		if updated != cfg {
+			t.Fatalf("hook config pointer changed")
+		}
+	})
+
+	body := `[
+		{"api-key":"sk-java","name":"Java owner","auth_identity":"codex:chatgpt:acct-java","tags":["Java"]},
+		{"api-key":"sk-go","name":"Go owner"}
+	]`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/v0/management/api-keys", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.PutAPIKeys(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PutAPIKeys status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !hookCalled {
+		t.Fatal("expected config update hook to be called")
+	}
+	if !reflect.DeepEqual([]string(cfg.APIKeys), []string{"sk-java", "sk-go"}) {
+		t.Fatalf("cfg APIKeys = %#v", []string(cfg.APIKeys))
+	}
+	if got := cfg.APIKeyAuthIdentityBindings["sk-java"]; got != "codex:chatgpt:acct-java" {
+		t.Fatalf("auth identity binding = %q", got)
+	}
+	if _, ok := cfg.APIKeyAuthIdentityBindings["sk-go"]; ok {
+		t.Fatalf("unexpected auth identity binding for sk-go")
+	}
+
+	var payload struct {
+		APIKeys []apikeys.Record `json:"api-keys"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response JSON invalid: %v", err)
+	}
+	if len(payload.APIKeys) != 2 {
+		t.Fatalf("response records len = %d, want 2", len(payload.APIKeys))
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read config: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "sk-java") || !strings.Contains(text, "sk-go") {
+		t.Fatalf("api keys missing from config yaml: %s", text)
+	}
+}

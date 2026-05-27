@@ -133,9 +133,19 @@ func (h *Handler) PutAPIKeys(c *gin.Context) {
 		h.applyStoredAPIKeys(c, saved)
 		return
 	}
-	h.putStringList(c, func(v []string) {
-		h.cfg.APIKeys = config.FlexAPIKeyList(v)
-	}, nil)
+	records, ok := h.bindAPIKeyRecords(c)
+	if !ok {
+		return
+	}
+	apikeys.ApplyToConfig(h.cfg, records)
+	if h.configUpdateHook != nil {
+		h.configUpdateHook(h.cfg)
+	}
+	if err := h.persistConfigOnly(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "api-keys": apikeys.NormalizeRecords(records)})
 }
 func (h *Handler) PatchAPIKeys(c *gin.Context) {
 	asSlice := []string(h.cfg.APIKeys)
