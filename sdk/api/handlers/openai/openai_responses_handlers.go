@@ -319,20 +319,48 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSON []byte) {
 	c.Header("Content-Type", "application/json")
 
-	modelName := gjson.GetBytes(rawJSON, "model").String()
-	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+	sessionKey := websocketDownstreamSessionKey(c.Request)
+	lastRequest, lastResponseBody, _ := defaultResponsesHTTPSessionStore.get(sessionKey)
 
-	resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
-	stopKeepAlive()
+	executeRequest := func(requestJSON []byte) ([]byte, http.Header, *interfaces.ErrorMessage) {
+		modelName := gjson.GetBytes(requestJSON, "model").String()
+		cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+		stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
+		resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
+		stopKeepAlive()
+		if errMsg != nil {
+			cliCancel(errMsg.Error)
+		} else {
+			cliCancel()
+		}
+		return resp, upstreamHeaders, errMsg
+	}
+
+	resp, upstreamHeaders, errMsg := executeRequest(rawJSON)
+	requestForStorage := rawJSON
+	if errMsg != nil && isResponsesPreviousResponseNotFoundError(errMsg) {
+		fallbackRequest, fallbackErr := normalizeResponsesHTTPRequestWithSession(rawJSON, lastRequest, lastResponseBody)
+		if fallbackErr != nil {
+			h.WriteErrorResponse(c, fallbackErr)
+			return
+		}
+		if !bytes.Equal(fallbackRequest, rawJSON) {
+			resp, upstreamHeaders, errMsg = executeRequest(fallbackRequest)
+			if errMsg == nil {
+				requestForStorage = fallbackRequest
+			}
+		}
+	}
 	if errMsg != nil {
 		h.WriteErrorResponse(c, errMsg)
-		cliCancel(errMsg.Error)
 		return
+	}
+
+	if effectiveRequest, storeErr := normalizeResponsesHTTPRequestWithSession(requestForStorage, lastRequest, lastResponseBody); storeErr == nil {
+		defaultResponsesHTTPSessionStore.put(sessionKey, effectiveRequest, responsesOutputFromBody(resp))
 	}
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 	_, _ = c.Writer.Write(resp)
-	cliCancel()
 }
 
 // handleStreamingResponse handles streaming responses for Gemini models.
@@ -355,10 +383,15 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 		return
 	}
 
-	// New core execution path
-	modelName := gjson.GetBytes(rawJSON, "model").String()
-	cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-	dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, rawJSON, "")
+	sessionKey := websocketDownstreamSessionKey(c.Request)
+	lastRequest, lastResponseBody, _ := defaultResponsesHTTPSessionStore.get(sessionKey)
+
+	executeRequest := func(requestJSON []byte) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage, func(error)) {
+		modelName := gjson.GetBytes(requestJSON, "model").String()
+		cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+		dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
+		return dataChan, upstreamHeaders, errChan, func(err error) { cliCancel(err) }
+	}
 
 	setSSEHeaders := func() {
 		c.Header("Content-Type", "text/event-stream")
@@ -368,61 +401,121 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 	}
 	framer := &responsesSSEFramer{}
 
-	// Peek at the first chunk
-	for {
+	requestJSON := rawJSON
+	for attempt := 0; attempt < 2; attempt++ {
+		dataChan, upstreamHeaders, errChan, cancel := executeRequest(requestJSON)
+
+		// Peek at the first chunk
 		select {
 		case <-c.Request.Context().Done():
-			cliCancel(c.Request.Context().Err())
+			cancel(c.Request.Context().Err())
 			return
 		case errMsg, ok := <-errChan:
 			if !ok {
-				// Err channel closed cleanly; wait for data channel.
 				errChan = nil
-				continue
+				completedOutput, terminalErr, completed := h.forwardResponsesStreamWithCapture(
+					c,
+					flusher,
+					cancel,
+					dataChan,
+					errChan,
+					framer,
+				)
+				if terminalErr != nil {
+					return
+				}
+				if completed {
+					if effectiveRequest, storeErr := normalizeResponsesHTTPRequestWithSession(requestJSON, lastRequest, lastResponseBody); storeErr == nil {
+						defaultResponsesHTTPSessionStore.put(sessionKey, effectiveRequest, completedOutput)
+					}
+				}
+				return
 			}
-			// Upstream failed immediately. Return proper error status and JSON.
+			if attempt == 0 && isResponsesPreviousResponseNotFoundError(errMsg) {
+				cancel(errMsg.Error)
+				fallbackRequest, fallbackErr := normalizeResponsesHTTPRequestWithSession(rawJSON, lastRequest, lastResponseBody)
+				if fallbackErr != nil {
+					h.WriteErrorResponse(c, fallbackErr)
+					return
+				}
+				if !bytes.Equal(fallbackRequest, rawJSON) {
+					requestJSON = fallbackRequest
+					continue
+				}
+			}
 			h.WriteErrorResponse(c, errMsg)
-			if errMsg != nil {
-				cliCancel(errMsg.Error)
-			} else {
-				cliCancel(nil)
-			}
+			cancel(errMsg.Error)
 			return
 		case chunk, ok := <-dataChan:
 			if !ok {
-				// Stream closed without data? Send headers and done.
 				setSSEHeaders()
 				handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 				_, _ = c.Writer.Write([]byte("\n"))
 				flusher.Flush()
-				cliCancel(nil)
+				cancel(nil)
 				return
 			}
 
-			// Success! Set headers.
 			setSSEHeaders()
 			handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
-
-			// Write first chunk logic (matching forwardResponsesStream)
 			framer.WriteChunk(c.Writer, chunk)
 			flusher.Flush()
-
-			// Continue
-			h.forwardResponsesStream(c, flusher, func(err error) { cliCancel(err) }, dataChan, errChan, framer)
+			completedOutput := []byte("[]")
+			completed := false
+			for _, payload := range websocketJSONPayloadsFromChunk(chunk) {
+				if gjson.GetBytes(payload, "type").String() == wsEventTypeCompleted {
+					completed = true
+					completedOutput = responseCompletedOutputFromPayload(payload)
+				}
+			}
+			restOutput, terminalErr, restCompleted := h.forwardResponsesStreamWithCapture(
+				c,
+				flusher,
+				cancel,
+				dataChan,
+				errChan,
+				framer,
+			)
+			if terminalErr != nil {
+				return
+			}
+			if restCompleted {
+				completed = true
+				completedOutput = restOutput
+			}
+			if completed {
+				if effectiveRequest, storeErr := normalizeResponsesHTTPRequestWithSession(requestJSON, lastRequest, lastResponseBody); storeErr == nil {
+					defaultResponsesHTTPSessionStore.put(sessionKey, effectiveRequest, completedOutput)
+				}
+			}
 			return
 		}
 	}
 }
 
 func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage, framer *responsesSSEFramer) {
+	h.forwardResponsesStreamWithCapture(c, flusher, cancel, data, errs, framer)
+}
+
+func (h *OpenAIResponsesAPIHandler) forwardResponsesStreamWithCapture(c *gin.Context, flusher http.Flusher, cancel func(error), data <-chan []byte, errs <-chan *interfaces.ErrorMessage, framer *responsesSSEFramer) ([]byte, *interfaces.ErrorMessage, bool) {
 	if framer == nil {
 		framer = &responsesSSEFramer{}
 	}
+	completedOutput := []byte("[]")
+	completed := false
+	var terminalErr *interfaces.ErrorMessage
 	h.ForwardStream(c, flusher, cancel, data, errs, handlers.StreamForwardOptions{
 		WriteChunk: func(chunk []byte) {
+			for _, payload := range websocketJSONPayloadsFromChunk(chunk) {
+				if gjson.GetBytes(payload, "type").String() == wsEventTypeCompleted {
+					completed = true
+					completedOutput = responseCompletedOutputFromPayload(payload)
+				}
+			}
 			framer.WriteChunk(c.Writer, chunk)
 		},
 		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
+			terminalErr = errMsg
 			framer.Flush(c.Writer)
 			if errMsg == nil {
 				return
@@ -443,4 +536,5 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 			_, _ = c.Writer.Write([]byte("\n"))
 		},
 	})
+	return completedOutput, terminalErr, completed
 }
