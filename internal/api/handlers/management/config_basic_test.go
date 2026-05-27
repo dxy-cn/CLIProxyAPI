@@ -1,6 +1,7 @@
 package management
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -80,6 +81,66 @@ func TestGetConfigYAMLIncludesConfigHash(t *testing.T) {
 	}
 	if got := rec.Header().Get("ETag"); got != `"`+wantHash+`"` {
 		t.Fatalf("ETag = %q, want quoted hash %q", got, wantHash)
+	}
+}
+
+func TestGetModelPricesReturnsOnlyModelPricesSection(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := []byte(`
+routing:
+  strategy: round-robin
+remote-management:
+  secret-key: top-secret
+model-prices:
+  gpt-5:
+    input: 1.25
+    output: 10
+    cache: 0.125
+  claude-call:
+    mode: call
+    perCall: 0.5
+`)
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	h := NewHandler(&config.Config{}, configPath, coreauth.NewManager(nil, nil, nil))
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/model-prices", nil)
+
+	h.GetModelPrices(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GetModelPrices status = %d, want %d with body %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body map[string]map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode GetModelPrices response failed: %v", err)
+	}
+	if len(body) != 2 {
+		t.Fatalf("unexpected model price count: %+v", body)
+	}
+	if _, ok := body["routing"]; ok {
+		t.Fatalf("unexpected leaked config field: %+v", body)
+	}
+	if got := body["gpt-5"]["prompt"]; got != 1.25 {
+		t.Fatalf("gpt-5 prompt = %v, want 1.25", got)
+	}
+	if got := body["gpt-5"]["completion"]; got != 10.0 {
+		t.Fatalf("gpt-5 completion = %v, want 10", got)
+	}
+	if got := body["claude-call"]["mode"]; got != "call" {
+		t.Fatalf("claude-call mode = %v, want call", got)
+	}
+	if got := body["claude-call"]["perCall"]; got != 0.5 {
+		t.Fatalf("claude-call perCall = %v, want 0.5", got)
 	}
 }
 

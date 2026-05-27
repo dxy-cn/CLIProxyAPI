@@ -482,10 +482,13 @@ func (s *Server) registerPublicMonitorRoutes() {
 		monitor.GET("/request-logs", s.mgmt.GetMonitorRequestLogs)
 		monitor.GET("/kpi", s.mgmt.GetMonitorKpi)
 		monitor.GET("/quota", s.mgmt.GetPublicMonitorCodexQuota)
+		monitor.GET("/model-prices", s.mgmt.GetModelPrices)
+		monitor.GET("/model-distribution", s.mgmt.GetMonitorModelDistribution)
 		monitor.GET("/daily-trend", s.mgmt.GetMonitorDailyTrend)
 		monitor.GET("/daily-model-tokens", s.mgmt.GetMonitorDailyModelTokens)
 		monitor.GET("/hourly-model-tokens", s.mgmt.GetMonitorHourlyModelTokens)
 		monitor.GET("/hourly-tokens", s.mgmt.GetMonitorHourlyTokens)
+		monitor.GET("/key-token-stats", s.mgmt.GetMonitorKeyTokenStats)
 	}
 }
 
@@ -559,6 +562,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.POST("/usage/import", s.mgmt.ImportUsageStatistics)
 		mgmt.GET("/config", s.mgmt.GetConfig)
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
+		mgmt.GET("/model-prices", s.mgmt.GetModelPrices)
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
 		mgmt.GET("/latest-version", s.mgmt.GetLatestVersion)
 

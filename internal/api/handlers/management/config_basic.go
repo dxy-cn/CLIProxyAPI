@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -144,6 +145,130 @@ func requestedConfigHash(c *gin.Context) string {
 	return strings.TrimSpace(c.GetHeader(configHashHeader))
 }
 
+func parseModelPriceNumber(record map[string]any, keys ...string) (float64, bool) {
+	for _, key := range keys {
+		value, ok := record[key]
+		if !ok || value == nil {
+			continue
+		}
+
+		switch typed := value.(type) {
+		case int:
+			if typed >= 0 {
+				return float64(typed), true
+			}
+		case int8:
+			if typed >= 0 {
+				return float64(typed), true
+			}
+		case int16:
+			if typed >= 0 {
+				return float64(typed), true
+			}
+		case int32:
+			if typed >= 0 {
+				return float64(typed), true
+			}
+		case int64:
+			if typed >= 0 {
+				return float64(typed), true
+			}
+		case uint:
+			return float64(typed), true
+		case uint8:
+			return float64(typed), true
+		case uint16:
+			return float64(typed), true
+		case uint32:
+			return float64(typed), true
+		case uint64:
+			return float64(typed), true
+		case float32:
+			if typed >= 0 {
+				return float64(typed), true
+			}
+		case float64:
+			if typed >= 0 {
+				return typed, true
+			}
+		case string:
+			parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+			if err == nil && parsed >= 0 {
+				return parsed, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func extractModelPrices(data []byte) (map[string]gin.H, error) {
+	var root map[string]any
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return nil, err
+	}
+
+	rawModelPrices, ok := root["model-prices"]
+	if !ok || rawModelPrices == nil {
+		return map[string]gin.H{}, nil
+	}
+
+	modelPricesMap, ok := rawModelPrices.(map[string]any)
+	if !ok {
+		return map[string]gin.H{}, nil
+	}
+
+	result := make(map[string]gin.H, len(modelPricesMap))
+	for rawModel, rawValue := range modelPricesMap {
+		model := strings.TrimSpace(rawModel)
+		if model == "" {
+			continue
+		}
+
+		valueRecord, ok := rawValue.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		mode := "token"
+		if rawMode, ok := valueRecord["mode"].(string); ok && strings.EqualFold(strings.TrimSpace(rawMode), "call") {
+			mode = "call"
+		}
+
+		prompt, hasPrompt := parseModelPriceNumber(valueRecord, "prompt", "input")
+		completion, hasCompletion := parseModelPriceNumber(valueRecord, "completion", "output")
+		cache, hasCache := parseModelPriceNumber(valueRecord, "cache")
+		perCall, hasPerCall := parseModelPriceNumber(valueRecord, "perCall", "per-call", "per_call")
+
+		if !hasCache {
+			cache = prompt
+		}
+		if !hasPrompt && !hasCompletion && !hasCache && !hasPerCall {
+			continue
+		}
+
+		entry := gin.H{
+			"mode":       mode,
+			"prompt":     prompt,
+			"completion": completion,
+			"cache":      cache,
+		}
+		if hasPerCall {
+			entry["perCall"] = perCall
+		}
+		result[model] = entry
+	}
+
+	return result, nil
+}
+
+func (h *Handler) readModelPrices() (map[string]gin.H, error) {
+	data, err := os.ReadFile(h.configFilePath)
+	if err != nil {
+		return nil, err
+	}
+	return extractModelPrices(data)
+}
+
 func (h *Handler) PutConfigYAML(c *gin.Context) {
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -248,6 +373,19 @@ func (h *Handler) GetConfigYAML(c *gin.Context) {
 	c.Header("X-Content-Type-Options", "nosniff")
 	// Write raw bytes as-is
 	_, _ = c.Writer.Write(data)
+}
+
+func (h *Handler) GetModelPrices(c *gin.Context) {
+	modelPrices, err := h.readModelPrices()
+	if err != nil {
+		if os.IsNotExist(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not_found", "message": "config file not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "read_failed", "message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, modelPrices)
 }
 
 // Debug

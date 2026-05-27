@@ -50,6 +50,9 @@ func newTestServer(t *testing.T) *Server {
 	accessManager := sdkaccess.NewManager()
 
 	configPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("model-prices: {}\n"), 0o600); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
 	return NewServer(cfg, authManager, accessManager, configPath)
 }
 
@@ -74,6 +77,24 @@ func TestPublicMonitorRouteRejectsUnknownKey(t *testing.T) {
 
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestPublicMonitorRouteExposesUserMonitorEndpoints(t *testing.T) {
+	server := newTestServer(t)
+
+	for _, path := range []string{
+		"/v0/management/public/custom/monitor/model-prices?api_key=test-key",
+		"/v0/management/public/custom/monitor/model-distribution?api_key=test-key",
+		"/v0/management/public/custom/monitor/key-token-stats?api_key=test-key",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("unexpected status for %s: got %d body=%s", path, rr.Code, rr.Body.String())
+		}
 	}
 }
 
