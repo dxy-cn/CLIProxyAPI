@@ -348,6 +348,9 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 						fileData["note"] = trimmed
 					}
 				}
+				if cv := authFileJSONCostCenter(data); cv != "" {
+					fileData["cost_center"] = cv
+				}
 			}
 
 			files = append(files, fileData)
@@ -465,7 +468,43 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 			}
 		}
 	}
+	if costCenter := authCostCenter(auth); costCenter != "" {
+		entry["cost_center"] = costCenter
+	}
 	return entry
+}
+
+func authCostCenter(auth *coreauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	for _, key := range []string{"cost_center", "costCenter", "cost-center"} {
+		if value := strings.TrimSpace(authAttribute(auth, key)); value != "" {
+			return value
+		}
+	}
+	if auth.Metadata == nil {
+		return ""
+	}
+	for _, key := range []string{"cost_center", "costCenter", "cost-center"} {
+		if raw, ok := auth.Metadata[key].(string); ok {
+			if value := strings.TrimSpace(raw); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func authFileJSONCostCenter(data []byte) string {
+	for _, key := range []string{"cost_center", "costCenter", "cost-center"} {
+		if value := gjson.GetBytes(data, key); value.Exists() && value.Type == gjson.String {
+			if trimmed := strings.TrimSpace(value.String()); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return ""
 }
 
 func extractCodexIDTokenClaims(auth *coreauth.Auth) gin.H {

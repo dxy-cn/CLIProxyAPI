@@ -33,6 +33,38 @@ func TestBuildAuthFileEntryExposesStableAuthIdentity(t *testing.T) {
 	}
 }
 
+func TestBuildAuthFileEntryExposesCostCenter(t *testing.T) {
+	t.Parallel()
+
+	handler := NewHandler(&config.Config{}, "", nil)
+	entry := handler.buildAuthFileEntry(&coreauth.Auth{
+		ID:       "codex-auth",
+		Provider: "codex",
+		FileName: "codex.json",
+		Metadata: map[string]any{
+			"cost_center": " ToD ",
+		},
+		Attributes: map[string]string{
+			"path": t.TempDir() + "/codex.json",
+		},
+	})
+
+	if entry == nil {
+		t.Fatalf("buildAuthFileEntry returned nil")
+	}
+	if got := entry["cost_center"]; got != "ToD" {
+		t.Fatalf("cost_center = %v, want %q", got, "ToD")
+	}
+}
+
+func TestAuthFileJSONCostCenterReadsSnakeCase(t *testing.T) {
+	t.Parallel()
+
+	if got := authFileJSONCostCenter([]byte(`{"type":"codex","cost_center":" ToD "}`)); got != "ToD" {
+		t.Fatalf("authFileJSONCostCenter = %q, want %q", got, "ToD")
+	}
+}
+
 func testManagementCodexJWT(t *testing.T, accountID string) string {
 	t.Helper()
 
