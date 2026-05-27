@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"math"
 	"net/http"
 	"sort"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 )
 
 const (
@@ -40,6 +42,7 @@ type monitorRecord struct {
 
 type monitorRecordFilter struct {
 	APIKey         string
+	APIKeys        []string
 	APIContains    string
 	APIMatchedKeys []string
 	Model          string
@@ -717,6 +720,18 @@ func visitSnapshotRecords(snapshot usage.StatisticsSnapshot, visit func(record m
 }
 
 func (f monitorRecordFilter) matches(record monitorRecord) bool {
+	if len(f.APIKeys) > 0 {
+		matched := false
+		for _, apiKey := range f.APIKeys {
+			if record.APIKey == apiKey {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
 	if f.APIKey != "" && record.APIKey != f.APIKey {
 		return false
 	}
@@ -800,6 +815,7 @@ func requestGroupKey(source, model string) string {
 func toUsageMonitorFilter(filter monitorRecordFilter) usage.MonitorQueryFilter {
 	return usage.MonitorQueryFilter{
 		APIKey:         strings.TrimSpace(filter.APIKey),
+		APIKeys:        append([]string(nil), filter.APIKeys...),
 		APIContains:    strings.TrimSpace(filter.APIContains),
 		APIMatchedKeys: append([]string(nil), filter.APIMatchedKeys...),
 		Model:          strings.TrimSpace(filter.Model),
@@ -809,6 +825,14 @@ func toUsageMonitorFilter(filter monitorRecordFilter) usage.MonitorQueryFilter {
 		End:            filter.End,
 		MaxRows:        filter.MaxRows,
 	}
+}
+
+type monitorKeyTokenStatsContext struct {
+	CurrentAPIKey string
+	ScopedAPIKeys []string
+	APIKeyNames   map[string]string
+	PanelTitle    string
+	AuthNote      string
 }
 
 func fromUsageRecentRequests(items []usage.MonitorRecentRequest) []monitorRecentRequest {
@@ -1191,7 +1215,11 @@ type monitorHourlyPerformanceResponse struct {
 
 type monitorKeyTokenStatsItem struct {
 	APIKey            string           `json:"api_key"`
+	APIKeyName        string           `json:"api_key_name,omitempty"`
+	DisplayName       string           `json:"display_name,omitempty"`
+	IsCurrentKey      bool             `json:"is_current_key,omitempty"`
 	AuthIndex         string           `json:"auth_index"`
+	AuthNote          string           `json:"auth_note,omitempty"`
 	Requests          int64            `json:"requests"`
 	TotalTokens       int64            `json:"total_tokens"`
 	AccountTokens     int64            `json:"account_tokens"`
@@ -1529,6 +1557,7 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 	}
 
 	filter := h.buildMonitorRecordFilter(c, start, end, "")
+	responseContext := h.buildMonitorKeyTokenStatsContext(c, filter)
 
 	accountTotals := make(map[string]int64)
 	keyTotals := make(map[string]*monitorKeyTokenAcc)
@@ -1568,7 +1597,7 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 			for _, row := range rows {
 				addRow(row.APIKey, row.Source, row.AuthIndex, row.Requests, row.TotalTokens)
 			}
-			c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, monitorTimeRange{Start: start, End: end}))
+			c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, monitorTimeRange{Start: start, End: end}, responseContext))
 			return
 		}
 	}
@@ -1584,14 +1613,26 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 		addRow(record.APIKey, record.Source, record.AuthIndex, 1, tokens)
 	})
 
-	c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, monitorTimeRange{Start: start, End: end}))
+	c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, monitorTimeRange{Start: start, End: end}, responseContext))
 }
 
 func buildMonitorKeyTokenStatsResponse(
 	keyTotals map[string]*monitorKeyTokenAcc,
 	accountTotals map[string]int64,
 	timeRange monitorTimeRange,
+	responseContext monitorKeyTokenStatsContext,
 ) gin.H {
+	for _, apiKey := range responseContext.ScopedAPIKeys {
+		if _, ok := keyTotals[apiKey]; ok {
+			continue
+		}
+		keyTotals[apiKey] = &monitorKeyTokenAcc{
+			APIKey:       apiKey,
+			AuthTokens:   make(map[string]int64),
+			SourceTokens: make(map[string]int64),
+		}
+	}
+
 	items := make([]monitorKeyTokenStatsItem, 0, len(keyTotals))
 	var totalTokens int64
 	for _, acc := range keyTotals {
@@ -1609,9 +1650,18 @@ func buildMonitorKeyTokenStatsResponse(
 		for source, tokens := range acc.SourceTokens {
 			sourceTokens[source] = tokens
 		}
+		apiKeyName := strings.TrimSpace(responseContext.APIKeyNames[acc.APIKey])
+		responseAPIKey := acc.APIKey
+		if responseContext.CurrentAPIKey != "" {
+			responseAPIKey = util.HideAPIKey(responseAPIKey)
+		}
 		items = append(items, monitorKeyTokenStatsItem{
-			APIKey:            acc.APIKey,
+			APIKey:            responseAPIKey,
+			APIKeyName:        apiKeyName,
+			DisplayName:       apiKeyName,
+			IsCurrentKey:      acc.APIKey == responseContext.CurrentAPIKey,
 			AuthIndex:         authIndex,
+			AuthNote:          responseContext.AuthNote,
 			Requests:          acc.Requests,
 			TotalTokens:       acc.TotalTokens,
 			AccountTokens:     accountTokens,
@@ -1634,13 +1684,61 @@ func buildMonitorKeyTokenStatsResponse(
 		accountResp[account] = tokens
 	}
 
-	return gin.H{
+	response := gin.H{
 		"items":          items,
 		"total":          len(items),
 		"total_tokens":   totalTokens,
 		"account_totals": accountResp,
 		"time_range":     timeRange,
 	}
+	if responseContext.PanelTitle != "" {
+		response["panel_title"] = responseContext.PanelTitle
+	}
+	if responseContext.CurrentAPIKey != "" {
+		maskedCurrentKey := util.HideAPIKey(responseContext.CurrentAPIKey)
+		currentName := strings.TrimSpace(responseContext.APIKeyNames[responseContext.CurrentAPIKey])
+		response["current_key"] = gin.H{
+			"api_key":      maskedCurrentKey,
+			"api_key_name": currentName,
+			"display_name": currentName,
+		}
+	}
+	return response
+}
+
+func (h *Handler) buildMonitorKeyTokenStatsContext(
+	c *gin.Context,
+	filter monitorRecordFilter,
+) monitorKeyTokenStatsContext {
+	requestCtx := context.Background()
+	if c != nil && c.Request != nil {
+		requestCtx = c.Request.Context()
+	}
+	ctx := monitorKeyTokenStatsContext{
+		APIKeyNames: monitorAPIKeyNameMapFromRecords(h.monitorAPIKeyRecords(requestCtx)),
+	}
+	if c == nil {
+		return ctx
+	}
+
+	currentAPIKey := publicMonitorAPIKey(c)
+	if currentAPIKey == "" {
+		return ctx
+	}
+	ctx.CurrentAPIKey = currentAPIKey
+	ctx.ScopedAPIKeys = append([]string(nil), filter.APIKeys...)
+
+	if auth := h.boundAuthForMonitorKey(currentAPIKey); auth != nil {
+		ctx.AuthNote = monitorAuthDisplayName(auth)
+		ctx.PanelTitle = ctx.AuthNote
+	}
+
+	if ctx.PanelTitle == "" {
+		if name := strings.TrimSpace(ctx.APIKeyNames[currentAPIKey]); name != "" {
+			ctx.PanelTitle = name
+		}
+	}
+	return ctx
 }
 
 func dominantAuthIndex(authTokens map[string]int64) string {

@@ -28,6 +28,20 @@ type websocketCaptureExecutor struct {
 	payloads    [][]byte
 }
 
+type websocketStatusErr struct {
+	code int
+	msg  string
+}
+
+func (e websocketStatusErr) Error() string   { return e.msg }
+func (e websocketStatusErr) StatusCode() int { return e.code }
+
+type websocketPreviousResponseFallbackExecutor struct {
+	mu          sync.Mutex
+	streamCalls int
+	payloads    [][]byte
+}
+
 type websocketCompactionCaptureExecutor struct {
 	mu             sync.Mutex
 	streamPayloads [][]byte
@@ -130,6 +144,49 @@ func (e *websocketCaptureExecutor) CountTokens(context.Context, *coreauth.Auth, 
 }
 
 func (e *websocketCaptureExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (e *websocketPreviousResponseFallbackExecutor) Identifier() string { return "test-provider" }
+
+func (e *websocketPreviousResponseFallbackExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("not implemented")
+}
+
+func (e *websocketPreviousResponseFallbackExecutor) ExecuteStream(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	e.mu.Lock()
+	e.streamCalls++
+	e.payloads = append(e.payloads, bytes.Clone(req.Payload))
+	e.mu.Unlock()
+
+	chunks := make(chan coreexecutor.StreamChunk, 1)
+	if websocketRequestUsesPreviousResponseID(req.Payload) {
+		chunks <- coreexecutor.StreamChunk{Err: websocketStatusErr{
+			code: http.StatusBadRequest,
+			msg:  `{"error":{"message":"Previous response with id 'resp-upstream-1' not found.","type":"invalid_request_error","code":"previous_response_not_found","param":"previous_response_id"}}`,
+		}}
+		close(chunks)
+		return &coreexecutor.StreamResult{Chunks: chunks}, nil
+	}
+
+	responseID := "resp-upstream-1"
+	if gjson.GetBytes(req.Payload, "input.2.id").String() == "msg-2" {
+		responseID = "resp-upstream-2"
+	}
+	chunks <- coreexecutor.StreamChunk{Payload: []byte(fmt.Sprintf(`{"type":"response.completed","response":{"id":"%s","output":[{"type":"message","id":"assistant-1"}]}}`, responseID))}
+	close(chunks)
+	return &coreexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+func (e *websocketPreviousResponseFallbackExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *websocketPreviousResponseFallbackExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("not implemented")
+}
+
+func (e *websocketPreviousResponseFallbackExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
 	return nil, errors.New("not implemented")
 }
 
@@ -681,7 +738,7 @@ func TestForwardResponsesWebsocketPreservesCompletedEvent(t *testing.T) {
 		close(errCh)
 
 		var timelineLog strings.Builder
-		completedOutput, err := (*OpenAIResponsesAPIHandler)(nil).forwardResponsesWebsocket(
+		completedOutput, upstreamErr, err := (*OpenAIResponsesAPIHandler)(nil).forwardResponsesWebsocket(
 			ctx,
 			conn,
 			func(...interface{}) {},
@@ -689,9 +746,14 @@ func TestForwardResponsesWebsocketPreservesCompletedEvent(t *testing.T) {
 			errCh,
 			&timelineLog,
 			"session-1",
+			false,
 		)
 		if err != nil {
 			serverErrCh <- err
+			return
+		}
+		if upstreamErr != nil {
+			serverErrCh <- errors.New("unexpected upstream error")
 			return
 		}
 		if gjson.GetBytes(completedOutput, "0.id").String() != "out-1" {
@@ -760,7 +822,7 @@ func TestForwardResponsesWebsocketLogsAttemptedResponseOnWriteFailure(t *testing
 			return
 		}
 
-		_, err = (*OpenAIResponsesAPIHandler)(nil).forwardResponsesWebsocket(
+		_, _, err = (*OpenAIResponsesAPIHandler)(nil).forwardResponsesWebsocket(
 			ctx,
 			conn,
 			func(...interface{}) {},
@@ -768,6 +830,7 @@ func TestForwardResponsesWebsocketLogsAttemptedResponseOnWriteFailure(t *testing
 			errCh,
 			&timelineLog,
 			"session-1",
+			false,
 		)
 		if err == nil {
 			serverErrCh <- errors.New("expected websocket write failure")
@@ -968,6 +1031,97 @@ func TestResponsesWebsocketPrewarmHandledLocallyForSSEUpstream(t *testing.T) {
 	input := gjson.GetBytes(forwarded, "input").Array()
 	if len(input) != 1 || input[0].Get("id").String() != "msg-1" {
 		t.Fatalf("unexpected forwarded input: %s", forwarded)
+	}
+}
+
+func TestResponsesWebsocketRetriesWithMergedTranscriptWhenPreviousResponseIsMissing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &websocketPreviousResponseFallbackExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	auth := &coreauth.Auth{
+		ID:         "auth-ws",
+		Provider:   executor.Identifier(),
+		Status:     coreauth.StatusActive,
+		Attributes: map[string]string{"websockets": "true"},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "test-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() {
+		if errClose := conn.Close(); errClose != nil {
+			t.Fatalf("close websocket: %v", errClose)
+		}
+	}()
+
+	if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"test-model","input":[{"type":"message","id":"msg-1"}]}`)); errWrite != nil {
+		t.Fatalf("write first websocket message: %v", errWrite)
+	}
+	_, firstPayload, errRead := conn.ReadMessage()
+	if errRead != nil {
+		t.Fatalf("read first websocket response: %v", errRead)
+	}
+	if got := gjson.GetBytes(firstPayload, "type").String(); got != wsEventTypeCompleted {
+		t.Fatalf("first payload type = %s, want %s", got, wsEventTypeCompleted)
+	}
+
+	if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","previous_response_id":"resp-upstream-1","input":[{"type":"message","id":"msg-2"}]}`)); errWrite != nil {
+		t.Fatalf("write second websocket message: %v", errWrite)
+	}
+	_, secondPayload, errRead := conn.ReadMessage()
+	if errRead != nil {
+		t.Fatalf("read second websocket response: %v", errRead)
+	}
+	if got := gjson.GetBytes(secondPayload, "type").String(); got != wsEventTypeCompleted {
+		t.Fatalf("second payload type = %s, want %s; payload=%s", got, wsEventTypeCompleted, secondPayload)
+	}
+	if gjson.GetBytes(secondPayload, "error.code").Exists() {
+		t.Fatalf("second payload unexpectedly returned an error: %s", secondPayload)
+	}
+
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+	if executor.streamCalls != 3 {
+		t.Fatalf("stream calls = %d, want 3", executor.streamCalls)
+	}
+	if len(executor.payloads) != 3 {
+		t.Fatalf("captured payloads = %d, want 3", len(executor.payloads))
+	}
+	firstRetry := executor.payloads[1]
+	if gjson.GetBytes(firstRetry, "previous_response_id").String() != "resp-upstream-1" {
+		t.Fatalf("first retry should preserve previous_response_id: %s", firstRetry)
+	}
+	fallback := executor.payloads[2]
+	if gjson.GetBytes(fallback, "previous_response_id").Exists() {
+		t.Fatalf("fallback request must not include previous_response_id: %s", fallback)
+	}
+	input := gjson.GetBytes(fallback, "input").Array()
+	if len(input) != 3 {
+		t.Fatalf("fallback input len = %d, want 3: %s", len(input), fallback)
+	}
+	if input[0].Get("id").String() != "msg-1" ||
+		input[1].Get("id").String() != "assistant-1" ||
+		input[2].Get("id").String() != "msg-2" {
+		t.Fatalf("unexpected fallback transcript: %s", fallback)
 	}
 }
 

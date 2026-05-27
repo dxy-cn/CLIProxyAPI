@@ -1,17 +1,26 @@
 package management
 
 import (
+	"context"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/apikeys"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	"gopkg.in/yaml.v3"
 )
 
 type monitorYAMLRecord map[string]any
+type monitorAPIKeyRecord struct {
+	APIKey       string
+	Name         string
+	AuthIdentity string
+}
 
 const publicMonitorAPIKeyContextKey = "public_monitor_api_key"
 
@@ -58,36 +67,13 @@ func monitorYAMLSlice(record monitorYAMLRecord, keys ...string) []any {
 	return nil
 }
 
-func collectMonitorAPIKeyNames(entries []any) map[string]string {
+func collectMonitorAPIKeyRecords(entries []any) []monitorAPIKeyRecord {
 	if len(entries) == 0 {
 		return nil
 	}
 
-	names := make(map[string]string)
-	for _, entry := range entries {
-		record := asMonitorYAMLRecord(entry)
-		if record == nil {
-			continue
-		}
-		apiKey := monitorYAMLString(record, "api-key", "apiKey", "key", "Key")
-		name := monitorYAMLString(record, "name")
-		if apiKey == "" || name == "" {
-			continue
-		}
-		names[apiKey] = name
-	}
-	if len(names) == 0 {
-		return nil
-	}
-	return names
-}
-
-func collectMonitorAPIKeyConfig(entries []any) map[string]string {
-	if len(entries) == 0 {
-		return nil
-	}
-
-	keys := make(map[string]string)
+	records := make([]monitorAPIKeyRecord, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		record := asMonitorYAMLRecord(entry)
 		apiKey := monitorYAMLString(record, "api-key", "apiKey", "key", "Key")
@@ -99,72 +85,133 @@ func collectMonitorAPIKeyConfig(entries []any) map[string]string {
 		if apiKey == "" {
 			continue
 		}
-		keys[apiKey] = monitorYAMLString(record, "name")
+		if _, exists := seen[apiKey]; exists {
+			continue
+		}
+		seen[apiKey] = struct{}{}
+		records = append(records, monitorAPIKeyRecord{
+			APIKey:       apiKey,
+			Name:         monitorYAMLString(record, "name"),
+			AuthIdentity: monitorYAMLString(record, "auth_identity", "auth-identity", "authIdentity"),
+		})
 	}
-	if len(keys) == 0 {
+	if len(records) == 0 {
 		return nil
+	}
+	return records
+}
+
+func parseMonitorAPIKeyRecords(data []byte) []monitorAPIKeyRecord {
+	if len(data) == 0 {
+		return nil
+	}
+
+	var root map[string]any
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return nil
+	}
+
+	topLevelEntries := monitorYAMLSlice(root, "api-keys")
+	authBlock := asMonitorYAMLRecord(root["auth"])
+	providers := asMonitorYAMLRecord(authBlock["providers"])
+	configAPIKeyProvider := asMonitorYAMLRecord(providers["config-api-key"])
+	if configAPIKeyProvider != nil {
+		providerEntries := monitorYAMLSlice(configAPIKeyProvider, "api-key-entries", "api-keys")
+		if records := collectMonitorAPIKeyRecords(providerEntries); len(records) > 0 {
+			return records
+		}
+	}
+	return collectMonitorAPIKeyRecords(topLevelEntries)
+}
+
+func parseMonitorAPIKeyConfigMap(data []byte) map[string]string {
+	records := parseMonitorAPIKeyRecords(data)
+	if len(records) == 0 {
+		return nil
+	}
+	keys := make(map[string]string, len(records))
+	for _, record := range records {
+		keys[record.APIKey] = record.Name
 	}
 	return keys
 }
 
-func parseMonitorAPIKeyConfigMap(data []byte) map[string]string {
-	if len(data) == 0 {
-		return nil
-	}
-
-	var root map[string]any
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return nil
-	}
-
-	topLevelEntries := monitorYAMLSlice(root, "api-keys")
-	authBlock := asMonitorYAMLRecord(root["auth"])
-	providers := asMonitorYAMLRecord(authBlock["providers"])
-	configAPIKeyProvider := asMonitorYAMLRecord(providers["config-api-key"])
-	if configAPIKeyProvider != nil {
-		providerEntries := monitorYAMLSlice(configAPIKeyProvider, "api-key-entries", "api-keys")
-		if keys := collectMonitorAPIKeyConfig(providerEntries); len(keys) > 0 {
-			return keys
-		}
-	}
-
-	return collectMonitorAPIKeyConfig(topLevelEntries)
-}
-
 func parseMonitorAPIKeyNameMap(data []byte) map[string]string {
-	if len(data) == 0 {
+	records := parseMonitorAPIKeyRecords(data)
+	if len(records) == 0 {
 		return nil
 	}
-
-	var root map[string]any
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return nil
-	}
-
-	topLevelEntries := monitorYAMLSlice(root, "api-keys")
-	authBlock := asMonitorYAMLRecord(root["auth"])
-	providers := asMonitorYAMLRecord(authBlock["providers"])
-	configAPIKeyProvider := asMonitorYAMLRecord(providers["config-api-key"])
-	if configAPIKeyProvider != nil {
-		providerEntries := monitorYAMLSlice(configAPIKeyProvider, "api-key-entries", "api-keys")
-		if names := collectMonitorAPIKeyNames(providerEntries); len(names) > 0 {
-			return names
+	names := make(map[string]string, len(records))
+	for _, record := range records {
+		if record.Name == "" {
+			continue
 		}
+		names[record.APIKey] = record.Name
 	}
-
-	return collectMonitorAPIKeyNames(topLevelEntries)
+	if len(names) == 0 {
+		return nil
+	}
+	return names
 }
 
-func (h *Handler) monitorAPIKeyConfigMap() map[string]string {
+func normalizeMonitorAPIKeyRecords(records []monitorAPIKeyRecord) []monitorAPIKeyRecord {
+	if len(records) == 0 {
+		return nil
+	}
+	out := make([]monitorAPIKeyRecord, 0, len(records))
+	seen := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		record.APIKey = strings.TrimSpace(record.APIKey)
+		record.Name = strings.TrimSpace(record.Name)
+		record.AuthIdentity = strings.TrimSpace(record.AuthIdentity)
+		if record.APIKey == "" {
+			continue
+		}
+		if _, exists := seen[record.APIKey]; exists {
+			continue
+		}
+		seen[record.APIKey] = struct{}{}
+		out = append(out, record)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func storeMonitorAPIKeyRecords(records []apikeys.Record) []monitorAPIKeyRecord {
+	if len(records) == 0 {
+		return nil
+	}
+	out := make([]monitorAPIKeyRecord, 0, len(records))
+	for _, record := range records {
+		out = append(out, monitorAPIKeyRecord{
+			APIKey:       record.APIKey,
+			Name:         record.Name,
+			AuthIdentity: record.AuthIdentity,
+		})
+	}
+	return normalizeMonitorAPIKeyRecords(out)
+}
+
+func (h *Handler) monitorAPIKeyRecords(ctx context.Context) []monitorAPIKeyRecord {
 	if h == nil {
 		return nil
+	}
+	if h.apiKeyStore != nil {
+		records, err := h.apiKeyStore.ListAPIKeyRecords(ctx)
+		if err == nil {
+			if normalized := storeMonitorAPIKeyRecords(records); len(normalized) > 0 {
+				return normalized
+			}
+		}
 	}
 
 	configFilePath := strings.TrimSpace(h.configFilePath)
 	if configFilePath != "" {
 		if data, err := os.ReadFile(configFilePath); err == nil {
-			if keys := parseMonitorAPIKeyConfigMap(data); len(keys) > 0 {
-				return keys
+			if records := normalizeMonitorAPIKeyRecords(parseMonitorAPIKeyRecords(data)); len(records) > 0 {
+				return records
 			}
 		}
 	}
@@ -172,28 +219,163 @@ func (h *Handler) monitorAPIKeyConfigMap() map[string]string {
 	if h.cfg == nil || len(h.cfg.APIKeys) == 0 {
 		return nil
 	}
-	keys := make(map[string]string, len(h.cfg.APIKeys))
+	out := make([]monitorAPIKeyRecord, 0, len(h.cfg.APIKeys))
 	for _, apiKey := range h.cfg.APIKeys {
-		if trimmed := strings.TrimSpace(apiKey); trimmed != "" {
-			keys[trimmed] = ""
+		trimmed := strings.TrimSpace(apiKey)
+		if trimmed == "" {
+			continue
 		}
+		out = append(out, monitorAPIKeyRecord{
+			APIKey:       trimmed,
+			AuthIdentity: strings.TrimSpace(h.cfg.APIKeyAuthIdentityBindings[trimmed]),
+		})
+	}
+	return normalizeMonitorAPIKeyRecords(out)
+}
+
+func monitorAPIKeyNameMapFromRecords(records []monitorAPIKeyRecord) map[string]string {
+	if len(records) == 0 {
+		return nil
+	}
+	names := make(map[string]string, len(records))
+	for _, record := range records {
+		if record.Name == "" {
+			continue
+		}
+		names[record.APIKey] = record.Name
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
+}
+
+func (h *Handler) monitorAPIKeyConfigMap() map[string]string {
+	records := h.monitorAPIKeyRecords(context.Background())
+	if len(records) == 0 {
+		return nil
+	}
+	keys := make(map[string]string, len(records))
+	for _, record := range records {
+		keys[record.APIKey] = record.Name
 	}
 	return keys
 }
 
 func (h *Handler) monitorAPIKeyNameMap() map[string]string {
-	if h == nil {
+	return monitorAPIKeyNameMapFromRecords(h.monitorAPIKeyRecords(context.Background()))
+}
+
+func monitorAuthDisplayName(auth *coreauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if note := strings.TrimSpace(authAttribute(auth, "note")); note != "" {
+		return note
+	}
+	if auth.Metadata != nil {
+		if rawNote, ok := auth.Metadata["note"].(string); ok {
+			if trimmed := strings.TrimSpace(rawNote); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	if label := strings.TrimSpace(auth.Label); label != "" {
+		return label
+	}
+	if fileName := strings.TrimSpace(auth.FileName); fileName != "" {
+		base := filepath.Base(fileName)
+		return strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	return strings.TrimSpace(auth.ID)
+}
+
+func (h *Handler) boundAuthForMonitorKey(clientKey string) *coreauth.Auth {
+	clientKey = strings.TrimSpace(clientKey)
+	if clientKey == "" || h == nil || h.cfg == nil || h.authManager == nil {
 		return nil
 	}
-	configFilePath := strings.TrimSpace(h.configFilePath)
-	if configFilePath == "" {
+
+	strategy, _ := coreauth.NormalizeRoutingStrategy(h.cfg.Routing.Strategy)
+	if strategy != coreauth.RoutingStrategyAccountBind {
 		return nil
 	}
-	data, err := os.ReadFile(configFilePath)
-	if err != nil {
+
+	auths := h.authManager.List()
+	bindingMap, defaultAuthIndex := coreauth.ResolveBindingIndexes(
+		auths,
+		h.cfg.APIKeyAuthBindings,
+		h.cfg.APIKeyAuthIdentityBindings,
+		h.cfg.Routing.DefaultModelAccount,
+	)
+
+	authIndex := strings.TrimSpace(bindingMap[clientKey])
+	if authIndex == "" {
+		authIndex = strings.TrimSpace(defaultAuthIndex)
+	}
+	if authIndex == "" {
 		return nil
 	}
-	return parseMonitorAPIKeyNameMap(data)
+
+	for _, auth := range auths {
+		if auth == nil {
+			continue
+		}
+		auth.EnsureIndex()
+		if auth.Index == authIndex {
+			return auth
+		}
+	}
+	return nil
+}
+
+func (h *Handler) publicMonitorScopedAPIKeys(ctx context.Context, clientKey string) []string {
+	clientKey = strings.TrimSpace(clientKey)
+	if clientKey == "" || h == nil || h.cfg == nil || h.authManager == nil {
+		return nil
+	}
+
+	strategy, _ := coreauth.NormalizeRoutingStrategy(h.cfg.Routing.Strategy)
+	if strategy != coreauth.RoutingStrategyAccountBind {
+		return nil
+	}
+
+	records := h.monitorAPIKeyRecords(ctx)
+	if len(records) == 0 {
+		return nil
+	}
+
+	auths := h.authManager.List()
+	bindingMap, defaultAuthIndex := coreauth.ResolveBindingIndexes(
+		auths,
+		h.cfg.APIKeyAuthBindings,
+		h.cfg.APIKeyAuthIdentityBindings,
+		h.cfg.Routing.DefaultModelAccount,
+	)
+
+	currentAuthIndex := strings.TrimSpace(bindingMap[clientKey])
+	if currentAuthIndex == "" {
+		currentAuthIndex = strings.TrimSpace(defaultAuthIndex)
+	}
+	if currentAuthIndex == "" {
+		return nil
+	}
+
+	keys := make([]string, 0, len(records))
+	for _, record := range records {
+		recordAuthIndex := strings.TrimSpace(bindingMap[record.APIKey])
+		if recordAuthIndex == "" {
+			recordAuthIndex = strings.TrimSpace(defaultAuthIndex)
+		}
+		if recordAuthIndex == currentAuthIndex {
+			keys = append(keys, record.APIKey)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (h *Handler) PublicMonitorAPIKeyMiddleware() gin.HandlerFunc {
@@ -237,22 +419,28 @@ func lookupMonitorAPIKeysByName(query string, nameMap map[string]string) []strin
 
 func (h *Handler) buildMonitorRecordFilter(c *gin.Context, start, end *time.Time, status string) monitorRecordFilter {
 	apiKey := firstQuery(c, "api", "api_key")
+	var scopedAPIKeys []string
 	if c != nil {
 		if value, exists := c.Get(publicMonitorAPIKeyContextKey); exists {
 			if publicAPIKey, ok := value.(string); ok {
 				apiKey = publicAPIKey
+				scopedAPIKeys = h.publicMonitorScopedAPIKeys(c.Request.Context(), publicAPIKey)
 			}
 		}
 	}
 
 	filter := monitorRecordFilter{
 		APIKey:      apiKey,
+		APIKeys:     scopedAPIKeys,
 		APIContains: firstQuery(c, "api_filter", "apiFilter", "api_like", "apiLike", "q"),
 		Model:       firstQuery(c, "model"),
 		Source:      firstQuery(c, "source", "channel"),
 		Status:      status,
 		Start:       start,
 		End:         end,
+	}
+	if len(filter.APIKeys) > 0 {
+		filter.APIKey = ""
 	}
 	filter.APIMatchedKeys = lookupMonitorAPIKeysByName(filter.APIContains, h.monitorAPIKeyNameMap())
 	return filter

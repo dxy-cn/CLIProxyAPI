@@ -22,6 +22,7 @@ var (
 // MonitorQueryFilter describes shared query filters for monitor APIs.
 type MonitorQueryFilter struct {
 	APIKey         string
+	APIKeys        []string
 	APIContains    string
 	APIMatchedKeys []string
 	Model          string
@@ -1444,7 +1445,11 @@ func buildSQLiteMonitorWhere(filter MonitorQueryFilter, includeStatus bool) (str
 	clauses := make([]string, 0, 8)
 	args := make([]any, 0, 8)
 
-	if filter.APIKey != "" {
+	if len(filter.APIKeys) > 0 {
+		inClause, inArgs := toInClause(filter.APIKeys)
+		clauses = append(clauses, "api_key IN ("+inClause+")")
+		args = append(args, inArgs...)
+	} else if filter.APIKey != "" {
 		clauses = append(clauses, "api_key = ?")
 		args = append(args, filter.APIKey)
 	}
@@ -1499,6 +1504,25 @@ func buildSQLiteMonitorWhere(filter MonitorQueryFilter, includeStatus bool) (str
 
 func normalizeMonitorFilter(filter MonitorQueryFilter) MonitorQueryFilter {
 	filter.APIKey = strings.TrimSpace(filter.APIKey)
+	if len(filter.APIKeys) > 0 {
+		seen := make(map[string]struct{}, len(filter.APIKeys))
+		keys := make([]string, 0, len(filter.APIKeys))
+		for _, apiKey := range filter.APIKeys {
+			trimmed := strings.TrimSpace(apiKey)
+			if trimmed == "" {
+				continue
+			}
+			if _, exists := seen[trimmed]; exists {
+				continue
+			}
+			seen[trimmed] = struct{}{}
+			keys = append(keys, trimmed)
+		}
+		sort.Strings(keys)
+		filter.APIKeys = keys
+	} else {
+		filter.APIKeys = nil
+	}
 	filter.APIContains = strings.TrimSpace(filter.APIContains)
 	if len(filter.APIMatchedKeys) > 0 {
 		seen := make(map[string]struct{}, len(filter.APIMatchedKeys))

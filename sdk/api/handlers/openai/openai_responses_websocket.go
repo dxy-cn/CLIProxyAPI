@@ -102,6 +102,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		// 	websocketPayloadPreview(payload),
 		// )
 		appendWebsocketTimelineEvent(&wsTimelineLog, "request", payload, time.Now())
+		priorLastRequest := bytes.Clone(lastRequest)
+		priorLastResponseOutput := bytes.Clone(lastResponseOutput)
 
 		allowIncrementalInputWithPreviousResponseID := false
 		if pinnedAuthID != "" && h != nil && h.AuthManager != nil {
@@ -165,37 +167,85 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 
 		requestJSON = repairResponsesWebsocketToolCalls(downstreamSessionKey, requestJSON)
 		updatedLastRequest = bytes.Clone(requestJSON)
-		lastRequest = updatedLastRequest
 
-		modelName := gjson.GetBytes(requestJSON, "model").String()
-		cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
-		cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
-		cliCtx = handlers.WithExecutionSessionID(cliCtx, passthroughSessionID)
-		if pinnedAuthID != "" {
-			cliCtx = handlers.WithPinnedAuthID(cliCtx, pinnedAuthID)
-		} else {
-			cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
-				authID = strings.TrimSpace(authID)
-				if authID == "" || h == nil || h.AuthManager == nil {
-					return
-				}
-				selectedAuth, ok := h.AuthManager.GetByID(authID)
-				if !ok || selectedAuth == nil {
-					return
-				}
-				if websocketUpstreamSupportsIncrementalInput(selectedAuth.Attributes, selectedAuth.Metadata) {
-					pinnedAuthID = authID
-				}
-			})
+		executeRequest := func(requestJSON []byte, allowRetryOnPreviousResponseNotFound bool) ([]byte, *interfaces.ErrorMessage, error) {
+			modelName := gjson.GetBytes(requestJSON, "model").String()
+			cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+			cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
+			cliCtx = handlers.WithExecutionSessionID(cliCtx, passthroughSessionID)
+			if pinnedAuthID != "" {
+				cliCtx = handlers.WithPinnedAuthID(cliCtx, pinnedAuthID)
+			} else {
+				cliCtx = handlers.WithSelectedAuthIDCallback(cliCtx, func(authID string) {
+					authID = strings.TrimSpace(authID)
+					if authID == "" || h == nil || h.AuthManager == nil {
+						return
+					}
+					selectedAuth, ok := h.AuthManager.GetByID(authID)
+					if !ok || selectedAuth == nil {
+						return
+					}
+					if websocketUpstreamSupportsIncrementalInput(selectedAuth.Attributes, selectedAuth.Metadata) {
+						pinnedAuthID = authID
+					}
+				})
+			}
+			dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
+			return h.forwardResponsesWebsocket(
+				c,
+				conn,
+				cliCancel,
+				dataChan,
+				errChan,
+				&wsTimelineLog,
+				passthroughSessionID,
+				allowRetryOnPreviousResponseNotFound,
+			)
 		}
-		dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
 
-		completedOutput, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, &wsTimelineLog, passthroughSessionID)
+		completedOutput, upstreamErr, errForward := executeRequest(requestJSON, websocketRequestUsesPreviousResponseID(requestJSON))
 		if errForward != nil {
 			wsTerminateErr = errForward
 			log.Warnf("responses websocket: forward failed id=%s error=%v", passthroughSessionID, errForward)
 			return
 		}
+		if isPreviousResponseNotFoundWebsocketError(upstreamErr) {
+			retryRequestJSON, retryLastRequest, retryErrMsg := normalizeResponsesWebsocketRequestWithMode(
+				payload,
+				priorLastRequest,
+				priorLastResponseOutput,
+				false,
+			)
+			if retryErrMsg != nil {
+				h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), retryErrMsg)
+				markAPIResponseTimestamp(c)
+				if _, errWrite := writeResponsesWebsocketError(conn, &wsTimelineLog, retryErrMsg); errWrite != nil {
+					wsTerminateErr = errWrite
+					return
+				}
+				continue
+			}
+
+			retryRequestJSON = repairResponsesWebsocketToolCalls(downstreamSessionKey, retryRequestJSON)
+			retryLastRequest = bytes.Clone(retryRequestJSON)
+
+			completedOutput, upstreamErr, errForward = executeRequest(retryRequestJSON, false)
+			if errForward != nil {
+				wsTerminateErr = errForward
+				log.Warnf("responses websocket: retry forward failed id=%s error=%v", passthroughSessionID, errForward)
+				return
+			}
+			if upstreamErr == nil {
+				lastRequest = retryLastRequest
+				lastResponseOutput = completedOutput
+			}
+			continue
+		}
+		if upstreamErr != nil {
+			continue
+		}
+
+		lastRequest = updatedLastRequest
 		lastResponseOutput = completedOutput
 	}
 }
@@ -412,6 +462,27 @@ func normalizeResponseTranscriptReplacement(rawJSON []byte, lastRequest []byte) 
 	}
 	normalized, _ = sjson.SetBytes(normalized, "stream", true)
 	return bytes.Clone(normalized)
+}
+
+func websocketRequestUsesPreviousResponseID(rawJSON []byte) bool {
+	return strings.TrimSpace(gjson.GetBytes(rawJSON, "previous_response_id").String()) != ""
+}
+
+func isPreviousResponseNotFoundWebsocketError(errMsg *interfaces.ErrorMessage) bool {
+	if errMsg == nil || errMsg.Error == nil {
+		return false
+	}
+
+	raw := strings.TrimSpace(errMsg.Error.Error())
+	if raw == "" {
+		return false
+	}
+
+	lower := strings.ToLower(raw)
+	upstreamCode := strings.ToLower(strings.TrimSpace(gjson.GetBytes([]byte(raw), "error.code").String()))
+	return upstreamCode == "previous_response_not_found" ||
+		strings.Contains(lower, "previous_response_not_found") ||
+		(strings.Contains(lower, "previous_response_id") && strings.Contains(lower, "not found"))
 }
 
 func dedupeFunctionCallsByCallID(rawArray string) (string, error) {
@@ -711,7 +782,8 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	errs <-chan *interfaces.ErrorMessage,
 	wsTimelineLog *strings.Builder,
 	sessionID string,
-) ([]byte, error) {
+	allowRetryOnPreviousResponseNotFound bool,
+) ([]byte, *interfaces.ErrorMessage, error) {
 	completed := false
 	completedOutput := []byte("[]")
 	downstreamSessionKey := ""
@@ -723,7 +795,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 		select {
 		case <-c.Request.Context().Done():
 			cancel(c.Request.Context().Err())
-			return completedOutput, c.Request.Context().Err()
+			return completedOutput, nil, c.Request.Context().Err()
 		case errMsg, ok := <-errs:
 			if !ok {
 				errs = nil
@@ -731,6 +803,10 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			}
 			if errMsg != nil {
 				h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
+				if allowRetryOnPreviousResponseNotFound && isPreviousResponseNotFoundWebsocketError(errMsg) {
+					cancel(errMsg.Error)
+					return completedOutput, errMsg, nil
+				}
 				markAPIResponseTimestamp(c)
 				errorPayload, errWrite := writeResponsesWebsocketError(conn, wsTimelineLog, errMsg)
 				log.Infof(
@@ -748,7 +824,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					// 	errWrite,
 					// )
 					cancel(errMsg.Error)
-					return completedOutput, errWrite
+					return completedOutput, nil, errWrite
 				}
 			}
 			if errMsg != nil {
@@ -756,7 +832,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			} else {
 				cancel(nil)
 			}
-			return completedOutput, nil
+			return completedOutput, errMsg, nil
 		case chunk, ok := <-data:
 			if !ok {
 				if !completed {
@@ -782,13 +858,13 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 							errWrite,
 						)
 						cancel(errMsg.Error)
-						return completedOutput, errWrite
+						return completedOutput, nil, errWrite
 					}
 					cancel(errMsg.Error)
-					return completedOutput, nil
+					return completedOutput, errMsg, nil
 				}
 				cancel(nil)
-				return completedOutput, nil
+				return completedOutput, nil, nil
 			}
 
 			payloads := websocketJSONPayloadsFromChunk(chunk)
@@ -815,7 +891,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 						errWrite,
 					)
 					cancel(errWrite)
-					return completedOutput, errWrite
+					return completedOutput, nil, errWrite
 				}
 			}
 		}
