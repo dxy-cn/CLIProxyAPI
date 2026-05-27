@@ -79,6 +79,57 @@ func (s *PostgresStore) ReplaceAPIKeyRecords(ctx context.Context, records []apik
 	return s.ListAPIKeyRecords(ctx)
 }
 
+func (s *PostgresStore) UpsertAPIKeyRecord(ctx context.Context, record apikeys.Record) ([]apikeys.Record, error) {
+	record = apikeys.NormalizeRecord(record)
+	if record.APIKey == "" {
+		return nil, fmt.Errorf("postgres store: api key is required")
+	}
+	if record.ID > 0 {
+		query := fmt.Sprintf(`
+			UPDATE %s
+			SET api_key = $1, name = $2, auth_identity = $3, tags = $4::jsonb, updated_time = NOW()
+			WHERE id = $5
+		`, s.fullTableName(defaultAPIKeyTable))
+		result, err := s.db.ExecContext(ctx, query, record.APIKey, record.Name, record.AuthIdentity, apiKeyTagsJSON(record.Tags), record.ID)
+		if err != nil {
+			return nil, fmt.Errorf("postgres store: update api key: %w", err)
+		}
+		if affected, errRows := result.RowsAffected(); errRows == nil && affected > 0 {
+			return s.ListAPIKeyRecords(ctx)
+		}
+	}
+	query := fmt.Sprintf(`
+		INSERT INTO %s (api_key, name, auth_identity, tags)
+		VALUES ($1, $2, $3, $4::jsonb)
+		ON CONFLICT (api_key) DO UPDATE
+		SET name = EXCLUDED.name,
+		    auth_identity = EXCLUDED.auth_identity,
+		    tags = EXCLUDED.tags,
+		    updated_time = NOW()
+	`, s.fullTableName(defaultAPIKeyTable))
+	if _, err := s.db.ExecContext(ctx, query, record.APIKey, record.Name, record.AuthIdentity, apiKeyTagsJSON(record.Tags)); err != nil {
+		return nil, fmt.Errorf("postgres store: upsert api key: %w", err)
+	}
+	return s.ListAPIKeyRecords(ctx)
+}
+
+func (s *PostgresStore) DeleteAPIKeyRecord(ctx context.Context, record apikeys.Record) ([]apikeys.Record, error) {
+	record = apikeys.NormalizeRecord(record)
+	switch {
+	case record.ID > 0:
+		if _, err := s.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE id = $1", s.fullTableName(defaultAPIKeyTable)), record.ID); err != nil {
+			return nil, fmt.Errorf("postgres store: delete api key by id: %w", err)
+		}
+	case record.APIKey != "":
+		if _, err := s.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE api_key = $1", s.fullTableName(defaultAPIKeyTable)), record.APIKey); err != nil {
+			return nil, fmt.Errorf("postgres store: delete api key: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("postgres store: api key id or value is required")
+	}
+	return s.ListAPIKeyRecords(ctx)
+}
+
 func insertPostgresAPIKeyRecordTx(ctx context.Context, tx *sql.Tx, table string, record apikeys.Record) (int64, error) {
 	query := fmt.Sprintf(`
 		INSERT INTO %s (api_key, name, auth_identity, tags)

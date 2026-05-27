@@ -49,6 +49,13 @@ func TestGetMonitorKeyTokenStats_AggregatesByAPIKey(t *testing.T) {
 			TotalTokenShare   float64          `json:"total_token_share"`
 			AuthTokens        map[string]int64 `json:"auth_tokens"`
 			SourceTokens      map[string]int64 `json:"source_tokens"`
+			ModelTokens       map[string]struct {
+				Requests     int64 `json:"requests"`
+				InputTokens  int64 `json:"input_tokens"`
+				OutputTokens int64 `json:"output_tokens"`
+				CachedTokens int64 `json:"cached_tokens"`
+				TotalTokens  int64 `json:"total_tokens"`
+			} `json:"model_tokens"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
@@ -83,6 +90,12 @@ func TestGetMonitorKeyTokenStats_AggregatesByAPIKey(t *testing.T) {
 	}
 	if first.SourceTokens["burn-source"] != 60 {
 		t.Fatalf("unexpected first source token breakdown: %+v", first.SourceTokens)
+	}
+	if first.ModelTokens["model-a"].Requests != 2 ||
+		first.ModelTokens["model-a"].InputTokens != 20 ||
+		first.ModelTokens["model-a"].OutputTokens != 40 ||
+		first.ModelTokens["model-a"].TotalTokens != 60 {
+		t.Fatalf("unexpected first model token breakdown: %+v", first.ModelTokens)
 	}
 }
 

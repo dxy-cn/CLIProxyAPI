@@ -172,7 +172,13 @@ func TestSQLiteUsageStoreQueryMonitorKeyTokenStats_UsesEffectiveTotalTokens(t *t
 	if len(rows) != 3 {
 		t.Fatalf("unexpected row count: got %d want 3", len(rows))
 	}
-	if rows[0].APIKey != "api-a" || rows[0].Source != "burn-source" || rows[0].TotalTokens != 72 {
+	if rows[0].APIKey != "api-a" ||
+		rows[0].Source != "burn-source" ||
+		rows[0].Model != "unknown" ||
+		rows[0].InputTokens != 71 ||
+		rows[0].OutputTokens != 1 ||
+		rows[0].CachedTokens != 71 ||
+		rows[0].TotalTokens != 72 {
 		t.Fatalf("unexpected first row: %+v", rows[0])
 	}
 	if rows[1].APIKey != "api-a" || rows[1].Source != "legacy-burn-source" || rows[1].TotalTokens != 8 {

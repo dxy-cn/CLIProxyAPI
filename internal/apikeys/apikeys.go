@@ -21,6 +21,8 @@ type Record struct {
 type Store interface {
 	ListAPIKeyRecords(ctx context.Context) ([]Record, error)
 	ReplaceAPIKeyRecords(ctx context.Context, records []Record) ([]Record, error)
+	UpsertAPIKeyRecord(ctx context.Context, record Record) ([]Record, error)
+	DeleteAPIKeyRecord(ctx context.Context, record Record) ([]Record, error)
 }
 
 func ApplyToConfig(cfg *config.Config, records []Record) {

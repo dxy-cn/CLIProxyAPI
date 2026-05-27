@@ -418,6 +418,15 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if !auth.NextRetryAfter.IsZero() {
 		entry["next_retry_after"] = auth.NextRetryAfter
 	}
+	if auth.LastError != nil {
+		entry["last_error"] = auth.LastError
+		if !auth.UpdatedAt.IsZero() {
+			entry["last_error_at"] = auth.UpdatedAt
+		}
+		if apiKey := strings.TrimSpace(authAttribute(auth, "api_key")); apiKey != "" {
+			entry["last_error_api_key"] = util.HideAPIKey(apiKey)
+		}
+	}
 	if path != "" {
 		entry["path"] = path
 		entry["source"] = "file"

@@ -249,13 +249,17 @@ type MonitorKeyStatsRow struct {
 	Failure    int64
 }
 
-// MonitorKeyTokenStatsRow represents per client API key token usage for one auth account.
+// MonitorKeyTokenStatsRow represents per client API key token usage for one auth account and model.
 type MonitorKeyTokenStatsRow struct {
-	APIKey      string
-	Source      string
-	AuthIndex   string
-	Requests    int64
-	TotalTokens int64
+	APIKey       string
+	Source       string
+	AuthIndex    string
+	Model        string
+	Requests     int64
+	InputTokens  int64
+	OutputTokens int64
+	CachedTokens int64
+	TotalTokens  int64
 }
 
 // MonitorGroupKey returns the stable grouping key used by request log aggregates.
@@ -2180,18 +2184,24 @@ func (s *sqliteUsageStore) QueryMonitorKeyTokenStats(ctx context.Context, filter
 		SELECT COALESCE(NULLIF(api_key, ''), 'unknown'),
 			COALESCE(NULLIF(source, ''), 'unknown'),
 			COALESCE(NULLIF(auth_index, ''), 'unknown'),
+			COALESCE(NULLIF(model, ''), 'unknown'),
 			COUNT(*),
+			COALESCE(SUM(CASE WHEN failed=0 THEN input_tokens ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN failed=0 THEN output_tokens ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN failed=0 THEN cached_tokens ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN failed=0 THEN %s ELSE 0 END), 0)
 		FROM usage_records
 		WHERE %s
 		GROUP BY
 			COALESCE(NULLIF(api_key, ''), 'unknown'),
 			COALESCE(NULLIF(source, ''), 'unknown'),
-			COALESCE(NULLIF(auth_index, ''), 'unknown')
+			COALESCE(NULLIF(auth_index, ''), 'unknown'),
+			COALESCE(NULLIF(model, ''), 'unknown')
 		ORDER BY
 			COALESCE(NULLIF(api_key, ''), 'unknown') ASC,
 			COALESCE(NULLIF(source, ''), 'unknown') ASC,
-			COALESCE(NULLIF(auth_index, ''), 'unknown') ASC
+			COALESCE(NULLIF(auth_index, ''), 'unknown') ASC,
+			COALESCE(NULLIF(model, ''), 'unknown') ASC
 	`, effectiveTotalExpr, whereClause)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -2203,7 +2213,17 @@ func (s *sqliteUsageStore) QueryMonitorKeyTokenStats(ctx context.Context, filter
 	items := make([]MonitorKeyTokenStatsRow, 0)
 	for rows.Next() {
 		var item MonitorKeyTokenStatsRow
-		if err = rows.Scan(&item.APIKey, &item.Source, &item.AuthIndex, &item.Requests, &item.TotalTokens); err != nil {
+		if err = rows.Scan(
+			&item.APIKey,
+			&item.Source,
+			&item.AuthIndex,
+			&item.Model,
+			&item.Requests,
+			&item.InputTokens,
+			&item.OutputTokens,
+			&item.CachedTokens,
+			&item.TotalTokens,
+		); err != nil {
 			return nil, fmt.Errorf("usage store: scan monitor key token stats row: %w", err)
 		}
 		items = append(items, item)

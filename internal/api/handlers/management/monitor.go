@@ -1214,19 +1214,28 @@ type monitorHourlyPerformanceResponse struct {
 }
 
 type monitorKeyTokenStatsItem struct {
-	APIKey            string           `json:"api_key"`
-	APIKeyName        string           `json:"api_key_name,omitempty"`
-	DisplayName       string           `json:"display_name,omitempty"`
-	IsCurrentKey      bool             `json:"is_current_key,omitempty"`
-	AuthIndex         string           `json:"auth_index"`
-	AuthNote          string           `json:"auth_note,omitempty"`
-	Requests          int64            `json:"requests"`
-	TotalTokens       int64            `json:"total_tokens"`
-	AccountTokens     int64            `json:"account_tokens"`
-	AccountTokenShare float64          `json:"account_token_share"`
-	TotalTokenShare   float64          `json:"total_token_share"`
-	AuthTokens        map[string]int64 `json:"auth_tokens"`
-	SourceTokens      map[string]int64 `json:"source_tokens"`
+	APIKey            string                            `json:"api_key"`
+	APIKeyName        string                            `json:"api_key_name,omitempty"`
+	DisplayName       string                            `json:"display_name,omitempty"`
+	IsCurrentKey      bool                              `json:"is_current_key,omitempty"`
+	AuthIndex         string                            `json:"auth_index"`
+	AuthNote          string                            `json:"auth_note,omitempty"`
+	Requests          int64                             `json:"requests"`
+	TotalTokens       int64                             `json:"total_tokens"`
+	AccountTokens     int64                             `json:"account_tokens"`
+	AccountTokenShare float64                           `json:"account_token_share"`
+	TotalTokenShare   float64                           `json:"total_token_share"`
+	AuthTokens        map[string]int64                  `json:"auth_tokens"`
+	SourceTokens      map[string]int64                  `json:"source_tokens"`
+	ModelTokens       map[string]monitorModelTokenStats `json:"model_tokens"`
+}
+
+type monitorModelTokenStats struct {
+	Requests     int64 `json:"requests"`
+	InputTokens  int64 `json:"input_tokens"`
+	OutputTokens int64 `json:"output_tokens"`
+	CachedTokens int64 `json:"cached_tokens"`
+	TotalTokens  int64 `json:"total_tokens"`
 }
 
 type monitorKeyTokenAcc struct {
@@ -1235,6 +1244,7 @@ type monitorKeyTokenAcc struct {
 	TotalTokens  int64
 	AuthTokens   map[string]int64
 	SourceTokens map[string]int64
+	ModelTokens  map[string]monitorModelTokenStats
 }
 
 // GetMonitorKpi returns aggregated KPI metrics from usage records.
@@ -1561,7 +1571,7 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 
 	accountTotals := make(map[string]int64)
 	keyTotals := make(map[string]*monitorKeyTokenAcc)
-	addRow := func(apiKey, source, authIndex string, requests, totalTokens int64) {
+	addRow := func(apiKey, source, authIndex, model string, requests, inputTokens, outputTokens, cachedTokens, totalTokens int64) {
 		apiKey = strings.TrimSpace(apiKey)
 		if apiKey == "" {
 			apiKey = "unknown"
@@ -1574,6 +1584,10 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 		if authIndex == "" {
 			authIndex = "unknown"
 		}
+		model = strings.TrimSpace(model)
+		if model == "" {
+			model = "unknown"
+		}
 
 		acc, ok := keyTotals[apiKey]
 		if !ok {
@@ -1581,6 +1595,7 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 				APIKey:       apiKey,
 				AuthTokens:   make(map[string]int64),
 				SourceTokens: make(map[string]int64),
+				ModelTokens:  make(map[string]monitorModelTokenStats),
 			}
 			keyTotals[apiKey] = acc
 		}
@@ -1588,6 +1603,13 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 		acc.TotalTokens += totalTokens
 		acc.AuthTokens[authIndex] += totalTokens
 		acc.SourceTokens[source] += totalTokens
+		modelStats := acc.ModelTokens[model]
+		modelStats.Requests += requests
+		modelStats.InputTokens += inputTokens
+		modelStats.OutputTokens += outputTokens
+		modelStats.CachedTokens += cachedTokens
+		modelStats.TotalTokens += totalTokens
+		acc.ModelTokens[model] = modelStats
 		accountTotals[authIndex] += totalTokens
 	}
 
@@ -1595,7 +1617,17 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 		rows, queryErr := dbPlugin.QueryMonitorKeyTokenStats(c.Request.Context(), toUsageMonitorFilter(filter))
 		if queryErr == nil {
 			for _, row := range rows {
-				addRow(row.APIKey, row.Source, row.AuthIndex, row.Requests, row.TotalTokens)
+				addRow(
+					row.APIKey,
+					row.Source,
+					row.AuthIndex,
+					row.Model,
+					row.Requests,
+					row.InputTokens,
+					row.OutputTokens,
+					row.CachedTokens,
+					row.TotalTokens,
+				)
 			}
 			c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, monitorTimeRange{Start: start, End: end}, responseContext))
 			return
@@ -1610,7 +1642,15 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 		if !record.Failed {
 			tokens = record.TotalTokens
 		}
-		addRow(record.APIKey, record.Source, record.AuthIndex, 1, tokens)
+		inputTokens := int64(0)
+		outputTokens := int64(0)
+		cachedTokens := int64(0)
+		if !record.Failed {
+			inputTokens = record.InputTokens
+			outputTokens = record.OutputTokens
+			cachedTokens = record.CachedTokens
+		}
+		addRow(record.APIKey, record.Source, record.AuthIndex, record.Model, 1, inputTokens, outputTokens, cachedTokens, tokens)
 	})
 
 	c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, monitorTimeRange{Start: start, End: end}, responseContext))
@@ -1630,6 +1670,7 @@ func buildMonitorKeyTokenStatsResponse(
 			APIKey:       apiKey,
 			AuthTokens:   make(map[string]int64),
 			SourceTokens: make(map[string]int64),
+			ModelTokens:  make(map[string]monitorModelTokenStats),
 		}
 	}
 
@@ -1650,6 +1691,10 @@ func buildMonitorKeyTokenStatsResponse(
 		for source, tokens := range acc.SourceTokens {
 			sourceTokens[source] = tokens
 		}
+		modelTokens := make(map[string]monitorModelTokenStats, len(acc.ModelTokens))
+		for model, tokens := range acc.ModelTokens {
+			modelTokens[model] = tokens
+		}
 		apiKeyName := strings.TrimSpace(responseContext.APIKeyNames[acc.APIKey])
 		responseAPIKey := acc.APIKey
 		if responseContext.CurrentAPIKey != "" {
@@ -1669,6 +1714,7 @@ func buildMonitorKeyTokenStatsResponse(
 			TotalTokenShare:   calcRate(acc.TotalTokens, totalTokens),
 			AuthTokens:        authTokens,
 			SourceTokens:      sourceTokens,
+			ModelTokens:       modelTokens,
 		})
 	}
 
