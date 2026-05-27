@@ -118,6 +118,13 @@ func (c *SessionCache) InvalidateAuth(authID string) {
 	c.mu.Unlock()
 }
 
+// Reset clears all cached session bindings.
+func (c *SessionCache) Reset() {
+	c.mu.Lock()
+	clear(c.entries)
+	c.mu.Unlock()
+}
+
 // Stop terminates the background cleanup goroutine.
 func (c *SessionCache) Stop() {
 	select {

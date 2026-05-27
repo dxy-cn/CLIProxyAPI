@@ -697,6 +697,13 @@ func (s *SessionAffinitySelector) InvalidateAuth(authID string) {
 	}
 }
 
+// Reset clears all session affinity bindings so subsequent requests reselect auth.
+func (s *SessionAffinitySelector) Reset() {
+	if s.cache != nil {
+		s.cache.Reset()
+	}
+}
+
 // ExtractSessionID extracts session identifier from multiple sources.
 // Priority order:
 //  1. metadata.user_id (Claude Code format with _session_{uuid}) - highest priority for Claude Code clients

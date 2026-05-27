@@ -330,6 +330,7 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 	// have an empty supportedModelSet (because Register/Update upserts into the
 	// scheduler before registerModelsForAuth runs) and are invisible to the scheduler.
 	s.coreManager.RefreshSchedulerEntry(auth.ID)
+	s.coreManager.ResetSelectorState()
 }
 
 func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
@@ -351,6 +352,7 @@ func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
 			s.ensureExecutorsForAuth(existing)
 		}
 	}
+	s.coreManager.ResetSelectorState()
 }
 
 func (s *Service) applyRetryConfig(cfg *config.Config) {

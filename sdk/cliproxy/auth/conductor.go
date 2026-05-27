@@ -120,6 +120,12 @@ type RetryLimiter interface {
 	MaxRetryAttempts() int
 }
 
+// ResettableSelector may be implemented by selectors that cache routing state.
+// Selectors that implement this interface can clear stale bindings after auth topology changes.
+type ResettableSelector interface {
+	Reset()
+}
+
 // Hook captures lifecycle callbacks for observing auth changes.
 type Hook interface {
 	// OnAuthRegistered fires when a new auth is registered.
@@ -350,6 +356,21 @@ func (m *Manager) SetSelector(selector Selector) {
 		m.scheduler.setSelector(selector)
 		m.syncScheduler()
 	}
+}
+
+// ResetSelectorState clears optional selector runtime caches without replacing the selector instance.
+func (m *Manager) ResetSelectorState() {
+	if m == nil {
+		return
+	}
+	m.mu.RLock()
+	selector := m.selector
+	m.mu.RUnlock()
+	resettable, ok := selector.(ResettableSelector)
+	if !ok || resettable == nil {
+		return
+	}
+	resettable.Reset()
 }
 
 // SetStore swaps the underlying persistence store.
