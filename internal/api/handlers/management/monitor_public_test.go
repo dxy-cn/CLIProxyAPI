@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/apikeys"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
@@ -117,6 +118,76 @@ func TestPublicMonitorAPIKeyMiddlewareForcesValidatedKeyFilter(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestPublicMonitorRecordFilterScopesOnlyKeyTokenStats(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	sharedAuth, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-shared",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"id_token": testMonitorCodexJWT(t, "acct-shared", "pro"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("register shared auth: %v", err)
+	}
+
+	h := NewHandler(&proxyconfig.Config{
+		SDKConfig: proxyconfig.SDKConfig{
+			APIKeys: proxyconfig.FlexAPIKeyList{"sk-current", "sk-peer"},
+			APIKeyAuthIdentityBindings: map[string]string{
+				"sk-current": sharedAuth.StableIdentity(),
+				"sk-peer":    sharedAuth.StableIdentity(),
+			},
+		},
+		Routing: proxyconfig.RoutingConfig{Strategy: "account-bind"},
+	}, "", manager)
+
+	h.apiKeyStore = &fakeAPIKeyStore{
+		records: []apikeys.Record{
+			{APIKey: "sk-current", Name: "current", AuthIdentity: sharedAuth.StableIdentity()},
+			{APIKey: "sk-peer", Name: "peer", AuthIdentity: sharedAuth.StableIdentity()},
+		},
+	}
+
+	router := gin.New()
+	router.GET("/public-monitor/kpi", h.PublicMonitorAPIKeyMiddleware(), func(c *gin.Context) {
+		filter := h.buildMonitorRecordFilter(c, nil, nil, "")
+		if filter.APIKey != "sk-current" {
+			t.Fatalf("kpi filter api_key = %q, want sk-current", filter.APIKey)
+		}
+		if len(filter.APIKeys) != 0 {
+			t.Fatalf("kpi filter api_keys = %+v, want none", filter.APIKeys)
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+	router.GET("/public-monitor/key-token-stats", h.PublicMonitorAPIKeyMiddleware(), func(c *gin.Context) {
+		filter := h.buildMonitorRecordFilter(c, nil, nil, "")
+		if filter.APIKey != "" {
+			t.Fatalf("key-token-stats filter api_key = %q, want empty", filter.APIKey)
+		}
+		if len(filter.APIKeys) != 2 {
+			t.Fatalf("key-token-stats filter api_keys = %+v, want 2 keys", filter.APIKeys)
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/public-monitor/kpi?api_key=sk-current", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected kpi status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/public-monitor/key-token-stats?api_key=sk-current", nil)
+	rr = httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected key-token-stats status: got %d body=%s", rr.Code, rr.Body.String())
 	}
 }
 

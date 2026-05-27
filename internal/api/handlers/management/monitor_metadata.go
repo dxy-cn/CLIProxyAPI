@@ -417,6 +417,13 @@ func lookupMonitorAPIKeysByName(query string, nameMap map[string]string) []strin
 	return matches
 }
 
+func shouldScopePublicMonitorToBoundCredential(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.URL == nil {
+		return false
+	}
+	return strings.HasSuffix(strings.TrimSpace(c.Request.URL.Path), "/key-token-stats")
+}
+
 func (h *Handler) buildMonitorRecordFilter(c *gin.Context, start, end *time.Time, status string) monitorRecordFilter {
 	apiKey := firstQuery(c, "api", "api_key")
 	var scopedAPIKeys []string
@@ -424,7 +431,9 @@ func (h *Handler) buildMonitorRecordFilter(c *gin.Context, start, end *time.Time
 		if value, exists := c.Get(publicMonitorAPIKeyContextKey); exists {
 			if publicAPIKey, ok := value.(string); ok {
 				apiKey = publicAPIKey
-				scopedAPIKeys = h.publicMonitorScopedAPIKeys(c.Request.Context(), publicAPIKey)
+				if shouldScopePublicMonitorToBoundCredential(c) {
+					scopedAPIKeys = h.publicMonitorScopedAPIKeys(c.Request.Context(), publicAPIKey)
+				}
 			}
 		}
 	}
