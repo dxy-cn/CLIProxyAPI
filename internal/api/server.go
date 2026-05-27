@@ -276,6 +276,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		wsRoutes:            make(map[string]struct{}),
 	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
+	s.handlers.BoundAuthIndexResolver = s.resolveCurrentBoundAuthIndex
 	// Save initial YAML snapshot
 	s.oldConfigYaml, _ = yaml.Marshal(cfg)
 	s.UpdateBindingConfig(cfg)
@@ -387,6 +388,7 @@ func (s *Server) setupRoutes() {
 	// Codex CLI direct route aliases (chatgpt_base_url compatible)
 	codexDirect := s.engine.Group("/backend-api/codex")
 	codexDirect.Use(AuthMiddleware(s.accessManager))
+	codexDirect.Use(s.accountBindMiddleware())
 	{
 		codexDirect.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
 		codexDirect.POST("/responses", openaiResponsesHandlers.Responses)
@@ -1239,34 +1241,61 @@ func (s *Server) UpdateBindingConfig(cfg *config.Config) {
 	s.strictBinding = true
 }
 
+func (s *Server) lookupBoundAuthIndex(clientKey string) (string, bool, bool) {
+	if s == nil {
+		return "", false, false
+	}
+	s.bindingMu.RLock()
+	bindingMap := s.bindingMap
+	defaultIdx := s.defaultBoundAuthIndex
+	strict := s.strictBinding
+	s.bindingMu.RUnlock()
+
+	active := len(bindingMap) > 0 || defaultIdx != "" || strict
+	if !active {
+		return "", false, false
+	}
+
+	authIdx := ""
+	clientKey = strings.TrimSpace(clientKey)
+	if clientKey != "" && len(bindingMap) > 0 {
+		authIdx = bindingMap[clientKey]
+	}
+	if authIdx == "" {
+		authIdx = defaultIdx
+	}
+	return authIdx, strict, true
+}
+
+func (s *Server) resolveCurrentBoundAuthIndex(c *gin.Context) (string, bool, error) {
+	clientKey := ""
+	if c != nil {
+		if raw, ok := c.Get("apiKey"); ok {
+			clientKey, _ = raw.(string)
+		}
+	}
+	authIdx, strict, active := s.lookupBoundAuthIndex(clientKey)
+	if !active {
+		return "", true, nil
+	}
+	if authIdx == "" && strict {
+		return "", true, errors.New("account-bind: no auth_index bound for this API key and no default-model-account configured")
+	}
+	return authIdx, true, nil
+}
+
 // accountBindMiddleware resolves the bound auth_index for the client API key and
 // injects it into the request context when account-bind routing is active.
 func (s *Server) accountBindMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		s.bindingMu.RLock()
-		bindingMap := s.bindingMap
-		defaultIdx := s.defaultBoundAuthIndex
-		strict := s.strictBinding
-		s.bindingMu.RUnlock()
-
-		// Nothing to do when no per-key bindings exist and no strict mode is active.
-		if len(bindingMap) == 0 && defaultIdx == "" && !strict {
-			c.Next()
-			return
-		}
-
 		clientKey := ""
 		if raw, ok := c.Get("apiKey"); ok {
 			clientKey, _ = raw.(string)
 		}
-		clientKey = strings.TrimSpace(clientKey)
-
-		authIdx := ""
-		if clientKey != "" && len(bindingMap) > 0 {
-			authIdx = bindingMap[clientKey]
-		}
-		if authIdx == "" {
-			authIdx = defaultIdx
+		authIdx, strict, active := s.lookupBoundAuthIndex(clientKey)
+		if !active {
+			c.Next()
+			return
 		}
 		if authIdx == "" {
 			if strict {

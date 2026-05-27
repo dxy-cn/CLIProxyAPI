@@ -716,6 +716,37 @@ func TestAccountBindMiddleware_StrictModeRejectsUnboundKey(t *testing.T) {
 	}
 }
 
+func TestCodexDirectRouteAppliesAccountBindMiddleware(t *testing.T) {
+	s := newTestServer(t)
+
+	cfg := &proxyconfig.Config{
+		SDKConfig: sdkconfig.SDKConfig{
+			APIKeys: sdkconfig.FlexAPIKeyList{"sk-orphan"},
+		},
+		AuthDir: s.cfg.AuthDir,
+		Routing: proxyconfig.RoutingConfig{Strategy: "account-bind"},
+		RemoteManagement: proxyconfig.RemoteManagement{
+			DisableControlPanel: true,
+		},
+	}
+	s.UpdateClients(cfg)
+	s.UpdateBindingConfig(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/backend-api/codex/responses", strings.NewReader(`{"model":"gpt-5-codex","input":"hi"}`))
+	req.Header.Set("Authorization", "Bearer sk-orphan")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	s.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("codex direct route should reject unbound key via account-bind middleware: got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "account-bind: no auth_index bound") {
+		t.Fatalf("codex direct route did not return account-bind rejection: body=%s", rr.Body.String())
+	}
+}
+
 func testCodexJWT(t *testing.T, accountID string) string {
 	t.Helper()
 

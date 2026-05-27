@@ -333,6 +333,9 @@ type BaseAPIHandler struct {
 
 	// Cfg holds the current application configuration.
 	Cfg *config.SDKConfig
+
+	// BoundAuthIndexResolver returns the current account-bind auth_index for a request.
+	BoundAuthIndexResolver func(*gin.Context) (string, bool, error)
 }
 
 // NewBaseAPIHandlers creates a new API handlers instance.
@@ -358,6 +361,20 @@ func NewBaseAPIHandlers(cfg *config.SDKConfig, authManager *coreauth.Manager) *B
 //   - clients: The new slice of AI service clients
 //   - cfg: The new application configuration
 func (h *BaseAPIHandler) UpdateClients(cfg *config.SDKConfig) { h.Cfg = cfg }
+
+// ResolveBoundAuthIndex returns the current bound auth_index for a request.
+func (h *BaseAPIHandler) ResolveBoundAuthIndex(c *gin.Context) (string, bool, error) {
+	if h != nil && h.BoundAuthIndexResolver != nil {
+		idx, ok, err := h.BoundAuthIndexResolver(c)
+		return strings.TrimSpace(idx), ok, err
+	}
+	if c != nil && c.Request != nil {
+		if idx := boundAuthIndexFromContext(c.Request.Context()); idx != "" {
+			return idx, true, nil
+		}
+	}
+	return "", false, nil
+}
 
 // GetAlt extracts the 'alt' parameter from the request query string.
 // It checks both 'alt' and '$alt' parameters and returns the appropriate value.
@@ -410,10 +427,8 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 			parentCtx = logging.WithRequestID(parentCtx, requestID)
 		}
 	}
-	if requestCtx != nil {
-		if boundIdx := boundAuthIndexFromContext(requestCtx); boundIdx != "" {
-			parentCtx = WithBoundAuthIndex(parentCtx, boundIdx)
-		}
+	if boundIdx, ok, err := h.ResolveBoundAuthIndex(c); err == nil && ok && boundIdx != "" {
+		parentCtx = WithBoundAuthIndex(parentCtx, boundIdx)
 	}
 	newCtx, cancel := context.WithCancel(parentCtx)
 	cancelCtx := newCtx

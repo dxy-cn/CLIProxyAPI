@@ -102,6 +102,23 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		// 	websocketPayloadPreview(payload),
 		// )
 		appendWebsocketTimelineEvent(&wsTimelineLog, "request", payload, time.Now())
+		currentBoundAuthIndex, bindingResolved, bindingErr := h.ResolveBoundAuthIndex(c)
+		if bindingErr != nil {
+			errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: bindingErr}
+			h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
+			markAPIResponseTimestamp(c)
+			if _, errWrite := writeResponsesWebsocketError(conn, &wsTimelineLog, errMsg); errWrite != nil {
+				wsTerminateErr = errWrite
+				return
+			}
+			continue
+		}
+		if bindingResolved && pinnedAuthID != "" && !h.pinnedAuthMatchesBoundIndex(pinnedAuthID, currentBoundAuthIndex) {
+			pinnedAuthID = ""
+			if h != nil && h.AuthManager != nil {
+				h.AuthManager.CloseExecutionSession(passthroughSessionID)
+			}
+		}
 		priorLastRequest := bytes.Clone(lastRequest)
 		priorLastResponseOutput := bytes.Clone(lastResponseOutput)
 
@@ -248,6 +265,19 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		lastRequest = updatedLastRequest
 		lastResponseOutput = completedOutput
 	}
+}
+
+func (h *OpenAIResponsesAPIHandler) pinnedAuthMatchesBoundIndex(authID, boundIdx string) bool {
+	authID = strings.TrimSpace(authID)
+	boundIdx = strings.TrimSpace(boundIdx)
+	if authID == "" || boundIdx == "" || h == nil || h.AuthManager == nil {
+		return false
+	}
+	pinnedAuth, ok := h.AuthManager.GetByID(authID)
+	if !ok || pinnedAuth == nil {
+		return false
+	}
+	return strings.TrimSpace(pinnedAuth.EnsureIndex()) == boundIdx
 }
 
 func websocketClientAddress(c *gin.Context) string {

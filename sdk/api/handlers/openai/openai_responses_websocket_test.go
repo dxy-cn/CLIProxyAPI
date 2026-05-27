@@ -1245,6 +1245,106 @@ func TestResponsesWebsocketPinsOnlyWebsocketCapableAuth(t *testing.T) {
 	}
 }
 
+func TestResponsesWebsocketRefreshesBoundAuthIndexBetweenMessages(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &websocketAuthCaptureExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+
+	oldAuth := &coreauth.Auth{
+		ID:         "auth-old",
+		Provider:   executor.Identifier(),
+		Status:     coreauth.StatusActive,
+		Attributes: map[string]string{"websockets": "true"},
+	}
+	newAuth := &coreauth.Auth{
+		ID:         "auth-new",
+		Provider:   executor.Identifier(),
+		Status:     coreauth.StatusActive,
+		Attributes: map[string]string{"websockets": "true"},
+	}
+	oldIdx := oldAuth.EnsureIndex()
+	newIdx := newAuth.EnsureIndex()
+	if _, err := manager.Register(context.Background(), oldAuth); err != nil {
+		t.Fatalf("Register old auth: %v", err)
+	}
+	if _, err := manager.Register(context.Background(), newAuth); err != nil {
+		t.Fatalf("Register new auth: %v", err)
+	}
+
+	registry.GetGlobalRegistry().RegisterClient(oldAuth.ID, oldAuth.Provider, []*registry.ModelInfo{{ID: "test-model"}})
+	registry.GetGlobalRegistry().RegisterClient(newAuth.ID, newAuth.Provider, []*registry.ModelInfo{{ID: "test-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(oldAuth.ID)
+		registry.GetGlobalRegistry().UnregisterClient(newAuth.ID)
+	})
+
+	var bindingMu sync.Mutex
+	currentIdx := oldIdx
+	setCurrentIdx := func(idx string) {
+		bindingMu.Lock()
+		defer bindingMu.Unlock()
+		currentIdx = idx
+	}
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	base.BoundAuthIndexResolver = func(*gin.Context) (string, bool, error) {
+		bindingMu.Lock()
+		defer bindingMu.Unlock()
+		return currentIdx, true, nil
+	}
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Request = c.Request.WithContext(handlers.WithBoundAuthIndex(c.Request.Context(), oldIdx))
+		c.Next()
+	})
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() {
+		if errClose := conn.Close(); errClose != nil {
+			t.Fatalf("close websocket: %v", errClose)
+		}
+	}()
+
+	if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"test-model","input":[{"type":"message","id":"msg-1"}]}`)); errWrite != nil {
+		t.Fatalf("write first websocket message: %v", errWrite)
+	}
+	_, payload, errReadMessage := conn.ReadMessage()
+	if errReadMessage != nil {
+		t.Fatalf("read first websocket message: %v", errReadMessage)
+	}
+	if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
+		t.Fatalf("first payload type = %s, want %s", got, wsEventTypeCompleted)
+	}
+
+	setCurrentIdx(newIdx)
+
+	if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"test-model","input":[{"type":"message","id":"msg-2"}]}`)); errWrite != nil {
+		t.Fatalf("write second websocket message: %v", errWrite)
+	}
+	_, payload, errReadMessage = conn.ReadMessage()
+	if errReadMessage != nil {
+		t.Fatalf("read second websocket message: %v", errReadMessage)
+	}
+	if got := gjson.GetBytes(payload, "type").String(); got != wsEventTypeCompleted {
+		t.Fatalf("second payload type = %s, want %s", got, wsEventTypeCompleted)
+	}
+
+	if got := executor.AuthIDs(); len(got) != 2 || got[0] != oldAuth.ID || got[1] != newAuth.ID {
+		t.Fatalf("selected auth IDs = %v, want [%s %s]", got, oldAuth.ID, newAuth.ID)
+	}
+}
+
 func TestNormalizeResponsesWebsocketRequestTreatsTranscriptReplacementAsReset(t *testing.T) {
 	lastRequest := []byte(`{"model":"test-model","stream":true,"input":[{"type":"message","id":"msg-1"},{"type":"function_call","id":"fc-1","call_id":"call-1"},{"type":"function_call_output","id":"tool-out-1","call_id":"call-1"},{"type":"message","id":"assistant-1","role":"assistant"}]}`)
 	lastResponseOutput := []byte(`[
