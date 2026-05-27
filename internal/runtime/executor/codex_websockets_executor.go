@@ -1200,7 +1200,33 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	sess.connMu.Lock()
 	conn := sess.conn
 	readerConn := sess.readerConn
+	currentAuthID := sess.authID
+	currentWSURL := sess.wsURL
+	reconnectReason := ""
+	replacedConn := conn
+	if conn != nil {
+		switch {
+		case strings.TrimSpace(currentAuthID) != strings.TrimSpace(authID):
+			reconnectReason = "auth_changed"
+		case strings.TrimSpace(currentWSURL) != strings.TrimSpace(wsURL):
+			reconnectReason = "endpoint_changed"
+		}
+		if reconnectReason != "" {
+			sess.conn = nil
+			if sess.readerConn == conn {
+				sess.readerConn = nil
+			}
+			conn = nil
+			readerConn = nil
+		}
+	}
 	sess.connMu.Unlock()
+	if reconnectReason != "" {
+		logCodexWebsocketDisconnected(sess.sessionID, currentAuthID, currentWSURL, reconnectReason, nil)
+		if errClose := replacedConn.Close(); errClose != nil {
+			log.Errorf("codex websockets executor: close websocket error: %v", errClose)
+		}
+	}
 	if conn != nil {
 		if readerConn != conn {
 			sess.connMu.Lock()

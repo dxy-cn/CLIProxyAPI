@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -146,6 +147,109 @@ func TestCodexWebsocketsExecutorExecuteStreamRetriesPreviousResponseNotFoundWith
 	}
 	if gjson.GetBytes(requests[1], "previous_response_id").Exists() {
 		t.Fatalf("retry request must not include previous_response_id: %s", string(requests[1]))
+	}
+}
+
+func TestCodexWebsocketsExecutorExecuteStreamReconnectsWhenAuthChangesWithinSession(t *testing.T) {
+	t.Parallel()
+
+	var (
+		upgrader        = websocket.Upgrader{}
+		mu              sync.Mutex
+		handshakeTokens []string
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			http.NotFound(w, r)
+			return
+		}
+
+		mu.Lock()
+		handshakeTokens = append(handshakeTokens, strings.TrimSpace(r.Header.Get("Authorization")))
+		mu.Unlock()
+
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("Upgrade() error = %v", err)
+			return
+		}
+		defer conn.Close()
+
+		for {
+			msgType, _, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if msgType != websocket.TextMessage {
+				t.Errorf("unexpected message type %d", msgType)
+				return
+			}
+			donePayload := `{"type":"response.completed","response":{"id":"resp-1","object":"response","created_at":1,"status":"completed","model":"gpt-5-codex","output":[],"usage":{"input_tokens":1,"output_tokens":0,"total_tokens":1}}}`
+			if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(donePayload)); errWrite != nil {
+				t.Errorf("WriteMessage(completed) error = %v", errWrite)
+			}
+		}
+	}))
+	defer server.Close()
+
+	exec := NewCodexWebsocketsExecutor(&config.Config{})
+	sessionID := "auth-switch-session"
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5-codex",
+		Payload: []byte(`{"model":"gpt-5-codex","input":[{"type":"message","id":"msg-1","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`),
+	}
+	opts := cliproxyexecutor.Options{
+		Stream:       true,
+		SourceFormat: sdktranslator.FromString("codex"),
+		Metadata: map[string]any{
+			cliproxyexecutor.ExecutionSessionMetadataKey: sessionID,
+		},
+	}
+
+	authA := &cliproxyauth.Auth{
+		ID:       "auth-a",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"api_key":  "token-a",
+			"base_url": server.URL,
+		},
+	}
+	authB := &cliproxyauth.Auth{
+		ID:       "auth-b",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"api_key":  "token-b",
+			"base_url": server.URL,
+		},
+	}
+
+	runStream := func(auth *cliproxyauth.Auth) {
+		result, err := exec.ExecuteStream(context.Background(), auth, req, opts)
+		if err != nil {
+			t.Fatalf("ExecuteStream() error = %v", err)
+		}
+		for chunk := range result.Chunks {
+			if chunk.Err != nil {
+				t.Fatalf("stream chunk error = %v", chunk.Err)
+			}
+		}
+	}
+
+	runStream(authA)
+	runStream(authB)
+	exec.CloseExecutionSession(sessionID)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(handshakeTokens) != 2 {
+		t.Fatalf("expected 2 websocket handshakes, got %d (%v)", len(handshakeTokens), handshakeTokens)
+	}
+	if handshakeTokens[0] != "Bearer token-a" {
+		t.Fatalf("first handshake Authorization = %q, want %q", handshakeTokens[0], "Bearer token-a")
+	}
+	if handshakeTokens[1] != "Bearer token-b" {
+		t.Fatalf("second handshake Authorization = %q, want %q", handshakeTokens[1], "Bearer token-b")
 	}
 }
 
