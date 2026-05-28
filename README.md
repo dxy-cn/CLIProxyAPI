@@ -1,283 +1,296 @@
 # CLI Proxy API
 
-English | [中文](README_CN.md) | [日本語](README_JA.md)
+English | [Chinese](README_CN.md)
 
-A proxy server that provides OpenAI/Gemini/Claude/Codex compatible API interfaces for CLI.
+CLI Proxy API is a Go backend that exposes one proxy endpoint for multiple AI client protocols. It accepts OpenAI-compatible Chat Completions, Completions, Images, Responses, Anthropic Claude Messages, Gemini native calls, Codex Responses, Codex WebSocket traffic, and Amp CLI provider calls, then routes each request to the configured upstream account, API key, OAuth token, or OpenAI-compatible provider.
 
-It now also supports OpenAI Codex (GPT models) and Claude Code via OAuth.
+The server is built around a shared runtime that handles authentication, model registration, protocol translation, retries, credential scheduling, request logging, usage statistics, and management APIs.
 
-So you can use local or multi-account CLI access with OpenAI(include Responses)/Gemini/Claude-compatible clients and SDKs.
+## Main Capabilities
 
-## Fork Features
+- Unified API surface for OpenAI, Claude, Gemini, Codex, and Amp-compatible clients.
+- Multiple upstream credential types: OAuth token files, provider API keys, Vertex service accounts, OpenAI-compatible providers, and Amp upstream keys.
+- Request translation between client protocols and provider executors.
+- Model registry with aliases, prefixes, exclusions, provider-specific model lists, and embedded model catalog fallback.
+- Credential routing strategies: `round-robin`, `fill-first`, `sequential-fill`, and `account-bind`.
+- Codex Responses WebSocket forwarding with optional WebSocket authentication.
+- Management API and web control panel for config, auth files, API keys, model monitor data, usage, logs, and routing settings.
+- Request logging, rotating application logs, health checks, optional pprof, and usage persistence.
+- Local file, PostgreSQL, MySQL, object store, or Git-backed config/auth storage.
+- SDK package for embedding the same proxy runtime in another Go application.
 
-This fork includes the following enhancements not available in the upstream repository:
+## Supported Upstreams
 
-### Web Search Support via Gemini (Antigravity)
+| Upstream                    | Configuration                                 | Runtime support                                                                                   |
+| --------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Codex                       | OAuth login files or `codex-api-key` entries  | Responses API, compact responses, HTTP streaming, optional WebSocket transport                    |
+| Claude                      | OAuth login files or `claude-api-key` entries | Claude Messages API, token counting, Claude Code-style request shaping                            |
+| Gemini API                  | `gemini-api-key` entries                      | Gemini native `v1beta` calls and translated OpenAI/Claude requests                                |
+| Gemini CLI                  | Google OAuth login files                      | Code Assist / Gemini CLI internal API, gated by `enable-gemini-cli-endpoint`                      |
+| Vertex / AI Studio          | Vertex import or stored OAuth credentials     | Gemini/Vertex executor and translated request handling                                            |
+| Antigravity                 | Antigravity OAuth login files                 | Model execution, signature handling, and optional credits fallback                                |
+| Kimi                        | Kimi device login files                       | Chat-completion style execution through the shared runtime                                        |
+| OpenAI-compatible providers | `openai-compatibility` entries                | Configurable base URL, API key, headers, model aliases, and compact responses                     |
+| Amp                         | `ampcode` config                              | Amp management proxy, provider aliases, Gemini bridge, and fallback to upstream Amp control plane |
 
-Enables web search capabilities for Antigravity provider through Gemini's googleSearch tool:
-- Auto-detects `web_search` tool requests from Claude/OpenAI API formats
-- Automatically switches model to `gemini-2.5-flash` for search queries
-- Converts search requests to Gemini's native googleSearch tool format
-- Parses `groundingMetadata` and transforms results to compatible format
-- Supports both Claude `tool_result` and OpenAI function response formats
+## API Surface
 
-### Sequential Fill (SF) Routing Strategy
+Client API keys are configured with top-level `api-keys`. Requests can authenticate with any of these forms:
 
-A sticky credential selection strategy (`sf` or `sequential-fill`) that optimizes credential usage:
-- Sticks to the current credential until it becomes unavailable
-- Random starting point for initial selection to balance load across credentials
-- Sequential advancement without jumping back to recovered credentials
-- Preserves stickiness with `MaxRetryAttempts = 2`
+- `Authorization: Bearer <api-key>`
+- `X-Goog-Api-Key: <api-key>`
+- `X-Api-Key: <api-key>`
+- `?key=<api-key>`
+- `?auth_token=<api-key>`
 
-Configuration:
-```yaml
-routing:
-  strategy: "sf"  # or "sequential-fill"
+Main client-facing routes:
+
+| Route                               | Purpose                                                          |
+| ----------------------------------- | ---------------------------------------------------------------- |
+| `GET /healthz`                      | Liveness check                                                   |
+| `GET /v1/models`                    | OpenAI-compatible model listing                                  |
+| `POST /v1/chat/completions`         | OpenAI Chat Completions                                          |
+| `POST /v1/completions`              | OpenAI Completions                                               |
+| `POST /v1/images/generations`       | OpenAI-compatible image generation                               |
+| `POST /v1/images/edits`             | OpenAI-compatible image edits                                    |
+| `POST /v1/messages`                 | Anthropic Claude Messages                                        |
+| `POST /v1/messages/count_tokens`    | Claude token counting                                            |
+| `POST /v1/responses`                | OpenAI/Codex Responses API                                       |
+| `GET /v1/responses`                 | WebSocket upgrade endpoint for Responses traffic                 |
+| `POST /v1/responses/compact`        | Responses compaction endpoint                                    |
+| `GET /backend-api/codex/responses`  | Codex WebSocket-compatible backend route                         |
+| `POST /backend-api/codex/responses` | Codex backend Responses route                                    |
+| `GET /v1beta/models`                | Gemini native model listing                                      |
+| `POST /v1beta/models/*action`       | Gemini native model actions                                      |
+| `GET /v1beta/models/*action`        | Gemini native read actions                                       |
+| `POST /v1internal:*`                | Gemini CLI internal endpoint, disabled unless explicitly enabled |
+| `/api/provider/:provider/...`       | Amp provider aliases for OpenAI, Claude, and Gemini-style calls  |
+
+Management routes live under `/v0/management` and are only registered when `remote-management.secret-key` is configured. The management API accepts `Authorization: Bearer <secret-key>` or `X-Management-Key: <secret-key>`.
+
+## Quick Start
+
+Requirements:
+
+- Go `1.26` or newer, matching `go.mod`.
+- A `config.yaml` file or one of the external store environment configurations listed below.
+
+Start from the example config:
+
+```bash
+cp config.example.yaml config.yaml
 ```
 
-### Usage Statistics Persistence
-
-Control database persistence for usage statistics:
+Edit `config.yaml` and set at least one client API key plus one upstream credential. A minimal OpenAI-compatible provider configuration looks like this:
 
 ```yaml
-# Enable/disable database persistence (default: false, memory-only)
-usage-persistence-enabled: true
+host: 127.0.0.1
+port: 8317
+
+api-keys:
+  - sk-local-dev
+
+openai-compatibility:
+  - name: upstream-openai
+    api-key: sk-upstream
+    base-url: https://api.openai.com
+    models:
+      - name: gpt-4.1
+        alias: gpt-4.1
 ```
 
-### Automatic Usage Data Cleanup
-
-Automatically cleans up old usage statistics data:
-- Configurable retention period via `USAGE_RETENTION_DAYS` environment variable (default: 30 days)
-- Executes cleanup on startup and every 4 hours
-- Supports both MySQL and SQLite backends
-
-### Local `.env` Credential Injection
-
-The server loads `.env` from the working directory before storage initialization. Use `MYSQLSTORE_DSN` for the MySQL-backed config/auth store, `MYSQLSTORE_LOCAL_PATH` for its local spool directory, and `AUTH_BOOTSTRAP_DIR` or `AUTH_BOOTSTRAP_FILE` to import local auth JSON files into the configured token store on startup. Existing auth IDs are skipped unless `AUTH_BOOTSTRAP_OVERWRITE=true`.
-
-### CI/CD Optimizations
-
-- Docker workflow with matrix strategy and layer caching for faster builds
-- Multi-architecture support (amd64/arm64) with manifest creation
-- Migrated Docker registry from DockerHub to GitHub Container Registry (ghcr.io)
-- Cross-compilation Dockerfile for faster multi-platform builds
-- Automatic cleanup of temporary Docker tags
-
-### Management Center
+Run the server:
+
+```bash
+go run ./cmd/server --config config.yaml
+```
 
-A dedicated web-based management panel for this fork with enhanced monitoring and administration capabilities:
+Call the proxy:
 
-- **Dashboard**: Real-time overview of proxy status, request statistics, and system health
-- **Account Management**: Visual interface for managing OAuth credentials across all providers
-- **Usage Analytics**: Detailed charts and statistics for API usage, quotas, and costs
-- **Request Logs**: Searchable request history with filtering and export capabilities
-- **Provider Status**: Monitor availability and performance of each configured provider
+```bash
+curl http://127.0.0.1:8317/v1/chat/completions \
+  -H 'Authorization: Bearer sk-local-dev' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "gpt-4.1",
+    "messages": [{"role": "user", "content": "Say hello in one sentence."}]
+  }'
+```
 
-**→ [Cli-Proxy-API-Management-Center](https://github.com/caidaoli/Cli-Proxy-API-Management-Center)**
+Build a local binary:
 
----
+```bash
+go build -o cli-proxy-api ./cmd/server
+./cli-proxy-api --config config.yaml
+```
 
-## Sponsor
+## Login and Credential Import
 
-[![z.ai](https://assets.router-for.me/english-5-0.jpg)](https://z.ai/subscribe?ic=8JVLJQFSKB)
+The server can create OAuth-backed auth files for several providers:
 
-This project is sponsored by Z.ai, supporting us with their GLM CODING PLAN.
+```bash
+go run ./cmd/server --config config.yaml --login
+go run ./cmd/server --config config.yaml --codex-login
+go run ./cmd/server --config config.yaml --codex-device-login
+go run ./cmd/server --config config.yaml --claude-login
+go run ./cmd/server --config config.yaml --antigravity-login
+go run ./cmd/server --config config.yaml --kimi-login
+```
 
-GLM CODING PLAN is a subscription service designed for AI coding, starting at just $10/month. It provides access to their flagship GLM-4.7 & （GLM-5 Only Available  for Pro Users）model across 10+ popular AI coding tools (Claude Code, Cline, Roo Code, etc.), offering developers top-tier, fast, and stable coding experiences.
+Useful login flags:
 
-Get 10% OFF GLM CODING PLAN：https://z.ai/subscribe?ic=8JVLJQFSKB
+- `--no-browser` prints the OAuth URL instead of opening a browser.
+- `--oauth-callback-port <port>` overrides the callback port for OAuth flows.
+- `--project_id <id>` sets the Google project ID for Gemini login.
+- `--vertex-import <file>` imports a Vertex service account JSON file.
+- `--vertex-import-prefix <prefix>` namespaces imported Vertex models.
 
----
+By default auth files are stored under `auth-dir` from `config.yaml`. For automated deployments, auth files can be imported at startup with:
 
-<table>
-<tbody>
-<tr>
-<td width="180"><a href="https://www.packyapi.com/register?aff=cliproxyapi"><img src="./assets/packycode.png" alt="PackyCode" width="150"></a></td>
-<td>Thanks to PackyCode for sponsoring this project! PackyCode is a reliable and efficient API relay service provider, offering relay services for Claude Code, Codex, Gemini, and more. PackyCode provides special discounts for our software users: register using <a href="https://www.packyapi.com/register?aff=cliproxyapi">this link</a> and enter the "cliproxyapi" promo code during recharge to get 10% off.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://www.aicodemirror.com/register?invitecode=TJNAIF"><img src="./assets/aicodemirror.png" alt="AICodeMirror" width="150"></a></td>
-<td>Thanks to AICodeMirror for sponsoring this project! AICodeMirror provides official high-stability relay services for Claude Code / Codex / Gemini CLI, with enterprise-grade concurrency, fast invoicing, and 24/7 dedicated technical support. Claude Code / Codex / Gemini official channels at 38% / 2% / 9% of original price, with extra discounts on top-ups! AICodeMirror offers special benefits for CLIProxyAPI users: register via <a href="https://www.aicodemirror.com/register?invitecode=TJNAIF">this link</a> to enjoy 20% off your first top-up, and enterprise customers can get up to 25% off!</td>
-</tr>
-<tr>
-<td width="180"><a href="https://shop.bmoplus.com/?utm_source=github"><img src="./assets/bmoplus.png" alt="BmoPlus" width="150"></a></td>
-<td>Huge thanks to BmoPlus for sponsoring this project! BmoPlus is a highly reliable AI account provider built strictly for heavy AI users and developers. They offer rock-solid, ready-to-use accounts and official top-up services for ChatGPT Plus / ChatGPT Pro (Full Warranty) / Claude Pro / Super Grok / Gemini Pro. By registering and ordering through <a href="https://shop.bmoplus.com/?utm_source=github">BmoPlus - Premium AI Accounts & Top-ups</a>, users can unlock the mind-blowing rate of <b>10% of the official GPT subscription price (90% OFF)</b>!</td>
-</tr>
-<tr>
-<td width="180"><a href="https://www.lingtrue.com/register"><img src="./assets/lingtrue.png" alt="LingtrueAPI" width="150"></a></td>
-<td>Thanks to LingtrueAPI for its sponsorship of this project! LingtrueAPI is a global large - model API intermediary service platform that provides API calling services for various top - notch models such as Claude Code, Codex, and Gemini. It is committed to enabling users to connect to global AI capabilities at low cost and with high stability. LingtrueAPI offers special discounts to users of this software: register using <a href="https://www.lingtrue.com/register">this link</a>, and enter the promo code "LingtrueAPI" when making the first recharge to enjoy a 10% discount.</td>
-</tr>
-<tr>
-<td width="180"><a href="https://poixe.com/i/m8kvep"><img src="./assets/poixeai.png" alt="PoixeAI" width="150"></a></td>
-<td>Thanks to Poixe AI for sponsoring this project! Poixe AI provides reliable LLM API services. You can leverage the platform's API endpoints to seamlessly build AI-powered products. Additionally, you can become a vendor by providing AI API resources to the platform and earn revenue. Register through the exclusive CLIProxyAPI <a href="https://poixe.com/i/m8kvep">referral link</a> and receive a bonus of $5 USD on your first top-up.</td>
-</tr>
-</tbody>
-</table>
+```bash
+AUTH_BOOTSTRAP_DIR=/path/to/auths
+AUTH_BOOTSTRAP_FILE=/path/to/auth.json
+AUTH_BOOTSTRAP_OVERWRITE=true
+```
 
-## Overview
+## Configuration
 
-- OpenAI/Gemini/Claude compatible API endpoints for CLI models
-- OpenAI Codex support (GPT models) via OAuth login
-- Claude Code support via OAuth login
-- Qwen Code support via OAuth login
-- iFlow support via OAuth login
-- Amp CLI and IDE extensions support with provider routing
-- Streaming and non-streaming responses
-- Function calling/tools support
-- Multimodal input support (text and images)
-- Multiple accounts with round-robin load balancing (Gemini, OpenAI, Claude, Qwen and iFlow)
-- Simple CLI authentication flows (Gemini, OpenAI, Claude, Qwen and iFlow)
-- Generative Language API Key support
-- AI Studio Build multi-account load balancing
-- Gemini CLI multi-account load balancing
-- Claude Code multi-account load balancing
-- Qwen Code multi-account load balancing
-- iFlow multi-account load balancing
-- OpenAI Codex multi-account load balancing
-- OpenAI-compatible upstream providers via config (e.g., OpenRouter)
-- Reusable Go SDK for embedding the proxy (see `docs/sdk-usage.md`)
+See [config.example.yaml](config.example.yaml) for the full schema. Important top-level settings include:
 
-## Getting Started
+| Key                         | Purpose                                                                 |
+| --------------------------- | ----------------------------------------------------------------------- |
+| `host`, `port`              | Server bind address                                                     |
+| `tls`                       | HTTPS certificate and key settings                                      |
+| `auth-dir`                  | Local auth file directory                                               |
+| `api-keys`                  | Client keys allowed to call the proxy                                   |
+| `proxy-url`                 | Outbound HTTP proxy for upstream calls                                  |
+| `local-model`               | Use only the embedded model catalog                                     |
+| `force-model-prefix`        | Require prefixed model names for prefixed credentials                   |
+| `request-log`               | Enable detailed request logging                                         |
+| `passthrough-headers`       | Forward selected upstream response headers to clients                   |
+| `request-retry`             | Retry count for failed provider requests                                |
+| `max-retry-credentials`     | Limit how many credentials are attempted per failed request             |
+| `max-retry-interval`        | Max wait before retrying a cooled-down credential                       |
+| `disable-cooling`           | Disable quota cooldown scheduling                                       |
+| `usage-statistics-enabled`  | Enable in-memory usage aggregation                                      |
+| `usage-persistence-enabled` | Persist usage data to PostgreSQL, MySQL, or SQLite                      |
+| `ws-auth`                   | Require auth on WebSocket endpoints                                     |
+| `routing.strategy`          | Credential selection strategy                                           |
+| `payload`                   | Default, override, raw override, and filter rules for provider payloads |
 
-CLIProxyAPI Guides: [https://help.router-for.me/](https://help.router-for.me/)
+Provider sections support common controls such as `api-key`, `priority`, `prefix`, `base-url`, `proxy-url`, `models`, `headers`, and `excluded-models`, depending on provider type.
 
-## Management API
+## Routing and Models
 
-see [MANAGEMENT_API.md](https://help.router-for.me/management/api)
+The runtime registers every configured credential into a shared model registry. Client-visible model IDs can come from upstream discovery, embedded models, per-provider `models` aliases, OAuth-level aliases, or prefixed credentials.
 
-## Amp CLI Support
+Routing strategies:
 
-CLIProxyAPI includes integrated support for [Amp CLI](https://ampcode.com) and Amp IDE extensions, enabling you to use your Google/ChatGPT/Claude OAuth subscriptions with Amp's coding tools:
+- `round-robin` or `rr`: rotate across ready credentials.
+- `fill-first` or `ff`: prefer the first ready credential until it is exhausted.
+- `sequential-fill` or `sf`: keep using the current credential until it becomes unavailable.
+- `account-bind` or `ab`: bind each client API key to a specific durable auth identity. Use `routing.default-model-account` as the fallback for unbound keys.
 
-- Provider route aliases for Amp's API patterns (`/api/provider/{provider}/v1...`)
-- Management proxy for OAuth authentication and account features
-- Smart model fallback with automatic routing
-- **Model mapping** to route unavailable models to alternatives (e.g., `claude-opus-4.5` → `claude-sonnet-4`)
-- Security-first design with localhost-only management endpoints
+`quota-exceeded` can enable automatic project switching, preview-model switching, and Antigravity credits fallback when supported by the provider.
 
-When you need the request/response shape of a specific backend family, use the provider-specific paths instead of the merged `/v1/...` endpoints:
+## WebSocket Responses
 
-- Use `/api/provider/{provider}/v1/messages` for messages-style backends.
-- Use `/api/provider/{provider}/v1beta/models/...` for model-scoped generate endpoints.
-- Use `/api/provider/{provider}/v1/chat/completions` for chat-completions backends.
+Codex Responses traffic can use WebSockets through:
 
-These routes help you select the protocol surface, but they do not by themselves guarantee a unique inference executor when the same client-visible model name is reused across multiple backends. Inference routing is still resolved from the request model/alias. For strict backend pinning, use unique aliases, prefixes, or otherwise avoid overlapping client-visible model names.
+- `GET /v1/responses`
+- `GET /backend-api/codex/responses`
 
-**→ [Complete Amp CLI Integration Guide](https://help.router-for.me/agent-client/amp-cli.html)**
+Set `ws-auth: true` to require the same proxy API key authentication on WebSocket connections. For Codex API-key credentials, set `websockets: true` under the matching `codex-api-key` entry to prefer the WebSocket executor.
 
-## SDK Docs
+## Management and Monitoring
 
-- Usage: [docs/sdk-usage.md](docs/sdk-usage.md)
-- Advanced (executors & translators): [docs/sdk-advanced.md](docs/sdk-advanced.md)
-- Access: [docs/sdk-access.md](docs/sdk-access.md)
-- Watcher: [docs/sdk-watcher.md](docs/sdk-watcher.md)
-- Custom Provider Example: `examples/custom-provider`
+Enable management by setting:
 
-## Contributing
+```yaml
+remote-management:
+  allow-remote: false
+  secret-key: change-me
+```
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Then open:
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+```text
+http://127.0.0.1:8317/management.html
+```
 
-## Who is with us?
+The management API provides endpoints for:
 
-Those projects are based on CLIProxyAPI:
+- reading and updating `config.yaml`;
+- managing API keys and auth files;
+- OAuth helper flows;
+- model and quota monitor data;
+- request logs and usage statistics;
+- routing strategy and WebSocket auth settings;
+- Amp configuration and monitor metadata.
 
-### [vibeproxy](https://github.com/automazeio/vibeproxy)
+Keep `allow-remote: false` for local-only administration unless the server is protected by TLS, a trusted reverse proxy, and a strong management key.
 
-Native macOS menu bar app to use your Claude Code & ChatGPT subscriptions with AI coding tools - no API keys needed
+## Storage Backends
 
-### [Subtitle Translator](https://github.com/VjayC/SRT-Subtitle-Translator-Validator)
+Without store environment variables, the server reads `config.yaml` and local auth files from the working directory and `auth-dir`.
 
-Browser-based tool to translate SRT subtitles using your Gemini subscription via CLIProxyAPI with automatic validation/error correction - no API keys needed
+External stores are selected with environment variables. A local `.env` file in the working directory is loaded automatically.
 
-### [CCS (Claude Code Switch)](https://github.com/kaitranntt/ccs)
+| Backend      | Environment variables                                                                                                               |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| PostgreSQL   | `PGSTORE_DSN`, optional `PGSTORE_SCHEMA`, `PGSTORE_LOCAL_PATH`                                                                      |
+| MySQL        | `MYSQLSTORE_DSN`, optional `MYSQLSTORE_LOCAL_PATH`                                                                                  |
+| Object store | `OBJECTSTORE_ENDPOINT`, `OBJECTSTORE_ACCESS_KEY`, `OBJECTSTORE_SECRET_KEY`, `OBJECTSTORE_BUCKET`, optional `OBJECTSTORE_LOCAL_PATH` |
+| Git store    | `GITSTORE_GIT_URL`, optional `GITSTORE_GIT_USERNAME`, `GITSTORE_GIT_TOKEN`, `GITSTORE_GIT_BRANCH`, `GITSTORE_LOCAL_PATH`            |
 
-CLI wrapper for instant switching between multiple Claude accounts and alternative models (Gemini, Codex, Antigravity) via CLIProxyAPI OAuth - no API keys needed
+Startup preference is PostgreSQL, then MySQL, then object store, then Git store, then local files.
 
-### [Quotio](https://github.com/nguyenphutrong/quotio)
+When `usage-persistence-enabled` is true, usage persistence uses PostgreSQL first when `PGSTORE_DSN` is present, then MySQL when `MYSQLSTORE_DSN` is present, otherwise SQLite in `auth-dir`.
 
-Native macOS menu bar app that unifies Claude, Gemini, OpenAI, Qwen, and Antigravity subscriptions with real-time quota tracking and smart auto-failover for AI coding tools like Claude Code, OpenCode, and Droid - no API keys needed.
+## Amp Integration
 
-### [CodMate](https://github.com/loocor/CodMate)
+The `ampcode` section configures Amp CLI support. The backend can:
 
-Native macOS SwiftUI app for managing CLI AI sessions (Codex, Claude Code, Gemini CLI) with unified provider management, Git review, project organization, global search, and terminal integration. Integrates CLIProxyAPI to provide OAuth authentication for Codex, Claude, Gemini, Antigravity, and Qwen Code, with built-in and third-party provider rerouting through a single proxy endpoint - no API keys needed for OAuth providers.
+- proxy Amp management and OAuth routes through `/api`;
+- expose `/threads`, `/docs`, `/settings`, `/threads.rss`, and `/news.rss` root routes expected by Amp clients;
+- map `/api/provider/:provider` requests to local OpenAI, Claude, and Gemini handlers;
+- fall back to the configured Amp upstream when no local provider or model mapping is available;
+- restrict Amp management routes to localhost.
 
-### [ProxyPilot](https://github.com/Finesssee/ProxyPilot)
+## SDK Embedding
 
-Windows-native CLIProxyAPI fork with TUI, system tray, and multi-provider OAuth for AI coding tools - no API keys needed.
+The same runtime can be embedded through the Go SDK under `sdk/cliproxy`.
 
-### [Claude Proxy VSCode](https://github.com/uzhao/claude-proxy-vscode)
+Documentation:
 
-VSCode extension for quick switching between Claude Code models, featuring integrated CLIProxyAPI as its backend with automatic background lifecycle management.
+- [SDK usage](docs/sdk-usage.md)
+- [SDK access providers](docs/sdk-access.md)
+- [SDK advanced usage](docs/sdk-advanced.md)
+- [SDK watcher](docs/sdk-watcher.md)
 
-### [ZeroLimit](https://github.com/0xtbug/zero-limit)
+## Development
 
-Windows desktop app built with Tauri + React for monitoring AI coding assistant quotas via CLIProxyAPI. Track usage across Gemini, Claude, OpenAI Codex, and Antigravity accounts with real-time dashboard, system tray integration, and one-click proxy control - no API keys needed.
+Useful checks:
 
-### [CPA-XXX Panel](https://github.com/ferretgeek/CPA-X)
+```bash
+go test ./...
+go build -o /tmp/cli-proxy-api ./cmd/server
+```
 
-A lightweight web admin panel for CLIProxyAPI with health checks, resource monitoring, real-time logs, auto-update, request statistics and pricing display. Supports one-click installation and systemd service.
+Important directories:
 
-### [CLIProxyAPI Tray](https://github.com/kitephp/CLIProxyAPI_Tray)
-
-A Windows tray application implemented using PowerShell scripts, without relying on any third-party libraries. The main features include: automatic creation of shortcuts, silent running, password management, channel switching (Main / Plus), and automatic downloading and updating.
-
-### [霖君](https://github.com/wangdabaoqq/LinJun)
-
-霖君 is a cross-platform desktop application for managing AI programming assistants, supporting macOS, Windows, and Linux systems. Unified management of Claude Code, Gemini CLI, OpenAI Codex, Qwen Code, and other AI coding tools, with local proxy for multi-account quota tracking and one-click configuration.
-
-### [CLIProxyAPI Dashboard](https://github.com/itsmylife44/cliproxyapi-dashboard)
-
-A modern web-based management dashboard for CLIProxyAPI built with Next.js, React, and a database backend. Features real-time log streaming, structured configuration editing, API key management, OAuth provider integration for Claude/Gemini/Codex, usage analytics, container management, and config sync with OpenCode via companion plugin - no manual YAML editing needed.
-
-### [All API Hub](https://github.com/qixing-jk/all-api-hub)
-
-Browser extension for one-stop management of New API-compatible relay site accounts, featuring balance and usage dashboards, auto check-in, one-click key export to common apps, in-page API availability testing, and channel/model sync and redirection. It integrates with CLIProxyAPI through the Management API for one-click provider import and config sync.
-
-### [Shadow AI](https://github.com/HEUDavid/shadow-ai)
-
-Shadow AI is an AI assistant tool designed specifically for restricted environments. It provides a stealthy operation
-mode without windows or traces, and enables cross-device AI Q&A interaction and control via the local area network (
-LAN). Essentially, it is an automated collaboration layer of "screen/audio capture + AI inference + low-friction delivery",
-helping users to immersively use AI assistants across applications on controlled devices or in restricted environments.
-
-### [ProxyPal](https://github.com/buddingnewinsights/proxypal)
-
-Cross-platform desktop app (macOS, Windows, Linux) wrapping CLIProxyAPI with a native GUI. Connects Claude, ChatGPT, Gemini, GitHub Copilot, Qwen, iFlow, and custom OpenAI-compatible endpoints with usage analytics, request monitoring, and auto-configuration for popular coding tools - no API keys needed.
-
-### [CLIProxyAPI Quota Inspector](https://github.com/AllenReder/CLIProxyAPI-Quota-Inspector)
-
-Ready-to-use cross-platform quota inspector for CLIProxyAPI, supporting per-account codex 5h/7d quota windows, plan-based sorting, status coloring, and multi-account summary analytics.
-
-### [CPA Usage Keeper](https://github.com/Willxup/cpa-usage-keeper)
-
-Standalone persistence and visualization service for CLIProxyAPI, with periodic data sync, SQLite storage, aggregate APIs, and a built-in dashboard for usage and statistics.
-
-> [!NOTE]  
-> If you developed a project based on CLIProxyAPI, please open a PR to add it to this list.
-
-## More choices
-
-Those projects are ports of CLIProxyAPI or inspired by it:
-
-### [9Router](https://github.com/decolua/9router)
-
-A Next.js implementation inspired by CLIProxyAPI, easy to install and use, built from scratch with format translation (OpenAI/Claude/Gemini/Ollama), combo system with auto-fallback, multi-account management with exponential backoff, a Next.js web dashboard, and support for CLI tools (Cursor, Claude Code, Cline, RooCode) - no API keys needed.
-
-### [OmniRoute](https://github.com/diegosouzapw/OmniRoute)
-
-Never stop coding. Smart routing to FREE & low-cost AI models with automatic fallback.
-
-OmniRoute is an AI gateway for multi-provider LLMs: an OpenAI-compatible endpoint with smart routing, load balancing, retries, and fallbacks. Add policies, rate limits, caching, and observability for reliable, cost-aware inference.
-
-> [!NOTE]  
-> If you have developed a port of CLIProxyAPI or a project inspired by it, please open a PR to add it to this list.
+| Path                        | Purpose                                                                                                  |
+| --------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `cmd/server`                | CLI entrypoint, config loading, login modes, storage selection                                           |
+| `internal/api`              | Gin server, public API routes, management route registration                                             |
+| `internal/api/modules/amp`  | Amp integration routes and upstream fallback                                                             |
+| `internal/config`           | YAML schema, config loading, migration helpers                                                           |
+| `internal/runtime/executor` | Provider executors for Codex, Claude, Gemini, Vertex, Antigravity, Kimi, and OpenAI-compatible upstreams |
+| `internal/translator`       | Protocol translation between client request formats and runtime requests                                 |
+| `internal/store`            | PostgreSQL, MySQL, object store, Git, and file-backed storage                                            |
+| `internal/usage`            | Usage aggregation and persistence                                                                        |
+| `sdk/cliproxy`              | Embeddable proxy service, auth manager, model registry integration                                       |
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the terms in [LICENSE](LICENSE).
