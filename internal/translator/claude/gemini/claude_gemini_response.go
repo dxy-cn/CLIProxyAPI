@@ -21,6 +21,8 @@ var (
 	dataTag = []byte("data:")
 )
 
+const maxClaudeSSELineBytes = 52_428_800 // 50 MiB
+
 // ConvertAnthropicResponseToGeminiParams holds parameters for response conversion
 // It also carries minimal streaming state across calls to assemble tool_use input_json_delta.
 // This structure maintains state information needed for proper conversion of streaming responses
@@ -286,8 +288,7 @@ func ConvertClaudeResponseToGeminiNonStream(_ context.Context, modelName string,
 	streamingEvents := make([][]byte, 0)
 
 	scanner := bufio.NewScanner(bytes.NewReader(rawJSON))
-	buffer := make([]byte, 52_428_800) // 50MB
-	scanner.Buffer(buffer, 52_428_800)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxClaudeSSELineBytes)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		// log.Debug(string(line))

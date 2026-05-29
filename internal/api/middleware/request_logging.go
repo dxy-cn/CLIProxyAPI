@@ -15,7 +15,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 )
 
-const maxErrorOnlyCapturedRequestBodyBytes int64 = 1 << 20 // 1 MiB
+const (
+	maxCapturedRequestBodyBytes          int64 = 1 << 20 // 1 MiB
+	maxErrorOnlyCapturedRequestBodyBytes       = maxCapturedRequestBodyBytes
+)
 
 // RequestLoggingMiddleware creates a Gin middleware that logs HTTP requests and responses.
 // It captures detailed information about the request and response, including headers and body,
@@ -89,9 +92,6 @@ func isResponsesWebsocketUpgrade(req *http.Request) bool {
 }
 
 func shouldCaptureRequestBody(loggerEnabled bool, req *http.Request) bool {
-	if loggerEnabled {
-		return true
-	}
 	if req == nil || req.Body == nil {
 		return false
 	}
@@ -102,7 +102,7 @@ func shouldCaptureRequestBody(loggerEnabled bool, req *http.Request) bool {
 	if req.ContentLength <= 0 {
 		return false
 	}
-	return req.ContentLength <= maxErrorOnlyCapturedRequestBodyBytes
+	return req.ContentLength <= maxCapturedRequestBodyBytes
 }
 
 // captureRequestInfo extracts relevant information from the incoming HTTP request.

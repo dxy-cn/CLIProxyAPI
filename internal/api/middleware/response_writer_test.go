@@ -3,6 +3,7 @@ package middleware
 import (
 	"bytes"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,6 +83,104 @@ func TestExtractResponseBodySupportsStringOverride(t *testing.T) {
 	body := wrapper.extractResponseBody(c)
 	if string(body) != "override-response-as-string" {
 		t.Fatalf("response body = %q, want %q", string(body), "override-response-as-string")
+	}
+}
+
+func TestResponseWriterCapsBufferedResponseBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+
+	wrapper := NewResponseWriterWrapper(c.Writer, &testRequestLogger{enabled: true}, &RequestInfo{})
+	data := bytes.Repeat([]byte("x"), maxCapturedResponseBodyBytes+1024)
+
+	n, err := wrapper.Write(data)
+	if err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+	if n != len(data) {
+		t.Fatalf("Write bytes = %d, want %d", n, len(data))
+	}
+	if recorder.Body.Len() != len(data) {
+		t.Fatalf("client response bytes = %d, want %d", recorder.Body.Len(), len(data))
+	}
+	if wrapper.body.Len() != maxCapturedResponseBodyBytes {
+		t.Fatalf("buffered response bytes = %d, want %d", wrapper.body.Len(), maxCapturedResponseBodyBytes)
+	}
+}
+
+func TestResponseWriterCapsBufferedResponseBodyFromStringWrites(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+
+	wrapper := NewResponseWriterWrapper(c.Writer, &testRequestLogger{enabled: true}, &RequestInfo{})
+	data := strings.Repeat("x", maxCapturedResponseBodyBytes+1024)
+
+	n, err := wrapper.WriteString(data)
+	if err != nil {
+		t.Fatalf("WriteString error: %v", err)
+	}
+	if n != len(data) {
+		t.Fatalf("WriteString bytes = %d, want %d", n, len(data))
+	}
+	if recorder.Body.Len() != len(data) {
+		t.Fatalf("client response bytes = %d, want %d", recorder.Body.Len(), len(data))
+	}
+	if wrapper.body.Len() != maxCapturedResponseBodyBytes {
+		t.Fatalf("buffered response bytes = %d, want %d", wrapper.body.Len(), maxCapturedResponseBodyBytes)
+	}
+}
+
+func TestResponseWriterCapsStreamingLogChunk(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+
+	wrapper := NewResponseWriterWrapper(c.Writer, &testRequestLogger{enabled: true}, &RequestInfo{})
+	wrapper.isStreaming = true
+	wrapper.chunkChannel = make(chan []byte, 1)
+	data := bytes.Repeat([]byte("x"), maxCapturedStreamingChunkBytes+1024)
+
+	n, err := wrapper.Write(data)
+	if err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+	if n != len(data) {
+		t.Fatalf("Write bytes = %d, want %d", n, len(data))
+	}
+	if recorder.Body.Len() != len(data) {
+		t.Fatalf("client response bytes = %d, want %d", recorder.Body.Len(), len(data))
+	}
+	logged := <-wrapper.chunkChannel
+	if len(logged) != maxCapturedStreamingChunkBytes {
+		t.Fatalf("logged chunk bytes = %d, want %d", len(logged), maxCapturedStreamingChunkBytes)
+	}
+}
+
+func TestResponseWriterCapsStreamingLogStringChunk(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+
+	wrapper := NewResponseWriterWrapper(c.Writer, &testRequestLogger{enabled: true}, &RequestInfo{})
+	wrapper.isStreaming = true
+	wrapper.chunkChannel = make(chan []byte, 1)
+	data := strings.Repeat("x", maxCapturedStreamingChunkBytes+1024)
+
+	n, err := wrapper.WriteString(data)
+	if err != nil {
+		t.Fatalf("WriteString error: %v", err)
+	}
+	if n != len(data) {
+		t.Fatalf("WriteString bytes = %d, want %d", n, len(data))
+	}
+	if recorder.Body.Len() != len(data) {
+		t.Fatalf("client response bytes = %d, want %d", recorder.Body.Len(), len(data))
+	}
+	logged := <-wrapper.chunkChannel
+	if len(logged) != maxCapturedStreamingChunkBytes {
+		t.Fatalf("logged chunk bytes = %d, want %d", len(logged), maxCapturedStreamingChunkBytes)
 	}
 }
 

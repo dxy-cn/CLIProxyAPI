@@ -72,14 +72,34 @@ func TestShouldCaptureRequestBody(t *testing.T) {
 		want          bool
 	}{
 		{
-			name:          "logger enabled always captures",
+			name:          "logger enabled small known size captures",
 			loggerEnabled: true,
 			req: &http.Request{
 				Body:          io.NopCloser(strings.NewReader("{}")),
-				ContentLength: -1,
+				ContentLength: 2,
 				Header:        http.Header{"Content-Type": []string{"application/json"}},
 			},
 			want: true,
+		},
+		{
+			name:          "logger enabled unknown size skipped",
+			loggerEnabled: true,
+			req: &http.Request{
+				Body:          io.NopCloser(strings.NewReader("x")),
+				ContentLength: -1,
+				Header:        http.Header{"Content-Type": []string{"application/json"}},
+			},
+			want: false,
+		},
+		{
+			name:          "logger enabled large known size skipped",
+			loggerEnabled: true,
+			req: &http.Request{
+				Body:          io.NopCloser(strings.NewReader("x")),
+				ContentLength: maxCapturedRequestBodyBytes + 1,
+				Header:        http.Header{"Content-Type": []string{"application/json"}},
+			},
+			want: false,
 		},
 		{
 			name:          "nil request",

@@ -680,14 +680,34 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 		}
 
 		// Batch query: aggregate counts per (source, model) group
-		batchCountQuery := fmt.Sprintf(`
-			SELECT COALESCE(NULLIF(source, ''), 'unknown'), model,
-				COUNT(*), COALESCE(SUM(CASE WHEN failed=0 THEN 1 ELSE 0 END), 0)
-			FROM usage_records
-			WHERE %s AND (%s)
-			GROUP BY COALESCE(NULLIF(source, ''), 'unknown'), model
-		`, whereClause, groupWhereClause)
-		countArgs := append(copyArgs(args), groupWhereArgs...)
+		var batchCountQuery string
+		var countArgs []any
+		if maxRows > 0 {
+			batchCountQuery = fmt.Sprintf(`
+				SELECT COALESCE(NULLIF(source, ''), 'unknown'), model,
+					COUNT(*), COALESCE(SUM(CASE WHEN failed=0 THEN 1 ELSE 0 END), 0)
+				FROM (
+					SELECT source, model, failed, requested_at, id
+					FROM usage_records
+					WHERE %s
+					ORDER BY requested_at DESC, id DESC
+					LIMIT ?
+				) AS limited_usage_records
+				WHERE %s
+				GROUP BY COALESCE(NULLIF(source, ''), 'unknown'), model
+			`, whereClause, groupWhereClause)
+			countArgs = append(copyArgs(args), maxRows)
+			countArgs = append(countArgs, groupWhereArgs...)
+		} else {
+			batchCountQuery = fmt.Sprintf(`
+				SELECT COALESCE(NULLIF(source, ''), 'unknown'), model,
+					COUNT(*), COALESCE(SUM(CASE WHEN failed=0 THEN 1 ELSE 0 END), 0)
+				FROM usage_records
+				WHERE %s AND (%s)
+				GROUP BY COALESCE(NULLIF(source, ''), 'unknown'), model
+			`, whereClause, groupWhereClause)
+			countArgs = append(copyArgs(args), groupWhereArgs...)
+		}
 		countRows, countErr := s.db.QueryContext(ctx, batchCountQuery, countArgs...)
 		if countErr != nil {
 			return MonitorRequestLogsResult{}, fmt.Errorf("usage store: batch group stats count: %w", countErr)
@@ -709,15 +729,36 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 		}
 
 		// Batch query: recent requests per (source, model) group using ROW_NUMBER
-		batchRecentQuery := fmt.Sprintf(`
-			SELECT source_key, model, failed, requested_at FROM (
-				SELECT COALESCE(NULLIF(source, ''), 'unknown') AS source_key, model, failed, requested_at,
-					ROW_NUMBER() OVER(PARTITION BY COALESCE(NULLIF(source, ''), 'unknown'), model ORDER BY requested_at DESC, id DESC) AS rn
-				FROM usage_records
-				WHERE %s AND (%s)
-			) WHERE rn <= ?
-		`, whereClause, groupWhereClause)
-		recentArgs := append(copyArgs(args), groupWhereArgs...)
+		var batchRecentQuery string
+		var recentArgs []any
+		if maxRows > 0 {
+			batchRecentQuery = fmt.Sprintf(`
+				SELECT source_key, model, failed, requested_at FROM (
+					SELECT COALESCE(NULLIF(source, ''), 'unknown') AS source_key, model, failed, requested_at,
+						ROW_NUMBER() OVER(PARTITION BY COALESCE(NULLIF(source, ''), 'unknown'), model ORDER BY requested_at DESC, id DESC) AS rn
+					FROM (
+						SELECT source, model, failed, requested_at, id
+						FROM usage_records
+						WHERE %s
+						ORDER BY requested_at DESC, id DESC
+						LIMIT ?
+					) AS limited_usage_records
+					WHERE %s
+				) WHERE rn <= ?
+			`, whereClause, groupWhereClause)
+			recentArgs = append(copyArgs(args), maxRows)
+			recentArgs = append(recentArgs, groupWhereArgs...)
+		} else {
+			batchRecentQuery = fmt.Sprintf(`
+				SELECT source_key, model, failed, requested_at FROM (
+					SELECT COALESCE(NULLIF(source, ''), 'unknown') AS source_key, model, failed, requested_at,
+						ROW_NUMBER() OVER(PARTITION BY COALESCE(NULLIF(source, ''), 'unknown'), model ORDER BY requested_at DESC, id DESC) AS rn
+					FROM usage_records
+					WHERE %s AND (%s)
+				) WHERE rn <= ?
+			`, whereClause, groupWhereClause)
+			recentArgs = append(copyArgs(args), groupWhereArgs...)
+		}
 		recentArgs = append(recentArgs, recentLimit)
 		recentRows, recentErr := s.db.QueryContext(ctx, batchRecentQuery, recentArgs...)
 		if recentErr != nil {

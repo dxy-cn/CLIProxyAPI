@@ -17,6 +17,8 @@ import (
 const requestBodyOverrideContextKey = "REQUEST_BODY_OVERRIDE"
 const responseBodyOverrideContextKey = "RESPONSE_BODY_OVERRIDE"
 const websocketTimelineOverrideContextKey = "WEBSOCKET_TIMELINE_OVERRIDE"
+const maxCapturedResponseBodyBytes = 1 << 20   // 1 MiB
+const maxCapturedStreamingChunkBytes = 1 << 20 // 1 MiB
 
 // RequestInfo holds essential details of an incoming HTTP request for logging purposes.
 type RequestInfo struct {
@@ -86,14 +88,14 @@ func (w *ResponseWriterWrapper) Write(data []byte) (int, error) {
 		}
 		// For streaming responses: Send to async logging channel (non-blocking)
 		select {
-		case w.chunkChannel <- append([]byte(nil), data...): // Non-blocking send with copy
+		case w.chunkChannel <- cloneStreamingLogChunk(data): // Non-blocking send with copy
 		default: // Channel full, skip logging to avoid blocking
 		}
 		return n, err
 	}
 
 	if w.shouldBufferResponseBody() {
-		w.body.Write(data)
+		w.bufferResponseBody(data)
 	}
 
 	return n, err
@@ -133,16 +135,52 @@ func (w *ResponseWriterWrapper) WriteString(data string) (int, error) {
 			w.firstChunkTimestamp = time.Now()
 		}
 		select {
-		case w.chunkChannel <- []byte(data):
+		case w.chunkChannel <- bytesFromStreamingLogString(data):
 		default:
 		}
 		return n, err
 	}
 
 	if w.shouldBufferResponseBody() {
-		w.body.WriteString(data)
+		w.bufferResponseString(data)
 	}
 	return n, err
+}
+
+func (w *ResponseWriterWrapper) bufferResponseBody(data []byte) {
+	if w.body == nil || len(data) == 0 || w.body.Len() >= maxCapturedResponseBodyBytes {
+		return
+	}
+	remaining := maxCapturedResponseBodyBytes - w.body.Len()
+	if len(data) > remaining {
+		data = data[:remaining]
+	}
+	w.body.Write(data)
+}
+
+func (w *ResponseWriterWrapper) bufferResponseString(data string) {
+	if w.body == nil || data == "" || w.body.Len() >= maxCapturedResponseBodyBytes {
+		return
+	}
+	remaining := maxCapturedResponseBodyBytes - w.body.Len()
+	if len(data) > remaining {
+		data = data[:remaining]
+	}
+	w.body.WriteString(data)
+}
+
+func cloneStreamingLogChunk(data []byte) []byte {
+	if len(data) > maxCapturedStreamingChunkBytes {
+		data = data[:maxCapturedStreamingChunkBytes]
+	}
+	return append([]byte(nil), data...)
+}
+
+func bytesFromStreamingLogString(data string) []byte {
+	if len(data) > maxCapturedStreamingChunkBytes {
+		data = data[:maxCapturedStreamingChunkBytes]
+	}
+	return []byte(data)
 }
 
 // WriteHeader wraps the underlying ResponseWriter's WriteHeader method.

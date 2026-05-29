@@ -97,6 +97,40 @@ func TestSQLiteUsageStoreQueryMonitorRequestLogs_MaxRows(t *testing.T) {
 	assertStringSliceEqual(t, result.Filters.Sources, []string{"source-a"})
 }
 
+func TestSQLiteUsageStoreQueryMonitorRequestLogs_MaxRowsCapsGroupStats(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteUsageStore(t)
+	defer store.Close()
+
+	base := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
+	insertUsageRecords(t, store,
+		UsageRecord{APIKey: "api-1", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-1 * time.Minute), TotalTokens: 10},
+		UsageRecord{APIKey: "api-1", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-2 * time.Minute), Failed: true, TotalTokens: 20},
+		UsageRecord{APIKey: "api-1", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-3 * time.Minute), TotalTokens: 30},
+		UsageRecord{APIKey: "api-1", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-4 * time.Minute), TotalTokens: 40},
+		UsageRecord{APIKey: "api-1", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-5 * time.Minute), TotalTokens: 50},
+	)
+
+	result, err := store.QueryMonitorRequestLogs(ctx, MonitorQueryFilter{MaxRows: 3}, 1, 2, 10)
+	if err != nil {
+		t.Fatalf("QueryMonitorRequestLogs failed: %v", err)
+	}
+
+	stats, ok := result.GroupStats[MonitorGroupKey("source-a", "model-a")]
+	if !ok {
+		t.Fatalf("expected group stats for source-a/model-a")
+	}
+	if stats.Total != 3 || stats.Success != 2 {
+		t.Fatalf("group stats escaped max rows: total=%d success=%d", stats.Total, stats.Success)
+	}
+	if len(stats.Recent) != 3 {
+		t.Fatalf("recent requests escaped max rows: got %d want 3", len(stats.Recent))
+	}
+	if !stats.Recent[0].Timestamp.Equal(base.Add(-3*time.Minute)) || !stats.Recent[2].Timestamp.Equal(base.Add(-1*time.Minute)) {
+		t.Fatalf("recent requests should come from capped newest rows: %+v", stats.Recent)
+	}
+}
+
 func TestSQLiteUsageStoreQueryMonitorRequestLogs_ApiNameMatches(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteUsageStore(t)

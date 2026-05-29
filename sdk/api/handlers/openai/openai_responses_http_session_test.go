@@ -329,6 +329,19 @@ func TestResponsesHTTPStreamRetriesWithMergedTranscriptWhenPreviousResponseIsMis
 	}
 }
 
+func TestResponsesHTTPSessionStoreSkipsOversizedPayloads(t *testing.T) {
+	store := newResponsesHTTPSessionStore(responsesHTTPSessionTTL)
+	store.put("session-1", []byte(`{"model":"test-model"}`), []byte(`[]`))
+	if _, _, ok := store.get("session-1"); !ok {
+		t.Fatal("expected small session payload to be cached")
+	}
+
+	store.put("session-1", bytes.Repeat([]byte("x"), responsesHTTPSessionMaxBytes+1), nil)
+	if _, _, ok := store.get("session-1"); ok {
+		t.Fatal("expected oversized session payload to evict cached session")
+	}
+}
+
 func prefillResponsesHTTPSessionStoreForBenchmark(size int) *responsesHTTPSessionStore {
 	store := newResponsesHTTPSessionStore(responsesHTTPSessionTTL)
 	now := time.Now()

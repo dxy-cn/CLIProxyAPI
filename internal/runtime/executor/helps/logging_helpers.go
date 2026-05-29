@@ -25,6 +25,11 @@ const (
 	apiResponseKey          = "API_RESPONSE"
 	apiWebsocketTimelineKey = "API_WEBSOCKET_TIMELINE"
 	creditsUsedKey          = "__antigravity_credits_used__"
+
+	maxAPIRequestLogBytes        = 1 << 20
+	maxAPIResponseLogBytes       = 1 << 20
+	maxAPIWebsocketTimelineBytes = 256 * 1024
+	maxAPIWebsocketTimelineChunk = 4 * 1024
 )
 
 // UpstreamRequestLog captures the outbound upstream request details for logging.
@@ -84,11 +89,11 @@ func RecordAPIRequest(ctx context.Context, cfg *config.Config, info UpstreamRequ
 	writeHeaders(builder, info.Headers)
 	builder.WriteString("\nBody:\n")
 	if len(info.Body) > 0 {
-		builder.WriteString(string(info.Body))
+		writeLimitedBytes(builder, info.Body, maxAPIRequestLogBytes)
 	} else {
-		builder.WriteString("<empty>")
+		writeLimitedString(builder, "<empty>", maxAPIRequestLogBytes)
 	}
-	builder.WriteString("\n\n")
+	writeLimitedString(builder, "\n\n", maxAPIRequestLogBytes)
 
 	attempt := &upstreamAttempt{
 		index:    index,
@@ -143,9 +148,9 @@ func RecordAPIResponseError(ctx context.Context, cfg *config.Config, err error) 
 		attempt.bodyStarted = false
 	}
 	if attempt.errorWritten {
-		attempt.response.WriteString("\n")
+		writeLimitedString(attempt.response, "\n", maxAPIResponseLogBytes)
 	}
-	attempt.response.WriteString(fmt.Sprintf("Error: %s\n", err.Error()))
+	writeLimitedString(attempt.response, fmt.Sprintf("Error: %s\n", err.Error()), maxAPIResponseLogBytes)
 	attempt.errorWritten = true
 
 	updateAggregatedResponse(ginCtx, attempts)
@@ -184,9 +189,9 @@ func AppendAPIResponseChunk(ctx context.Context, cfg *config.Config, chunk []byt
 		if attempt.prevWasSSEEvent && currentChunkIsSSEData {
 			separator = "\n"
 		}
-		attempt.response.WriteString(separator)
+		writeLimitedString(attempt.response, separator, maxAPIResponseLogBytes)
 	}
-	attempt.response.WriteString(string(data))
+	writeLimitedBytes(attempt.response, data, maxAPIResponseLogBytes)
 	attempt.bodyHasContent = true
 	attempt.prevWasSSEEvent = currentChunkIsSSEEvent
 
@@ -376,7 +381,10 @@ func updateAggregatedRequest(ginCtx *gin.Context, attempts []*upstreamAttempt) {
 	}
 	var builder strings.Builder
 	for _, attempt := range attempts {
-		builder.WriteString(attempt.request)
+		writeLimitedString(&builder, attempt.request, maxAPIRequestLogBytes)
+		if builder.Len() >= maxAPIRequestLogBytes {
+			break
+		}
 	}
 	ginCtx.Set(apiRequestKey, []byte(builder.String()))
 }
@@ -394,15 +402,40 @@ func updateAggregatedResponse(ginCtx *gin.Context, attempts []*upstreamAttempt) 
 		if responseText == "" {
 			continue
 		}
-		builder.WriteString(responseText)
+		writeLimitedString(&builder, responseText, maxAPIResponseLogBytes)
 		if !strings.HasSuffix(responseText, "\n") {
-			builder.WriteString("\n")
+			writeLimitedString(&builder, "\n", maxAPIResponseLogBytes)
 		}
 		if idx < len(attempts)-1 {
-			builder.WriteString("\n")
+			writeLimitedString(&builder, "\n", maxAPIResponseLogBytes)
+		}
+		if builder.Len() >= maxAPIResponseLogBytes {
+			break
 		}
 	}
 	ginCtx.Set(apiResponseKey, []byte(builder.String()))
+}
+
+func writeLimitedString(builder *strings.Builder, value string, limit int) {
+	if builder == nil || value == "" || limit <= 0 || builder.Len() >= limit {
+		return
+	}
+	remaining := limit - builder.Len()
+	if len(value) > remaining {
+		value = value[:remaining]
+	}
+	builder.WriteString(value)
+}
+
+func writeLimitedBytes(builder *strings.Builder, value []byte, limit int) {
+	if builder == nil || len(value) == 0 || limit <= 0 || builder.Len() >= limit {
+		return
+	}
+	remaining := limit - builder.Len()
+	if len(value) > remaining {
+		value = value[:remaining]
+	}
+	builder.Write(value)
 }
 
 func appendAPIWebsocketTimeline(ginCtx *gin.Context, chunk []byte) {
@@ -413,14 +446,28 @@ func appendAPIWebsocketTimeline(ginCtx *gin.Context, chunk []byte) {
 	if len(data) == 0 {
 		return
 	}
+	if len(data) > maxAPIWebsocketTimelineChunk {
+		data = data[:maxAPIWebsocketTimelineChunk]
+	}
 	if existing, exists := ginCtx.Get(apiWebsocketTimelineKey); exists {
 		if existingBytes, ok := existing.([]byte); ok && len(existingBytes) > 0 {
-			combined := make([]byte, 0, len(existingBytes)+len(data)+2)
-			combined = append(combined, existingBytes...)
-			if !bytes.HasSuffix(existingBytes, []byte("\n")) {
-				combined = append(combined, '\n')
+			if len(existingBytes) >= maxAPIWebsocketTimelineBytes {
+				return
 			}
-			combined = append(combined, '\n')
+			separator := []byte{'\n'}
+			if !bytes.HasSuffix(existingBytes, []byte("\n")) {
+				separator = []byte{'\n', '\n'}
+			}
+			remaining := maxAPIWebsocketTimelineBytes - len(existingBytes)
+			if remaining <= len(separator) {
+				return
+			}
+			if len(data) > remaining-len(separator) {
+				data = data[:remaining-len(separator)]
+			}
+			combined := make([]byte, 0, len(existingBytes)+len(separator)+len(data))
+			combined = append(combined, existingBytes...)
+			combined = append(combined, separator...)
 			combined = append(combined, data...)
 			ginCtx.Set(apiWebsocketTimelineKey, combined)
 			return

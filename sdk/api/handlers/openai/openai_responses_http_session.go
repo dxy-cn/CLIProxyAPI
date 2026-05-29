@@ -17,6 +17,7 @@ const (
 	responsesHTTPSessionTTL             = 30 * time.Minute
 	responsesHTTPSessionCleanupInterval = time.Minute
 	responsesHTTPSessionMaxSessions     = 8192
+	responsesHTTPSessionMaxBytes        = 1 << 20 // 1 MiB
 )
 
 var defaultResponsesHTTPSessionStore = newResponsesHTTPSessionStore(responsesHTTPSessionTTL)
@@ -82,6 +83,10 @@ func (s *responsesHTTPSessionStore) put(sessionKey string, lastRequest []byte, l
 	defer s.mu.Unlock()
 
 	s.maybeCleanupLocked(now)
+	if len(lastRequest)+len(lastResponseBody) > responsesHTTPSessionMaxBytes {
+		delete(s.sessions, sessionKey)
+		return
+	}
 	s.sessions[sessionKey] = &responsesHTTPSessionState{
 		lastSeen:         now,
 		lastRequest:      bytes.Clone(lastRequest),

@@ -32,6 +32,78 @@ func TestRequestStatisticsRecordIncludesLatency(t *testing.T) {
 	}
 }
 
+func TestRequestStatisticsCapsRetainedDetails(t *testing.T) {
+	stats := NewRequestStatistics()
+	stats.maxDetails = 3
+	start := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)
+
+	for i := 0; i < 5; i++ {
+		stats.Record(context.Background(), coreusage.Record{
+			APIKey:      "test-key",
+			Model:       "gpt-5.4",
+			RequestedAt: start.Add(time.Duration(i) * time.Second),
+			Detail: coreusage.Detail{
+				InputTokens: 1,
+				TotalTokens: 1,
+			},
+		})
+	}
+
+	snapshot := stats.Snapshot()
+	model := snapshot.APIs["test-key"].Models["gpt-5.4"]
+	if model.TotalRequests != 5 {
+		t.Fatalf("total requests = %d, want 5", model.TotalRequests)
+	}
+	if len(model.Details) != 3 {
+		t.Fatalf("details len = %d, want 3", len(model.Details))
+	}
+	if got := model.Details[0].Timestamp; !got.Equal(start.Add(2 * time.Second)) {
+		t.Fatalf("oldest retained timestamp = %s, want %s", got, start.Add(2*time.Second))
+	}
+}
+
+func TestRequestStatisticsCapsRetainedDetailsAcrossModels(t *testing.T) {
+	stats := NewRequestStatistics()
+	stats.maxDetails = 3
+	start := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)
+
+	records := []struct {
+		apiKey string
+		model  string
+	}{
+		{"api-a", "model-a"},
+		{"api-b", "model-b"},
+		{"api-a", "model-a"},
+		{"api-b", "model-b"},
+		{"api-a", "model-a"},
+	}
+	for i, record := range records {
+		stats.Record(context.Background(), coreusage.Record{
+			APIKey:      record.apiKey,
+			Model:       record.model,
+			RequestedAt: start.Add(time.Duration(i) * time.Second),
+			Detail: coreusage.Detail{
+				InputTokens: 1,
+				TotalTokens: 1,
+			},
+		})
+	}
+
+	snapshot := stats.Snapshot()
+	totalDetails := 0
+	for _, api := range snapshot.APIs {
+		for _, model := range api.Models {
+			totalDetails += len(model.Details)
+		}
+	}
+	if totalDetails != 3 {
+		t.Fatalf("retained details = %d, want 3", totalDetails)
+	}
+	if snapshot.TotalRequests != 5 {
+		t.Fatalf("snapshot total requests = %d, want 5", snapshot.TotalRequests)
+	}
+}
+
 func TestRequestStatisticsMergeSnapshotDedupIgnoresLatency(t *testing.T) {
 	stats := NewRequestStatistics()
 	timestamp := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)

@@ -41,6 +41,8 @@ type claudeToResponsesState struct {
 
 var dataTag = []byte("data:")
 
+const maxClaudeSSELineBytes = 52_428_800 // 50 MiB
+
 func pickRequestJSON(originalRequestRawJSON, requestRawJSON []byte) []byte {
 	if len(originalRequestRawJSON) > 0 && gjson.ValidBytes(originalRequestRawJSON) {
 		return originalRequestRawJSON
@@ -444,8 +446,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 		// Use a simple scanner to iterate through raw bytes
 		// Note: extremely large responses may require increasing the buffer
 		scanner := bufio.NewScanner(bytes.NewReader(rawJSON))
-		buf := make([]byte, 52_428_800) // 50MB
-		scanner.Buffer(buf, 52_428_800)
+		scanner.Buffer(make([]byte, 0, 64*1024), maxClaudeSSELineBytes)
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			if !bytes.HasPrefix(line, dataTag) {

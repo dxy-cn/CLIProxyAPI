@@ -71,6 +71,15 @@ type RequestStatistics struct {
 	requestsByHour map[int]int64
 	tokensByDay    map[string]int64
 	tokensByHour   map[int]int64
+
+	maxDetails  int
+	detailOrder []requestDetailRef
+	detailHead  int
+}
+
+type requestDetailRef struct {
+	apiKey string
+	model  string
 }
 
 // apiStats holds aggregated metrics for a single API key.
@@ -85,6 +94,7 @@ type modelStats struct {
 	TotalRequests int64
 	TotalTokens   int64
 	Details       []RequestDetail
+	detailHead    int
 }
 
 // RequestDetail stores the timestamp, latency, and token usage for a single request.
@@ -138,6 +148,8 @@ type ModelSnapshot struct {
 
 var defaultRequestStatistics = NewRequestStatistics()
 
+const defaultMaxInMemoryRequestDetails = 50000
+
 // GetRequestStatistics returns the shared statistics store.
 func GetRequestStatistics() *RequestStatistics { return defaultRequestStatistics }
 
@@ -149,6 +161,7 @@ func NewRequestStatistics() *RequestStatistics {
 		requestsByHour: make(map[int]int64),
 		tokensByDay:    make(map[string]int64),
 		tokensByHour:   make(map[int]int64),
+		maxDetails:     defaultMaxInMemoryRequestDetails,
 	}
 }
 
@@ -198,7 +211,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		stats = &apiStats{Models: make(map[string]*modelStats)}
 		s.apis[statsKey] = stats
 	}
-	s.updateAPIStats(stats, modelName, RequestDetail{
+	s.updateAPIStats(statsKey, stats, modelName, RequestDetail{
 		Timestamp:           timestamp,
 		LatencyMs:           normaliseLatency(record.Latency),
 		FirstTokenLatencyMs: normaliseLatency(record.FirstTokenLatency),
@@ -214,7 +227,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	s.tokensByHour[hourKey] += totalTokens
 }
 
-func (s *RequestStatistics) updateAPIStats(stats *apiStats, model string, detail RequestDetail) {
+func (s *RequestStatistics) updateAPIStats(apiKey string, stats *apiStats, model string, detail RequestDetail) {
 	stats.TotalRequests++
 	stats.TotalTokens += detail.Tokens.TotalTokens
 	modelStatsValue, ok := stats.Models[model]
@@ -224,7 +237,66 @@ func (s *RequestStatistics) updateAPIStats(stats *apiStats, model string, detail
 	}
 	modelStatsValue.TotalRequests++
 	modelStatsValue.TotalTokens += detail.Tokens.TotalTokens
+	if s.maxDetails == 0 {
+		return
+	}
 	modelStatsValue.Details = append(modelStatsValue.Details, detail)
+	if s.maxDetails > 0 {
+		s.detailOrder = append(s.detailOrder, requestDetailRef{apiKey: apiKey, model: model})
+		s.evictOldDetailsLocked()
+	}
+}
+
+func (s *RequestStatistics) evictOldDetailsLocked() {
+	for s.maxDetails >= 0 && len(s.detailOrder)-s.detailHead > s.maxDetails {
+		ref := s.detailOrder[s.detailHead]
+		s.detailOrder[s.detailHead] = requestDetailRef{}
+		s.detailHead++
+
+		stats := s.apis[ref.apiKey]
+		if stats == nil {
+			continue
+		}
+		modelStatsValue := stats.Models[ref.model]
+		if modelStatsValue == nil || modelStatsValue.detailHead >= len(modelStatsValue.Details) {
+			continue
+		}
+		modelStatsValue.Details[modelStatsValue.detailHead] = RequestDetail{}
+		modelStatsValue.detailHead++
+		compactModelDetails(modelStatsValue)
+	}
+	s.compactDetailOrderLocked()
+}
+
+func (s *RequestStatistics) compactDetailOrderLocked() {
+	if s.detailHead == 0 {
+		return
+	}
+	if s.detailHead < 4096 && s.detailHead*2 < len(s.detailOrder) {
+		return
+	}
+	live := append([]requestDetailRef(nil), s.detailOrder[s.detailHead:]...)
+	s.detailOrder = live
+	s.detailHead = 0
+}
+
+func compactModelDetails(stats *modelStats) {
+	if stats == nil || stats.detailHead == 0 {
+		return
+	}
+	if stats.detailHead < 4096 && stats.detailHead*2 < len(stats.Details) {
+		return
+	}
+	live := append([]RequestDetail(nil), stats.Details[stats.detailHead:]...)
+	stats.Details = live
+	stats.detailHead = 0
+}
+
+func liveRequestDetails(stats *modelStats) []RequestDetail {
+	if stats == nil || stats.detailHead >= len(stats.Details) {
+		return nil
+	}
+	return stats.Details[stats.detailHead:]
 }
 
 // Snapshot returns a copy of the aggregated metrics for external consumption.
@@ -250,8 +322,9 @@ func (s *RequestStatistics) Snapshot() StatisticsSnapshot {
 			Models:        make(map[string]ModelSnapshot, len(stats.Models)),
 		}
 		for modelName, modelStatsValue := range stats.Models {
-			requestDetails := make([]RequestDetail, len(modelStatsValue.Details))
-			copy(requestDetails, modelStatsValue.Details)
+			liveDetails := liveRequestDetails(modelStatsValue)
+			requestDetails := make([]RequestDetail, len(liveDetails))
+			copy(requestDetails, liveDetails)
 			apiSnapshot.Models[modelName] = ModelSnapshot{
 				TotalRequests: modelStatsValue.TotalRequests,
 				TotalTokens:   modelStatsValue.TotalTokens,
@@ -311,7 +384,7 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 			if modelStatsValue == nil {
 				continue
 			}
-			for _, detail := range modelStatsValue.Details {
+			for _, detail := range liveRequestDetails(modelStatsValue) {
 				seen[dedupKey(apiName, modelName, detail)] = struct{}{}
 			}
 		}
@@ -374,7 +447,7 @@ func (s *RequestStatistics) recordImported(apiName, modelName string, stats *api
 	}
 	s.totalTokens += totalTokens
 
-	s.updateAPIStats(stats, modelName, detail)
+	s.updateAPIStats(apiName, stats, modelName, detail)
 
 	dayKey := detail.Timestamp.Format("2006-01-02")
 	hourKey := detail.Timestamp.Hour()
