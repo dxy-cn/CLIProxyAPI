@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '手动指定镜像标签'
+        description: "手动指定镜像标签"
         required: false
-        default: 'manual'
+        default: "manual"
 
 env:
   REGISTRY: ghcr.io
@@ -117,9 +117,20 @@ jobs:
       - name: Generate version
         id: version
         run: |
-          # Remove fork/ prefix and v prefix for semver compatibility
-          VERSION=$(git describe --tags --always --dirty | sed 's|^fork/||' | sed 's|^v||')
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            # Remove fork/ prefix and v prefix for semver compatibility
+            VERSION="${GITHUB_REF_NAME#fork/}"
+            VERSION="${VERSION#v}"
+            PRIMARY_TAG="$VERSION"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION=$(git describe --tags --always --dirty | sed 's|^fork/||' | sed 's|^v||')
+            PRIMARY_TAG="${{ github.event.inputs.tag }}"
+          else
+            VERSION=$(git rev-parse --short HEAD)
+            PRIMARY_TAG="latest"
+          fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "PRIMARY_TAG=$PRIMARY_TAG" >> $GITHUB_OUTPUT
 
       - name: Download digests
         uses: actions/download-artifact@v4
@@ -144,10 +155,11 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}
           tags: |
-            type=semver,pattern={{version}},value=${{ steps.version.outputs.VERSION }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.VERSION }}
-            type=semver,pattern={{major}},value=${{ steps.version.outputs.VERSION }}
-            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
+            type=semver,pattern={{version}},value=${{ steps.version.outputs.VERSION }},enable=${{ github.ref_type == 'tag' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.VERSION }},enable=${{ github.ref_type == 'tag' }}
+            type=semver,pattern={{major}},value=${{ steps.version.outputs.VERSION }},enable=${{ github.ref_type == 'tag' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag') }}
+            type=sha,prefix=sha-,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
             type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' }}
 
       - name: Create manifest list
@@ -159,4 +171,4 @@ jobs:
 
       - name: Inspect image
         run: |
-          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:${{ steps.version.outputs.VERSION }}
+          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:${{ steps.version.outputs.PRIMARY_TAG }}
