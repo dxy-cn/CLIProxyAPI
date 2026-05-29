@@ -2,6 +2,8 @@ package openai
 
 import (
 	"bytes"
+	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -11,14 +13,21 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-const responsesHTTPSessionTTL = 30 * time.Minute
+const (
+	responsesHTTPSessionTTL             = 30 * time.Minute
+	responsesHTTPSessionCleanupInterval = time.Minute
+	responsesHTTPSessionMaxSessions     = 8192
+)
 
 var defaultResponsesHTTPSessionStore = newResponsesHTTPSessionStore(responsesHTTPSessionTTL)
 
 type responsesHTTPSessionStore struct {
-	mu       sync.Mutex
-	ttl      time.Duration
-	sessions map[string]*responsesHTTPSessionState
+	mu              sync.Mutex
+	ttl             time.Duration
+	cleanupInterval time.Duration
+	maxSessions     int
+	nextCleanupAt   time.Time
+	sessions        map[string]*responsesHTTPSessionState
 }
 
 type responsesHTTPSessionState struct {
@@ -32,8 +41,10 @@ func newResponsesHTTPSessionStore(ttl time.Duration) *responsesHTTPSessionStore 
 		ttl = responsesHTTPSessionTTL
 	}
 	return &responsesHTTPSessionStore{
-		ttl:      ttl,
-		sessions: make(map[string]*responsesHTTPSessionState),
+		ttl:             ttl,
+		cleanupInterval: responsesHTTPSessionCleanupInterval,
+		maxSessions:     responsesHTTPSessionMaxSessions,
+		sessions:        make(map[string]*responsesHTTPSessionState),
 	}
 }
 
@@ -47,9 +58,13 @@ func (s *responsesHTTPSessionStore) get(sessionKey string) ([]byte, []byte, bool
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.cleanupLocked(now)
+	s.maybeCleanupLocked(now)
 	session, ok := s.sessions[sessionKey]
 	if !ok || session == nil {
+		return nil, nil, false
+	}
+	if s.ttl > 0 && now.Sub(session.lastSeen) > s.ttl {
+		delete(s.sessions, sessionKey)
 		return nil, nil, false
 	}
 	session.lastSeen = now
@@ -66,11 +81,24 @@ func (s *responsesHTTPSessionStore) put(sessionKey string, lastRequest []byte, l
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.cleanupLocked(now)
+	s.maybeCleanupLocked(now)
 	s.sessions[sessionKey] = &responsesHTTPSessionState{
 		lastSeen:         now,
 		lastRequest:      bytes.Clone(lastRequest),
 		lastResponseBody: bytes.Clone(lastResponseBody),
+	}
+	s.enforceMaxSessionsLocked()
+}
+
+func (s *responsesHTTPSessionStore) maybeCleanupLocked(now time.Time) {
+	if s == nil || s.ttl <= 0 {
+		return
+	}
+	if s.cleanupInterval <= 0 || s.nextCleanupAt.IsZero() || !now.Before(s.nextCleanupAt) {
+		s.cleanupLocked(now)
+		if s.cleanupInterval > 0 {
+			s.nextCleanupAt = now.Add(s.cleanupInterval)
+		}
 	}
 }
 
@@ -83,6 +111,48 @@ func (s *responsesHTTPSessionStore) cleanupLocked(now time.Time) {
 			delete(s.sessions, key)
 		}
 	}
+}
+
+func (s *responsesHTTPSessionStore) enforceMaxSessionsLocked() {
+	if s == nil || s.maxSessions <= 0 || len(s.sessions) <= s.maxSessions {
+		return
+	}
+
+	type sessionEntry struct {
+		key      string
+		lastSeen time.Time
+	}
+	entries := make([]sessionEntry, 0, len(s.sessions))
+	for key, session := range s.sessions {
+		if session == nil {
+			delete(s.sessions, key)
+			continue
+		}
+		entries = append(entries, sessionEntry{key: key, lastSeen: session.lastSeen})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].lastSeen.Before(entries[j].lastSeen)
+	})
+	for len(s.sessions) > s.maxSessions && len(entries) > 0 {
+		oldest := entries[0]
+		entries = entries[1:]
+		delete(s.sessions, oldest.key)
+	}
+}
+
+func responsesHTTPSessionKey(req *http.Request) string {
+	if req == nil {
+		return ""
+	}
+	if raw := strings.TrimSpace(req.Header.Get("X-Codex-Turn-Metadata")); raw != "" {
+		if sessionID := strings.TrimSpace(gjson.Get(raw, "session_id").String()); sessionID != "" {
+			return sessionID
+		}
+	}
+	if sessionID := strings.TrimSpace(req.Header.Get("Session_id")); sessionID != "" {
+		return sessionID
+	}
+	return ""
 }
 
 func responsesRequestUsesPreviousResponseID(rawJSON []byte) bool {

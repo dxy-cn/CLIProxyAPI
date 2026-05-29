@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
@@ -19,6 +20,27 @@ import (
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
 	"github.com/tidwall/gjson"
 )
+
+func resetResponsesHTTPSessionStoreForTest(t *testing.T) *responsesHTTPSessionStore {
+	t.Helper()
+
+	store := newResponsesHTTPSessionStore(responsesHTTPSessionTTL)
+	previous := defaultResponsesHTTPSessionStore
+	defaultResponsesHTTPSessionStore = store
+	t.Cleanup(func() {
+		defaultResponsesHTTPSessionStore = previous
+	})
+	return store
+}
+
+func responsesHTTPSessionStoreLenForTest(store *responsesHTTPSessionStore) int {
+	if store == nil {
+		return 0
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return len(store.sessions)
+}
 
 type responsesHTTPFallbackExecutor struct {
 	mu              sync.Mutex
@@ -116,18 +138,45 @@ func newResponsesHTTPTestHandler(t *testing.T, executor *responsesHTTPFallbackEx
 	return NewOpenAIResponsesAPIHandler(base), manager
 }
 
-func TestResponsesHTTPRetriesWithMergedTranscriptWhenPreviousResponseIsMissing(t *testing.T) {
+func TestResponsesHTTPDoesNotStoreSessionForClientRequestIDOnly(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	store := resetResponsesHTTPSessionStoreForTest(t)
 
 	executor := &responsesHTTPFallbackExecutor{}
 	h, _ := newResponsesHTTPTestHandler(t, executor)
 	router := gin.New()
 	router.POST("/v1/responses", h.Responses)
 
-	sessionID := "session-http-fallback"
+	for i := 0; i < 4; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"test-model","input":[{"type":"message","id":"msg-1"}]}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Client-Request-Id", fmt.Sprintf("request-%d", i))
+		resp := httptest.NewRecorder()
+		router.ServeHTTP(resp, req)
+
+		if resp.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d, want %d; body=%s", i, resp.Code, http.StatusOK, resp.Body.String())
+		}
+	}
+
+	if got := responsesHTTPSessionStoreLenForTest(store); got != 0 {
+		t.Fatalf("session store size = %d, want 0 for client request id only", got)
+	}
+}
+
+func TestResponsesHTTPUsesStableTurnMetadataSessionAcrossRequestIDs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	resetResponsesHTTPSessionStoreForTest(t)
+
+	executor := &responsesHTTPFallbackExecutor{}
+	h, _ := newResponsesHTTPTestHandler(t, executor)
+	router := gin.New()
+	router.POST("/v1/responses", h.Responses)
+
 	firstReq := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"test-model","input":[{"type":"message","id":"msg-1"}]}`))
 	firstReq.Header.Set("Content-Type", "application/json")
-	firstReq.Header.Set("X-Client-Request-Id", sessionID)
+	firstReq.Header.Set("X-Client-Request-Id", "request-1")
+	firstReq.Header.Set("X-Codex-Turn-Metadata", `{"session_id":"stable-session"}`)
 	firstResp := httptest.NewRecorder()
 	router.ServeHTTP(firstResp, firstReq)
 
@@ -137,7 +186,48 @@ func TestResponsesHTTPRetriesWithMergedTranscriptWhenPreviousResponseIsMissing(t
 
 	secondReq := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"test-model","previous_response_id":"resp-upstream-1","input":[{"type":"message","id":"msg-2"}]}`))
 	secondReq.Header.Set("Content-Type", "application/json")
-	secondReq.Header.Set("X-Client-Request-Id", sessionID)
+	secondReq.Header.Set("X-Client-Request-Id", "request-2")
+	secondReq.Header.Set("X-Codex-Turn-Metadata", `{"session_id":"stable-session"}`)
+	secondResp := httptest.NewRecorder()
+	router.ServeHTTP(secondResp, secondReq)
+
+	if secondResp.Code != http.StatusOK {
+		t.Fatalf("second status = %d, want %d; body=%s", secondResp.Code, http.StatusOK, secondResp.Body.String())
+	}
+	if gjson.Get(secondResp.Body.String(), "error.code").Exists() {
+		t.Fatalf("unexpected fallback error body: %s", secondResp.Body.String())
+	}
+
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+	if executor.executeCalls != 3 {
+		t.Fatalf("execute calls = %d, want 3", executor.executeCalls)
+	}
+}
+
+func TestResponsesHTTPRetriesWithMergedTranscriptWhenPreviousResponseIsMissing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	resetResponsesHTTPSessionStoreForTest(t)
+
+	executor := &responsesHTTPFallbackExecutor{}
+	h, _ := newResponsesHTTPTestHandler(t, executor)
+	router := gin.New()
+	router.POST("/v1/responses", h.Responses)
+
+	sessionID := "session-http-fallback"
+	firstReq := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"test-model","input":[{"type":"message","id":"msg-1"}]}`))
+	firstReq.Header.Set("Content-Type", "application/json")
+	firstReq.Header.Set("X-Codex-Turn-Metadata", fmt.Sprintf(`{"session_id":%q}`, sessionID))
+	firstResp := httptest.NewRecorder()
+	router.ServeHTTP(firstResp, firstReq)
+
+	if firstResp.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want %d; body=%s", firstResp.Code, http.StatusOK, firstResp.Body.String())
+	}
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"test-model","previous_response_id":"resp-upstream-1","input":[{"type":"message","id":"msg-2"}]}`))
+	secondReq.Header.Set("Content-Type", "application/json")
+	secondReq.Header.Set("X-Codex-Turn-Metadata", fmt.Sprintf(`{"session_id":%q}`, sessionID))
 	secondResp := httptest.NewRecorder()
 	router.ServeHTTP(secondResp, secondReq)
 
@@ -176,6 +266,7 @@ func TestResponsesHTTPRetriesWithMergedTranscriptWhenPreviousResponseIsMissing(t
 
 func TestResponsesHTTPStreamRetriesWithMergedTranscriptWhenPreviousResponseIsMissing(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	resetResponsesHTTPSessionStoreForTest(t)
 
 	executor := &responsesHTTPFallbackExecutor{}
 	h, _ := newResponsesHTTPTestHandler(t, executor)
@@ -185,7 +276,7 @@ func TestResponsesHTTPStreamRetriesWithMergedTranscriptWhenPreviousResponseIsMis
 	sessionID := "session-http-stream-fallback"
 	firstReq := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"test-model","stream":true,"input":[{"type":"message","id":"msg-1"}]}`))
 	firstReq.Header.Set("Content-Type", "application/json")
-	firstReq.Header.Set("X-Client-Request-Id", sessionID)
+	firstReq.Header.Set("X-Codex-Turn-Metadata", fmt.Sprintf(`{"session_id":%q}`, sessionID))
 	firstResp := httptest.NewRecorder()
 	router.ServeHTTP(firstResp, firstReq)
 
@@ -198,7 +289,7 @@ func TestResponsesHTTPStreamRetriesWithMergedTranscriptWhenPreviousResponseIsMis
 
 	secondReq := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"test-model","stream":true,"previous_response_id":"resp-upstream-1","input":[{"type":"message","id":"msg-2"}]}`))
 	secondReq.Header.Set("Content-Type", "application/json")
-	secondReq.Header.Set("X-Client-Request-Id", sessionID)
+	secondReq.Header.Set("X-Codex-Turn-Metadata", fmt.Sprintf(`{"session_id":%q}`, sessionID))
 	secondResp := httptest.NewRecorder()
 	router.ServeHTTP(secondResp, secondReq)
 
@@ -235,5 +326,45 @@ func TestResponsesHTTPStreamRetriesWithMergedTranscriptWhenPreviousResponseIsMis
 		input[1].Get("id").String() != "assistant-1" ||
 		input[2].Get("id").String() != "msg-2" {
 		t.Fatalf("unexpected stream fallback transcript: %s", fallback)
+	}
+}
+
+func prefillResponsesHTTPSessionStoreForBenchmark(size int) *responsesHTTPSessionStore {
+	store := newResponsesHTTPSessionStore(responsesHTTPSessionTTL)
+	now := time.Now()
+	store.nextCleanupAt = now.Add(time.Hour)
+	for i := 0; i < size; i++ {
+		store.sessions[fmt.Sprintf("session-%d", i)] = &responsesHTTPSessionState{
+			lastSeen:         now,
+			lastRequest:      []byte(`{"model":"test-model","input":[{"type":"message","id":"msg-1"}]}`),
+			lastResponseBody: []byte(`[{"type":"message","id":"assistant-1"}]`),
+		}
+	}
+	return store
+}
+
+func BenchmarkResponsesHTTPSessionStoreGetPrefilled(b *testing.B) {
+	for _, size := range []int{1, 100, 1000, 5000} {
+		b.Run(fmt.Sprintf("sessions_%d", size), func(b *testing.B) {
+			store := prefillResponsesHTTPSessionStoreForBenchmark(size)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				store.get("session-0")
+			}
+		})
+	}
+}
+
+func BenchmarkResponsesHTTPSessionStorePutPrefilled(b *testing.B) {
+	for _, size := range []int{1, 100, 1000, 5000} {
+		b.Run(fmt.Sprintf("sessions_%d", size), func(b *testing.B) {
+			store := prefillResponsesHTTPSessionStoreForBenchmark(size)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				store.put("session-0", []byte(`{"model":"test-model"}`), []byte(`[]`))
+			}
+		})
 	}
 }

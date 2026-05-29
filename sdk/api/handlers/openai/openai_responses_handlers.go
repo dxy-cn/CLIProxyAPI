@@ -319,8 +319,12 @@ func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
 func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSON []byte) {
 	c.Header("Content-Type", "application/json")
 
-	sessionKey := websocketDownstreamSessionKey(c.Request)
-	lastRequest, lastResponseBody, _ := defaultResponsesHTTPSessionStore.get(sessionKey)
+	sessionKey := responsesHTTPSessionKey(c.Request)
+	var lastRequest []byte
+	var lastResponseBody []byte
+	if responsesRequestUsesPreviousResponseID(rawJSON) && sessionKey != "" {
+		lastRequest, lastResponseBody, _ = defaultResponsesHTTPSessionStore.get(sessionKey)
+	}
 
 	executeRequest := func(requestJSON []byte) ([]byte, http.Header, *interfaces.ErrorMessage) {
 		modelName := gjson.GetBytes(requestJSON, "model").String()
@@ -383,8 +387,12 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 		return
 	}
 
-	sessionKey := websocketDownstreamSessionKey(c.Request)
-	lastRequest, lastResponseBody, _ := defaultResponsesHTTPSessionStore.get(sessionKey)
+	sessionKey := responsesHTTPSessionKey(c.Request)
+	var lastRequest []byte
+	var lastResponseBody []byte
+	if responsesRequestUsesPreviousResponseID(rawJSON) && sessionKey != "" {
+		lastRequest, lastResponseBody, _ = defaultResponsesHTTPSessionStore.get(sessionKey)
+	}
 
 	executeRequest := func(requestJSON []byte) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage, func(error)) {
 		modelName := gjson.GetBytes(requestJSON, "model").String()
