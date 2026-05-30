@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -49,8 +50,9 @@ type ErrorDetail struct {
 const idempotencyKeyMetadataKey = "idempotency_key"
 
 const (
-	defaultStreamingKeepAliveSeconds = 0
-	defaultStreamingBootstrapRetries = 0
+	defaultStreamingKeepAliveSeconds         = 0
+	defaultStreamingBootstrapRetries         = 0
+	defaultStreamingFirstChunkTimeoutSeconds = 0
 )
 
 type pinnedAuthContextKey struct{}
@@ -201,6 +203,18 @@ func StreamingBootstrapRetries(cfg *config.SDKConfig) int {
 		retries = 0
 	}
 	return retries
+}
+
+// StreamingFirstChunkTimeout returns how long a streaming request may wait for the first upstream payload.
+func StreamingFirstChunkTimeout(cfg *config.SDKConfig) time.Duration {
+	seconds := defaultStreamingFirstChunkTimeoutSeconds
+	if cfg != nil {
+		seconds = cfg.Streaming.FirstChunkTimeoutSeconds
+	}
+	if seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // PassthroughHeadersEnabled returns whether upstream response headers should be forwarded to clients.
@@ -698,7 +712,14 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 		Headers:         headersFromContext(ctx),
 	}
 	opts.Metadata = reqMeta
-	streamResult, err := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
+	firstChunkTimeout := StreamingFirstChunkTimeout(h.Cfg)
+	maxBootstrapRetries := StreamingBootstrapRetries(h.Cfg)
+	bootstrapRetries := 0
+	streamResult, streamCancel, err, timedOut := h.executeStreamBootstrapAttempt(ctx, providers, req, opts, firstChunkTimeout)
+	for err != nil && timedOut && bootstrapRetries < maxBootstrapRetries {
+		bootstrapRetries++
+		streamResult, streamCancel, err, timedOut = h.executeStreamBootstrapAttempt(ctx, providers, req, opts, firstChunkTimeout)
+	}
 	if err != nil {
 		err = enrichAuthSelectionError(err, providers, normalizedModel)
 		errChan := make(chan *interfaces.ErrorMessage, 1)
@@ -734,9 +755,12 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 	go func() {
 		defer close(dataChan)
 		defer close(errChan)
+		defer func() {
+			if streamCancel != nil {
+				streamCancel()
+			}
+		}()
 		sentPayload := false
-		bootstrapRetries := 0
-		maxBootstrapRetries := StreamingBootstrapRetries(h.Cfg)
 
 		sendErr := func(msg *interfaces.ErrorMessage) bool {
 			if ctx == nil {
@@ -802,11 +826,16 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 					if !sentPayload {
 						if bootstrapRetries < maxBootstrapRetries && bootstrapEligible(streamErr) {
 							bootstrapRetries++
-							retryResult, retryErr := h.AuthManager.ExecuteStream(ctx, providers, req, opts)
+							if streamCancel != nil {
+								streamCancel()
+								streamCancel = nil
+							}
+							retryResult, retryCancel, retryErr, _ := h.executeStreamBootstrapAttempt(ctx, providers, req, opts, firstChunkTimeout)
 							if retryErr == nil {
 								if passthroughHeadersEnabled {
 									replaceHeader(upstreamHeaders, FilterUpstreamHeaders(retryResult.Headers))
 								}
+								streamCancel = retryCancel
 								chunks = retryResult.Chunks
 								continue outer
 							}
@@ -845,6 +874,55 @@ func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handl
 		}
 	}()
 	return dataChan, upstreamHeaders, errChan
+}
+
+func (h *BaseAPIHandler) executeStreamBootstrapAttempt(ctx context.Context, providers []string, req coreexecutor.Request, opts coreexecutor.Options, firstChunkTimeout time.Duration) (*coreexecutor.StreamResult, context.CancelFunc, error, bool) {
+	if h == nil || h.AuthManager == nil {
+		return nil, nil, &coreauth.Error{Code: "auth_manager_not_configured", Message: "auth manager not configured", HTTPStatus: http.StatusInternalServerError}, false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	attemptCtx, cancel := context.WithCancel(ctx)
+	var completed atomic.Bool
+	var timeoutFired atomic.Bool
+	var timer *time.Timer
+	if firstChunkTimeout > 0 {
+		timer = time.AfterFunc(firstChunkTimeout, func() {
+			if completed.CompareAndSwap(false, true) {
+				timeoutFired.Store(true)
+				cancel()
+			}
+		})
+	}
+
+	streamResult, err := h.AuthManager.ExecuteStream(attemptCtx, providers, req, opts)
+	if timer != nil {
+		if completed.CompareAndSwap(false, true) {
+			timer.Stop()
+		}
+	}
+	if err != nil {
+		cancel()
+		if timeoutFired.Load() {
+			return nil, nil, newStreamFirstChunkTimeoutError(firstChunkTimeout), true
+		}
+		return nil, nil, err, false
+	}
+	if timeoutFired.Load() {
+		cancel()
+		return nil, nil, newStreamFirstChunkTimeoutError(firstChunkTimeout), true
+	}
+	return streamResult, cancel, nil, false
+}
+
+func newStreamFirstChunkTimeoutError(timeout time.Duration) error {
+	return &coreauth.Error{
+		Code:       "stream_first_chunk_timeout",
+		Message:    fmt.Sprintf("stream first chunk timeout after %s", timeout),
+		Retryable:  true,
+		HTTPStatus: http.StatusGatewayTimeout,
+	}
 }
 
 func validateSSEDataJSON(chunk []byte) error {

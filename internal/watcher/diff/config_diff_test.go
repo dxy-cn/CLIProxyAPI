@@ -240,6 +240,9 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 			APIKeys:                    sdkconfig.FlexAPIKeyList{"key-1"},
 			ForceModelPrefix:           false,
 			NonStreamKeepAliveInterval: 0,
+			Streaming: sdkconfig.StreamingConfig{
+				FirstChunkTimeoutSeconds: 0,
+			},
 		},
 	}
 	newCfg := &config.Config{
@@ -279,6 +282,9 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 			APIKeys:                    sdkconfig.FlexAPIKeyList{" key-1 ", "key-2"},
 			ForceModelPrefix:           true,
 			NonStreamKeepAliveInterval: 5,
+			Streaming: sdkconfig.StreamingConfig{
+				FirstChunkTimeoutSeconds: 30,
+			},
 		},
 	}
 
@@ -295,6 +301,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 	expectContains(t, details, "ws-auth: false -> true")
 	expectContains(t, details, "force-model-prefix: false -> true")
 	expectContains(t, details, "nonstream-keepalive-interval: 0 -> 5")
+	expectContains(t, details, "streaming.first-chunk-timeout: 0 -> 30")
 	expectContains(t, details, "quota-exceeded.switch-project: false -> true")
 	expectContains(t, details, "quota-exceeded.switch-preview-model: false -> true")
 	expectContains(t, details, "quota-exceeded.antigravity-credits: false -> true")

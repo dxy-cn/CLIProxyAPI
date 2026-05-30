@@ -171,6 +171,8 @@ AUTH_BOOTSTRAP_OVERWRITE=true
 | `request-retry` | provider 请求失败后的重试次数 |
 | `max-retry-credentials` | 单次失败请求最多尝试多少个凭证 |
 | `max-retry-interval` | 对冷却凭证重试前的最大等待时间 |
+| `streaming.first-chunk-timeout` | 等待首个流式 payload（TTFT）的秒数，`0` 表示关闭 |
+| `streaming.bootstrap-retries` | 流式响应写出任何字节前的重试次数，也用于 TTFT 超时重试 |
 | `disable-cooling` | 禁用 quota 冷却调度 |
 | `usage-statistics-enabled` | 启用内存使用量聚合 |
 | `usage-persistence-enabled` | 将使用量持久化到 PostgreSQL、MySQL 或 SQLite |
