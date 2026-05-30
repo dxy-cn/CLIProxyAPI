@@ -10,7 +10,7 @@ import (
 )
 
 // ConfigSynthesizer generates Auth entries from configuration API keys.
-// It handles Gemini, Claude, Codex, OpenAI-compat, and Vertex-compat providers.
+// It handles Claude, Codex, OpenAI-compat, and Vertex-compat providers.
 type ConfigSynthesizer struct{}
 
 // NewConfigSynthesizer creates a new ConfigSynthesizer instance.
@@ -25,8 +25,6 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 		return out, nil
 	}
 
-	// Gemini API Keys
-	out = append(out, s.synthesizeGeminiKeys(ctx)...)
 	// Claude API Keys
 	out = append(out, s.synthesizeClaudeKeys(ctx)...)
 	// Codex API Keys

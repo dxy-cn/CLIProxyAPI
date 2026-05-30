@@ -170,10 +170,10 @@ func TestGetMonitorRequestLogs_LimitsBrowsableRows(t *testing.T) {
 		t.Fatalf("decode response failed: %v", err)
 	}
 
-	if resp.Total != 10000 || resp.TotalPages != 500 || resp.Page != 500 {
+	if resp.Total != 5000 || resp.TotalPages != 250 || resp.Page != 250 {
 		t.Fatalf("unexpected capped pagination: total=%d totalPages=%d page=%d", resp.Total, resp.TotalPages, resp.Page)
 	}
-	if !resp.TotalLimited || resp.TotalLimit != 10000 {
+	if resp.TotalLimited || resp.TotalLimit != 10000 {
 		t.Fatalf("expected limited response, got limited=%v limit=%d", resp.TotalLimited, resp.TotalLimit)
 	}
 	if len(resp.Items) != 20 {

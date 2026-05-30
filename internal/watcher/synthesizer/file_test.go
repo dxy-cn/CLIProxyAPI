@@ -131,20 +131,25 @@ func TestFileSynthesizer_Synthesize_ValidAuthFile(t *testing.T) {
 	}
 }
 
-func TestFileSynthesizer_Synthesize_GeminiProviderMapping(t *testing.T) {
+func TestFileSynthesizer_Synthesize_SkipsGeminiAndAntigravity(t *testing.T) {
 	tempDir := t.TempDir()
 
-	// Gemini type should be mapped to gemini-cli
-	authData := map[string]any{
-		"type":  "gemini",
-		"email": "gemini@example.com",
+	for name, authData := range map[string]map[string]any{
+		"gemini-auth.json": {
+			"type":  "gemini",
+			"email": "gemini@example.com",
+		},
+		"antigravity-auth.json": {
+			"type":  "antigravity",
+			"email": "antigravity@example.com",
+		},
+	} {
+		data, _ := json.Marshal(authData)
+		err := os.WriteFile(filepath.Join(tempDir, name), data, 0644)
+		if err != nil {
+			t.Fatalf("failed to write auth file: %v", err)
+		}
 	}
-	data, _ := json.Marshal(authData)
-	err := os.WriteFile(filepath.Join(tempDir, "gemini-auth.json"), data, 0644)
-	if err != nil {
-		t.Fatalf("failed to write auth file: %v", err)
-	}
-
 	synth := NewFileSynthesizer()
 	ctx := &SynthesisContext{
 		Config:      &config.Config{},
@@ -157,12 +162,8 @@ func TestFileSynthesizer_Synthesize_GeminiProviderMapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(auths) != 1 {
-		t.Fatalf("expected 1 auth, got %d", len(auths))
-	}
-
-	if auths[0].Provider != "gemini-cli" {
-		t.Errorf("gemini should be mapped to gemini-cli, got %s", auths[0].Provider)
+	if len(auths) != 0 {
+		t.Fatalf("Gemini and Antigravity auth files should be ignored, got %d", len(auths))
 	}
 }
 
@@ -650,7 +651,7 @@ func TestSplitGeminiProjectIDs(t *testing.T) {
 	}
 }
 
-func TestFileSynthesizer_Synthesize_MultiProjectGemini(t *testing.T) {
+func TestFileSynthesizer_Synthesize_MultiProjectGeminiDisabled(t *testing.T) {
 	tempDir := t.TempDir()
 
 	// Create a gemini auth file with multiple projects
@@ -678,35 +679,8 @@ func TestFileSynthesizer_Synthesize_MultiProjectGemini(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Should have 4 auths: 1 primary (disabled) + 3 virtuals
-	if len(auths) != 4 {
-		t.Fatalf("expected 4 auths (1 primary + 3 virtuals), got %d", len(auths))
-	}
-
-	// First auth should be the primary (disabled)
-	primary := auths[0]
-	if !primary.Disabled {
-		t.Error("expected primary to be disabled")
-	}
-	if primary.Status != coreauth.StatusDisabled {
-		t.Errorf("expected primary status disabled, got %s", primary.Status)
-	}
-	if gotPriority := primary.Attributes["priority"]; gotPriority != "10" {
-		t.Errorf("expected primary priority 10, got %q", gotPriority)
-	}
-
-	// Remaining auths should be virtuals
-	for i := 1; i < 4; i++ {
-		v := auths[i]
-		if v.Status != coreauth.StatusActive {
-			t.Errorf("expected virtual %d to be active, got %s", i, v.Status)
-		}
-		if v.Attributes["gemini_virtual_parent"] != primary.ID {
-			t.Errorf("expected virtual %d parent to be %s, got %s", i, primary.ID, v.Attributes["gemini_virtual_parent"])
-		}
-		if gotPriority := v.Attributes["priority"]; gotPriority != "10" {
-			t.Errorf("expected virtual %d priority 10, got %q", i, gotPriority)
-		}
+	if len(auths) != 0 {
+		t.Fatalf("Gemini auth files should not synthesize primary or virtual auths, got %d", len(auths))
 	}
 }
 
@@ -906,7 +880,7 @@ func TestFileSynthesizer_Synthesize_NoteParsing(t *testing.T) {
 	}
 }
 
-func TestFileSynthesizer_Synthesize_MultiProjectGeminiWithNote(t *testing.T) {
+func TestFileSynthesizer_Synthesize_MultiProjectGeminiWithNoteDisabled(t *testing.T) {
 	tempDir := t.TempDir()
 
 	authData := map[string]any{
@@ -934,24 +908,7 @@ func TestFileSynthesizer_Synthesize_MultiProjectGeminiWithNote(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Should have 3 auths: 1 primary (disabled) + 2 virtuals
-	if len(auths) != 3 {
-		t.Fatalf("expected 3 auths (1 primary + 2 virtuals), got %d", len(auths))
-	}
-
-	primary := auths[0]
-	if gotNote := primary.Attributes["note"]; gotNote != "production keys" {
-		t.Errorf("expected primary note %q, got %q", "production keys", gotNote)
-	}
-
-	// Verify virtuals inherit note
-	for i := 1; i < len(auths); i++ {
-		v := auths[i]
-		if gotNote := v.Attributes["note"]; gotNote != "production keys" {
-			t.Errorf("expected virtual %d note %q, got %q", i, "production keys", gotNote)
-		}
-		if gotPriority := v.Attributes["priority"]; gotPriority != "5" {
-			t.Errorf("expected virtual %d priority %q, got %q", i, "5", gotPriority)
-		}
+	if len(auths) != 0 {
+		t.Fatalf("Gemini auth files should not synthesize primary or virtual auths, got %d", len(auths))
 	}
 }

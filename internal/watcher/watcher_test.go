@@ -74,7 +74,7 @@ func TestBuildAPIKeyClientsCounts(t *testing.T) {
 	}
 
 	gemini, vertex, claude, codex, compat := BuildAPIKeyClients(cfg)
-	if gemini != 2 || vertex != 1 || claude != 1 || codex != 2 || compat != 2 {
+	if gemini != 0 || vertex != 1 || claude != 1 || codex != 2 || compat != 2 {
 		t.Fatalf("unexpected counts: %d %d %d %d %d", gemini, vertex, claude, codex, compat)
 	}
 }
@@ -116,12 +116,11 @@ func TestMatchProvider(t *testing.T) {
 func TestSnapshotCoreAuths_ConfigAndAuthFiles(t *testing.T) {
 	authDir := t.TempDir()
 	metadata := map[string]any{
-		"type":       "gemini",
-		"email":      "user@example.com",
-		"project_id": "proj-a, proj-b",
-		"proxy_url":  "https://proxy",
+		"type":      "claude",
+		"email":     "user@example.com",
+		"proxy_url": "https://proxy",
 	}
-	authFile := filepath.Join(authDir, "gemini.json")
+	authFile := filepath.Join(authDir, "claude.json")
 	data, err := json.Marshal(metadata)
 	if err != nil {
 		t.Fatalf("failed to marshal metadata: %v", err)
@@ -132,16 +131,16 @@ func TestSnapshotCoreAuths_ConfigAndAuthFiles(t *testing.T) {
 
 	cfg := &config.Config{
 		AuthDir: authDir,
-		GeminiKey: []config.GeminiKey{
+		ClaudeKey: []config.ClaudeKey{
 			{
-				APIKey:         "g-key",
-				BaseURL:        "https://gemini",
+				APIKey:         "c-key",
+				BaseURL:        "https://claude",
 				ExcludedModels: []string{"Model-A", "model-b"},
 				Headers:        map[string]string{"X-Req": "1"},
 			},
 		},
 		OAuthExcludedModels: map[string][]string{
-			"gemini-cli": {"Foo", "bar"},
+			"claude": {"Foo", "bar"},
 		},
 	}
 
@@ -149,61 +148,40 @@ func TestSnapshotCoreAuths_ConfigAndAuthFiles(t *testing.T) {
 	w.SetConfig(cfg)
 
 	auths := w.SnapshotCoreAuths()
-	if len(auths) != 4 {
-		t.Fatalf("expected 4 auth entries (1 config + 1 primary + 2 virtual), got %d", len(auths))
+	if len(auths) != 2 {
+		t.Fatalf("expected 2 auth entries (1 config + 1 file), got %d", len(auths))
 	}
 
-	var geminiAPIKeyAuth *coreauth.Auth
-	var geminiPrimary *coreauth.Auth
-	virtuals := make([]*coreauth.Auth, 0)
+	var claudeAPIKeyAuth *coreauth.Auth
+	var claudeFileAuth *coreauth.Auth
 	for _, a := range auths {
 		switch {
-		case a.Provider == "gemini" && a.Attributes["api_key"] == "g-key":
-			geminiAPIKeyAuth = a
-		case a.Attributes["gemini_virtual_primary"] == "true":
-			geminiPrimary = a
-		case strings.TrimSpace(a.Attributes["gemini_virtual_parent"]) != "":
-			virtuals = append(virtuals, a)
+		case a.Provider == "claude" && a.Attributes["api_key"] == "c-key":
+			claudeAPIKeyAuth = a
+		case a.Provider == "claude" && a.Attributes["source"] == authFile:
+			claudeFileAuth = a
 		}
 	}
-	if geminiAPIKeyAuth == nil {
-		t.Fatal("expected synthesized Gemini API key auth")
+	if claudeAPIKeyAuth == nil {
+		t.Fatal("expected synthesized Claude API key auth")
 	}
 	expectedAPIKeyHash := diff.ComputeExcludedModelsHash([]string{"Model-A", "model-b"})
-	if geminiAPIKeyAuth.Attributes["excluded_models_hash"] != expectedAPIKeyHash {
-		t.Fatalf("expected API key excluded hash %s, got %s", expectedAPIKeyHash, geminiAPIKeyAuth.Attributes["excluded_models_hash"])
+	if claudeAPIKeyAuth.Attributes["excluded_models_hash"] != expectedAPIKeyHash {
+		t.Fatalf("expected API key excluded hash %s, got %s", expectedAPIKeyHash, claudeAPIKeyAuth.Attributes["excluded_models_hash"])
 	}
-	if geminiAPIKeyAuth.Attributes["auth_kind"] != "apikey" {
-		t.Fatalf("expected auth_kind=apikey, got %s", geminiAPIKeyAuth.Attributes["auth_kind"])
+	if claudeAPIKeyAuth.Attributes["auth_kind"] != "apikey" {
+		t.Fatalf("expected auth_kind=apikey, got %s", claudeAPIKeyAuth.Attributes["auth_kind"])
 	}
 
-	if geminiPrimary == nil {
-		t.Fatal("expected primary gemini-cli auth from file")
-	}
-	if !geminiPrimary.Disabled || geminiPrimary.Status != coreauth.StatusDisabled {
-		t.Fatal("expected primary gemini-cli auth to be disabled when virtual auths are synthesized")
+	if claudeFileAuth == nil {
+		t.Fatal("expected Claude auth from file")
 	}
 	expectedOAuthHash := diff.ComputeExcludedModelsHash([]string{"Foo", "bar"})
-	if geminiPrimary.Attributes["excluded_models_hash"] != expectedOAuthHash {
-		t.Fatalf("expected OAuth excluded hash %s, got %s", expectedOAuthHash, geminiPrimary.Attributes["excluded_models_hash"])
+	if claudeFileAuth.Attributes["excluded_models_hash"] != expectedOAuthHash {
+		t.Fatalf("expected OAuth excluded hash %s, got %s", expectedOAuthHash, claudeFileAuth.Attributes["excluded_models_hash"])
 	}
-	if geminiPrimary.Attributes["auth_kind"] != "oauth" {
-		t.Fatalf("expected auth_kind=oauth, got %s", geminiPrimary.Attributes["auth_kind"])
-	}
-
-	if len(virtuals) != 2 {
-		t.Fatalf("expected 2 virtual auths, got %d", len(virtuals))
-	}
-	for _, v := range virtuals {
-		if v.Attributes["gemini_virtual_parent"] != geminiPrimary.ID {
-			t.Fatalf("virtual auth missing parent link to %s", geminiPrimary.ID)
-		}
-		if v.Attributes["excluded_models_hash"] != expectedOAuthHash {
-			t.Fatalf("expected virtual excluded hash %s, got %s", expectedOAuthHash, v.Attributes["excluded_models_hash"])
-		}
-		if v.Status != coreauth.StatusActive {
-			t.Fatalf("expected virtual auth to be active, got %s", v.Status)
-		}
+	if claudeFileAuth.Attributes["auth_kind"] != "oauth" {
+		t.Fatalf("expected auth_kind=oauth, got %s", claudeFileAuth.Attributes["auth_kind"])
 	}
 }
 

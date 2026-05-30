@@ -80,8 +80,8 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 		return nil
 	}
 	provider := strings.ToLower(t)
-	if provider == "gemini" {
-		provider = "gemini-cli"
+	if provider == "gemini" || provider == "gemini-cli" || provider == "antigravity" {
+		return nil
 	}
 	label := provider
 	if email, _ := metadata["email"].(string); email != "" {

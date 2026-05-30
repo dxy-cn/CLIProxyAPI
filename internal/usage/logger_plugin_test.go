@@ -104,6 +104,78 @@ func TestRequestStatisticsCapsRetainedDetailsAcrossModels(t *testing.T) {
 	}
 }
 
+func TestRequestStatisticsDefaultKeepsOnlyRecentFiveThousandDetails(t *testing.T) {
+	stats := NewRequestStatistics()
+	start := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)
+
+	for i := 0; i < 5001; i++ {
+		stats.Record(context.Background(), coreusage.Record{
+			APIKey:      "test-key",
+			Model:       "gpt-5.4",
+			RequestedAt: start.Add(time.Duration(i) * time.Second),
+			Detail: coreusage.Detail{
+				InputTokens: 1,
+				TotalTokens: 1,
+			},
+		})
+	}
+
+	snapshot := stats.Snapshot()
+	model := snapshot.APIs["test-key"].Models["gpt-5.4"]
+	if snapshot.TotalRequests != 5001 {
+		t.Fatalf("snapshot total requests = %d, want 5001", snapshot.TotalRequests)
+	}
+	if model.TotalRequests != 5001 {
+		t.Fatalf("model total requests = %d, want 5001", model.TotalRequests)
+	}
+	if len(model.Details) != 5000 {
+		t.Fatalf("details len = %d, want 5000", len(model.Details))
+	}
+	if got := model.Details[0].Timestamp; !got.Equal(start.Add(time.Second)) {
+		t.Fatalf("oldest retained timestamp = %s, want %s", got, start.Add(time.Second))
+	}
+}
+
+func TestRequestStatisticsEvictionDoesNotLimitDatabasePersistence(t *testing.T) {
+	store := newTestSQLiteUsageStore(t)
+	t.Cleanup(func() { _ = store.Close() })
+
+	plugin := &DatabasePlugin{
+		store:  store,
+		buffer: make([]UsageRecord, 0, 5001),
+	}
+	stats := NewRequestStatistics()
+	start := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)
+
+	for i := 0; i < 5001; i++ {
+		record := coreusage.Record{
+			APIKey:      "test-key",
+			Model:       "gpt-5.4",
+			RequestedAt: start.Add(time.Duration(i) * time.Second),
+			Detail: coreusage.Detail{
+				InputTokens: 1,
+				TotalTokens: 1,
+			},
+		}
+		plugin.HandleUsage(context.Background(), record)
+		stats.Record(context.Background(), record)
+	}
+	plugin.flush()
+
+	dbStats, err := store.GetAggregatedStats(context.Background())
+	if err != nil {
+		t.Fatalf("GetAggregatedStats failed: %v", err)
+	}
+	if dbStats.TotalRequests != 5001 {
+		t.Fatalf("database total requests = %d, want 5001", dbStats.TotalRequests)
+	}
+
+	model := stats.Snapshot().APIs["test-key"].Models["gpt-5.4"]
+	if len(model.Details) != 5000 {
+		t.Fatalf("memory details len = %d, want 5000", len(model.Details))
+	}
+}
+
 func TestRequestStatisticsMergeSnapshotDedupIgnoresLatency(t *testing.T) {
 	stats := NewRequestStatistics()
 	timestamp := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)

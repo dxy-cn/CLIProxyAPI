@@ -112,11 +112,10 @@ func (s *Service) RegisterUsagePlugin(plugin usage.Plugin) {
 	usage.RegisterPlugin(plugin)
 }
 
-// newDefaultAuthManager creates a default authentication manager with all supported providers.
+// newDefaultAuthManager creates a default authentication manager with supported OAuth providers.
 func newDefaultAuthManager() *sdkAuth.Manager {
 	return sdkAuth.NewManager(
 		sdkAuth.GetTokenStore(),
-		sdkAuth.NewGeminiAuthenticator(),
 		sdkAuth.NewCodexAuthenticator(),
 		sdkAuth.NewClaudeAuthenticator(),
 	)
@@ -285,6 +284,17 @@ func (s *Service) wsOnDisconnected(channelID string, reason error) {
 
 func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.Auth) {
 	if s == nil || s.coreManager == nil || auth == nil || auth.ID == "" {
+		return
+	}
+	if _, _, isCompat := openAICompatInfoFromAuth(auth); !isCompat && isProviderLoadDisabled(auth.Provider) {
+		GlobalModelRegistry().UnregisterClient(auth.ID)
+		if existing, ok := s.coreManager.GetByID(auth.ID); ok && existing != nil {
+			existing.Disabled = true
+			existing.Status = coreauth.StatusDisabled
+			if _, err := s.coreManager.Update(ctx, existing); err != nil {
+				log.Errorf("failed to disable removed provider auth %s: %v", auth.ID, err)
+			}
+		}
 		return
 	}
 	auth = auth.Clone()
@@ -472,20 +482,17 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 		s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor(compatProviderKey, s.cfg))
 		return
 	}
+	if isProviderLoadDisabled(a.Provider) {
+		return
+	}
 	switch strings.ToLower(a.Provider) {
-	case "gemini":
-		s.coreManager.RegisterExecutor(executor.NewGeminiExecutor(s.cfg))
 	case "vertex":
 		s.coreManager.RegisterExecutor(executor.NewGeminiVertexExecutor(s.cfg))
-	case "gemini-cli":
-		s.coreManager.RegisterExecutor(executor.NewGeminiCLIExecutor(s.cfg))
 	case "aistudio":
 		if s.wsGateway != nil {
 			s.coreManager.RegisterExecutor(executor.NewAIStudioExecutor(s.cfg, a.ID, s.wsGateway))
 		}
 		return
-	case "antigravity":
-		s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(s.cfg))
 	case "claude":
 		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(s.cfg))
 	case "kimi":
@@ -508,6 +515,15 @@ func (s *Service) registerResolvedModelsForAuth(a *coreauth.Auth, providerKey st
 		return
 	}
 	GlobalModelRegistry().RegisterClient(a.ID, providerKey, models)
+}
+
+func isProviderLoadDisabled(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "gemini", "gemini-cli", "antigravity":
+		return true
+	default:
+		return false
+	}
 }
 
 // rebindExecutors refreshes provider executors so they observe the latest configuration.
@@ -883,6 +899,10 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 	if compatDetected {
 		provider = "openai-compatibility"
 	}
+	if !compatDetected && isProviderLoadDisabled(provider) {
+		GlobalModelRegistry().UnregisterClient(a.ID)
+		return
+	}
 	excluded := s.oauthExcludedModels(provider, authKind)
 	// The synthesizer pre-merges per-account and global exclusions into the "excluded_models" attribute.
 	// If this attribute is present, it represents the complete list of exclusions and overrides the global config.
@@ -893,17 +913,6 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 	}
 	var models []*ModelInfo
 	switch provider {
-	case "gemini":
-		models = registry.GetGeminiModels()
-		if entry := s.resolveConfigGeminiKey(a); entry != nil {
-			if len(entry.Models) > 0 {
-				models = buildGeminiConfigModels(entry)
-			}
-			if authKind == "apikey" {
-				excluded = entry.ExcludedModels
-			}
-		}
-		models = applyExcludedModels(models, excluded)
 	case "vertex":
 		// Vertex AI Gemini supports the same model identifiers as Gemini.
 		models = registry.GetGeminiVertexModels()
@@ -916,14 +925,8 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 			}
 		}
 		models = applyExcludedModels(models, excluded)
-	case "gemini-cli":
-		models = registry.GetGeminiCLIModels()
-		models = applyExcludedModels(models, excluded)
 	case "aistudio":
 		models = registry.GetAIStudioModels()
-		models = applyExcludedModels(models, excluded)
-	case "antigravity":
-		models = registry.GetAntigravityModels()
 		models = applyExcludedModels(models, excluded)
 	case "claude":
 		models = registry.GetClaudeModels()

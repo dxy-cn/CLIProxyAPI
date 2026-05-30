@@ -336,7 +336,17 @@ func TestResponsesHTTPSessionStoreSkipsOversizedPayloads(t *testing.T) {
 		t.Fatal("expected small session payload to be cached")
 	}
 
-	store.put("session-1", bytes.Repeat([]byte("x"), responsesHTTPSessionMaxBytes+1), nil)
+	const maxSessionBytes = 10 * 1024 * 1024
+	if responsesHTTPSessionMaxBytes != maxSessionBytes {
+		t.Fatalf("responses http session max bytes = %d, want %d", responsesHTTPSessionMaxBytes, maxSessionBytes)
+	}
+
+	store.put("session-1", bytes.Repeat([]byte("x"), maxSessionBytes), nil)
+	if _, _, ok := store.get("session-1"); !ok {
+		t.Fatal("expected 10 MiB session payload to be cached")
+	}
+
+	store.put("session-1", bytes.Repeat([]byte("x"), maxSessionBytes+1), nil)
 	if _, _, ok := store.get("session-1"); ok {
 		t.Fatal("expected oversized session payload to evict cached session")
 	}

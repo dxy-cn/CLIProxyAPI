@@ -148,7 +148,7 @@ type ModelSnapshot struct {
 
 var defaultRequestStatistics = NewRequestStatistics()
 
-const defaultMaxInMemoryRequestDetails = 50000
+const defaultMaxInMemoryRequestDetails = 5000
 
 // GetRequestStatistics returns the shared statistics store.
 func GetRequestStatistics() *RequestStatistics { return defaultRequestStatistics }

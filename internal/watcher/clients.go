@@ -343,9 +343,6 @@ func BuildAPIKeyClients(cfg *config.Config) (int, int, int, int, int) {
 	codexAPIKeyCount := 0
 	openAICompatCount := 0
 
-	if len(cfg.GeminiKey) > 0 {
-		geminiAPIKeyCount += len(cfg.GeminiKey)
-	}
 	if len(cfg.VertexCompatAPIKey) > 0 {
 		vertexCompatAPIKeyCount += len(cfg.VertexCompatAPIKey)
 	}

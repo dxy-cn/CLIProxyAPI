@@ -17,7 +17,7 @@ const (
 	responsesHTTPSessionTTL             = 30 * time.Minute
 	responsesHTTPSessionCleanupInterval = time.Minute
 	responsesHTTPSessionMaxSessions     = 8192
-	responsesHTTPSessionMaxBytes        = 1 << 20 // 1 MiB
+	responsesHTTPSessionMaxBytes        = 10 * 1024 * 1024 // 10 MiB
 )
 
 var defaultResponsesHTTPSessionStore = newResponsesHTTPSessionStore(responsesHTTPSessionTTL)
