@@ -71,3 +71,30 @@ func TestFallbackHandler_ModelMapping_PreservesThinkingSuffixAndRewritesResponse
 		t.Errorf("Expected handler to see test/gpt-5.2(xhigh), got %s", resp.SeenModel)
 	}
 }
+
+func TestFallbackHandlerRejectsOversizedBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	fallback := NewFallbackHandler(func() *httputil.ReverseProxy { return nil })
+	called := false
+	handler := func(c *gin.Context) {
+		called = true
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	}
+
+	r := gin.New()
+	r.POST("/chat/completions", fallback.WrapHandler(handler))
+
+	req := httptest.NewRequest(http.MethodPost, "/chat/completions", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = 10*1024*1024 + 1
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusRequestEntityTooLarge, w.Body.String())
+	}
+	if called {
+		t.Fatal("wrapped handler should not be called for oversized body")
+	}
+}

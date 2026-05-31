@@ -367,13 +367,16 @@ func (w *Watcher) persistConfigAsync() {
 	if w == nil || w.storePersister == nil {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := w.storePersister.PersistConfig(ctx); err != nil {
-			log.Errorf("failed to persist config change: %v", err)
-		}
-	}()
+	w.persistMu.Lock()
+	w.persistConfigPend = true
+	shouldStart := !w.persistRunning
+	if shouldStart {
+		w.persistRunning = true
+	}
+	w.persistMu.Unlock()
+	if shouldStart {
+		go w.runPersistWorker()
+	}
 }
 
 func (w *Watcher) persistAuthAsync(message string, paths ...string) {
@@ -389,13 +392,74 @@ func (w *Watcher) persistAuthAsync(message string, paths ...string) {
 	if len(filtered) == 0 {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := w.storePersister.PersistAuthFiles(ctx, message, filtered...); err != nil {
-			log.Errorf("failed to persist auth changes: %v", err)
+	w.persistMu.Lock()
+	if w.persistAuthPaths == nil {
+		w.persistAuthPaths = make(map[string]struct{}, len(filtered))
+	}
+	for _, p := range filtered {
+		if _, exists := w.persistAuthPaths[p]; exists {
+			continue
 		}
-	}()
+		w.persistAuthPaths[p] = struct{}{}
+		w.persistAuthOrder = append(w.persistAuthOrder, p)
+	}
+	if strings.TrimSpace(message) != "" {
+		w.persistAuthMsg = message
+	}
+	shouldStart := !w.persistRunning
+	if shouldStart {
+		w.persistRunning = true
+	}
+	w.persistMu.Unlock()
+	if shouldStart {
+		go w.runPersistWorker()
+	}
+}
+
+func (w *Watcher) runPersistWorker() {
+	for {
+		persistConfig, authMessage, authPaths := w.nextPersistBatch()
+		if !persistConfig && len(authPaths) == 0 {
+			return
+		}
+
+		if persistConfig {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			if err := w.storePersister.PersistConfig(ctx); err != nil {
+				log.Errorf("failed to persist config change: %v", err)
+			}
+			cancel()
+		}
+		if len(authPaths) > 0 {
+			if strings.TrimSpace(authMessage) == "" {
+				authMessage = "Sync watcher updates"
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			if err := w.storePersister.PersistAuthFiles(ctx, authMessage, authPaths...); err != nil {
+				log.Errorf("failed to persist auth changes: %v", err)
+			}
+			cancel()
+		}
+	}
+}
+
+func (w *Watcher) nextPersistBatch() (bool, string, []string) {
+	w.persistMu.Lock()
+	defer w.persistMu.Unlock()
+
+	persistConfig := w.persistConfigPend
+	authMessage := w.persistAuthMsg
+	authPaths := append([]string(nil), w.persistAuthOrder...)
+
+	w.persistConfigPend = false
+	w.persistAuthMsg = ""
+	w.persistAuthPaths = nil
+	w.persistAuthOrder = nil
+
+	if !persistConfig && len(authPaths) == 0 {
+		w.persistRunning = false
+	}
+	return persistConfig, authMessage, authPaths
 }
 
 func (w *Watcher) stopServerUpdateTimer() {

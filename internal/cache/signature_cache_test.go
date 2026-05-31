@@ -2,6 +2,7 @@ package cache
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -189,6 +190,39 @@ func TestCacheSignature_Overwrite(t *testing.T) {
 	if got := GetCachedSignature(testModelName, text); got != sig2 {
 		t.Errorf("Expected overwritten signature '%s', got '%s'", sig2, got)
 	}
+}
+
+func TestCacheSignature_EvictsOldestEntryWhenGroupLimitExceeded(t *testing.T) {
+	ClearSignatureCache("")
+
+	const maxEntries = 4096
+	for i := 0; i < maxEntries+1; i++ {
+		CacheSignature(testModelName, fmt.Sprintf("text-%d", i), testSignature(i))
+	}
+
+	if got := GetCachedSignature(testModelName, "text-0"); got != "" {
+		t.Fatalf("oldest signature should be evicted, got %q", got)
+	}
+	lastSignature := testSignature(maxEntries)
+	if got := GetCachedSignature(testModelName, fmt.Sprintf("text-%d", maxEntries)); got != lastSignature {
+		t.Fatalf("newest signature = %q, want %q", got, lastSignature)
+	}
+
+	val, ok := signatureCache.Load(GetModelGroup(testModelName))
+	if !ok {
+		t.Fatal("signature group cache missing")
+	}
+	sc := val.(*groupCache)
+	sc.mu.RLock()
+	entryCount := len(sc.entries)
+	sc.mu.RUnlock()
+	if entryCount > maxEntries {
+		t.Fatalf("group cache entries = %d, want at most %d", entryCount, maxEntries)
+	}
+}
+
+func testSignature(index int) string {
+	return fmt.Sprintf("signature-%04d-%s", index, strings.Repeat("x", 50))
 }
 
 // Note: TTL expiration test is tricky to test without mocking time

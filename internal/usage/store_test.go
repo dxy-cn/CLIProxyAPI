@@ -92,6 +92,28 @@ func TestSQLiteUsageStoreReset(t *testing.T) {
 	}
 }
 
+func TestSQLiteUsageStoreAggregatedStatsClosesRowsBetweenQueries(t *testing.T) {
+	store, err := newSQLiteUsageStoreAtPath(filepath.Join(t.TempDir(), "usage.db"))
+	if err != nil {
+		t.Fatalf("newSQLiteUsageStoreAtPath failed: %v", err)
+	}
+	defer store.Close()
+	store.db.SetMaxOpenConns(1)
+
+	_, _, err = store.InsertBatch(context.Background(), []UsageRecord{
+		{APIKey: "api-1", Model: "model-a", Source: "source-a", RequestedAt: time.Now(), TotalTokens: 10},
+	})
+	if err != nil {
+		t.Fatalf("InsertBatch failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err = store.GetAggregatedStats(ctx); err != nil {
+		t.Fatalf("GetAggregatedStats with one DB connection failed: %v", err)
+	}
+}
+
 func TestSQLiteUsageStoreEnsureSchemaSkipsCoveredSingleIndexes(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "sqlite", "usage.db")

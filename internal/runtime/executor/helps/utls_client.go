@@ -1,6 +1,7 @@
 package helps
 
 import (
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -117,15 +118,65 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 
 	resp, err := h2Conn.RoundTrip(req)
 	if err != nil {
-		t.mu.Lock()
-		if cached, ok := t.connections[hostname]; ok && cached == h2Conn {
-			delete(t.connections, hostname)
-		}
-		t.mu.Unlock()
+		t.closeConnection(hostname, h2Conn)
 		return nil, err
+	}
+	if resp != nil && resp.Body != nil {
+		resp.Body = &utlsTrackedBody{
+			ReadCloser: resp.Body,
+			closeConn: func() {
+				t.closeConnection(hostname, h2Conn)
+			},
+		}
 	}
 
 	return resp, nil
+}
+
+func (t *utlsRoundTripper) closeConnection(host string, h2Conn *http2.ClientConn) {
+	if t == nil || h2Conn == nil {
+		return
+	}
+	t.mu.Lock()
+	if cached, ok := t.connections[host]; ok && cached == h2Conn {
+		delete(t.connections, host)
+	}
+	t.mu.Unlock()
+	h2Conn.Close()
+}
+
+func (t *utlsRoundTripper) CloseIdleConnections() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	conns := make([]*http2.ClientConn, 0, len(t.connections))
+	for host, conn := range t.connections {
+		delete(t.connections, host)
+		conns = append(conns, conn)
+	}
+	t.mu.Unlock()
+	for _, conn := range conns {
+		if conn != nil {
+			conn.Close()
+		}
+	}
+}
+
+type utlsTrackedBody struct {
+	io.ReadCloser
+	closeOnce sync.Once
+	closeConn func()
+}
+
+func (b *utlsTrackedBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.closeOnce.Do(func() {
+		if b.closeConn != nil {
+			b.closeConn()
+		}
+	})
+	return err
 }
 
 // anthropicHosts contains the hosts that should use utls Chrome TLS fingerprint.
@@ -147,6 +198,18 @@ func (f *fallbackRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 		}
 	}
 	return f.fallback.RoundTrip(req)
+}
+
+func (f *fallbackRoundTripper) CloseIdleConnections() {
+	if f == nil {
+		return
+	}
+	if f.utls != nil {
+		f.utls.CloseIdleConnections()
+	}
+	if closer, ok := f.fallback.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
 }
 
 // NewUtlsHTTPClient creates an HTTP client using utls Chrome TLS fingerprint.

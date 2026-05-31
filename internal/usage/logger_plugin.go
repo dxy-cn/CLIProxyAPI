@@ -264,6 +264,12 @@ func (s *RequestStatistics) evictOldDetailsLocked() {
 		modelStatsValue.Details[modelStatsValue.detailHead] = RequestDetail{}
 		modelStatsValue.detailHead++
 		compactModelDetails(modelStatsValue)
+		if len(liveRequestDetails(modelStatsValue)) == 0 {
+			delete(stats.Models, ref.model)
+		}
+		if len(stats.Models) == 0 {
+			delete(s.apis, ref.apiKey)
+		}
 	}
 	s.compactDetailOrderLocked()
 }

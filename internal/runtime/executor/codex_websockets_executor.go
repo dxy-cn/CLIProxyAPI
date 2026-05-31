@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -37,6 +36,8 @@ const (
 	codexResponsesWebsocketBetaHeaderValue = "responses_websockets=2026-02-06"
 	codexResponsesWebsocketIdleTimeout     = 5 * time.Minute
 	codexResponsesWebsocketHandshakeTO     = 30 * time.Second
+	codexResponsesWebsocketReadLimit       = 10 * 1024 * 1024
+	codexResponsesWebsocketReadBuffer      = 64
 )
 
 // CodexWebsocketsExecutor executes Codex Responses requests using a WebSocket transport.
@@ -277,7 +278,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 
 	var readCh chan codexWebsocketRead
 	if sess != nil {
-		readCh = make(chan codexWebsocketRead, 4096)
+		readCh = make(chan codexWebsocketRead, codexResponsesWebsocketReadBuffer)
 		sess.setActive(readCh)
 		defer sess.clearActive(readCh)
 	}
@@ -489,7 +490,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 
 	var readCh chan codexWebsocketRead
 	if sess != nil {
-		readCh = make(chan codexWebsocketRead, 4096)
+		readCh = make(chan codexWebsocketRead, codexResponsesWebsocketReadBuffer)
 		sess.setActive(readCh)
 	}
 
@@ -552,16 +553,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		}()
 
 		send := func(chunk cliproxyexecutor.StreamChunk) bool {
-			if ctx == nil {
-				out <- chunk
-				return true
-			}
-			select {
-			case out <- chunk:
-				return true
-			case <-ctx.Done():
-				return false
-			}
+			return helps.SendStreamChunk(ctx, out, chunk)
 		}
 
 		var param any
@@ -677,6 +669,7 @@ func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *
 		// Avoid gorilla/websocket flate tail validation issues on some upstreams/Go versions.
 		// Negotiating permessage-deflate is fine; we just don't compress outbound messages.
 		conn.EnableWriteCompression(false)
+		conn.SetReadLimit(codexResponsesWebsocketReadLimit)
 	}
 	return conn, resp, err
 }
@@ -1132,7 +1125,7 @@ func websocketHandshakeBody(resp *http.Response) []byte {
 	if resp == nil || resp.Body == nil {
 		return nil
 	}
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := helps.ReadLimitedErrorBody(resp.Body)
 	closeHTTPResponseBody(resp, "codex websockets executor: close handshake response body error")
 	if len(body) == 0 {
 		return nil

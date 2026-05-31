@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,12 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/redisqueue"
 	log "github.com/sirupsen/logrus"
+)
+
+const (
+	maxRESPArrayElements  = 512
+	maxRESPBulkStringSize = 1 << 20
+	maxRESPLineSize       = 4096
 )
 
 func isRedisRESPPrefix(prefix byte) bool {
@@ -256,6 +263,9 @@ func readRESPArray(reader *bufio.Reader) ([]string, error) {
 	if err != nil || count < 0 {
 		return nil, fmt.Errorf("protocol error")
 	}
+	if count > maxRESPArrayElements {
+		return nil, fmt.Errorf("array too large")
+	}
 	args := make([]string, 0, count)
 	for i := 0; i < count; i++ {
 		value, err := readRESPString(reader)
@@ -294,6 +304,9 @@ func readRESPBulkString(reader *bufio.Reader) (string, error) {
 	if length < 0 {
 		return "", nil
 	}
+	if length > maxRESPBulkStringSize {
+		return "", fmt.Errorf("bulk string too large")
+	}
 	buf := make([]byte, length+2)
 	if _, err := io.ReadFull(reader, buf); err != nil {
 		return "", err
@@ -305,13 +318,24 @@ func readRESPBulkString(reader *bufio.Reader) (string, error) {
 }
 
 func readRESPLine(reader *bufio.Reader) (string, error) {
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return "", err
+	var line []byte
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(line)+len(fragment) > maxRESPLineSize+2 {
+			return "", fmt.Errorf("line too large")
+		}
+		line = append(line, fragment...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		break
 	}
-	line = strings.TrimSuffix(line, "\n")
-	line = strings.TrimSuffix(line, "\r")
-	return line, nil
+	line = bytes.TrimSuffix(line, []byte("\n"))
+	line = bytes.TrimSuffix(line, []byte("\r"))
+	return string(line), nil
 }
 
 func writeRedisSimpleString(writer *bufio.Writer, value string) error {

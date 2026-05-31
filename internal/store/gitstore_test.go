@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -43,6 +45,32 @@ func TestEnsureRepositoryUsesRemoteDefaultBranchWhenBranchNotConfigured(t *testi
 
 	assertRepositoryBranchAndContents(t, filepath.Join(root, "workspace"), "trunk", "remote default branch updated\n")
 	assertRemoteHeadBranch(t, remoteDir, "trunk")
+}
+
+func TestGitTokenStorePersistAuthFilesHonorsCanceledContext(t *testing.T) {
+	store := NewGitTokenStore("", "", "", "")
+	store.SetBaseDir(filepath.Join(t.TempDir(), "auths"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := store.PersistAuthFiles(ctx, "sync", filepath.Join(store.AuthDir(), "auth.json"))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("PersistAuthFiles error = %v, want context.Canceled", err)
+	}
+}
+
+func TestGitTokenStorePersistConfigHonorsCanceledContext(t *testing.T) {
+	store := NewGitTokenStore("", "", "", "")
+	store.SetBaseDir(filepath.Join(t.TempDir(), "auths"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := store.PersistConfig(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("PersistConfig error = %v, want context.Canceled", err)
+	}
 }
 
 func TestEnsureRepositoryUsesConfiguredBranchWhenExplicitlySet(t *testing.T) {
@@ -162,7 +190,7 @@ func TestEnsureRepositoryExistingRepoSwitchesToConfiguredBranch(t *testing.T) {
 	}
 
 	reopened.mu.Lock()
-	err := reopened.commitAndPushLocked("Update develop branch marker", "branch.txt")
+	err := reopened.commitAndPushLocked(context.Background(), "Update develop branch marker", "branch.txt")
 	reopened.mu.Unlock()
 	if err != nil {
 		t.Fatalf("commitAndPushLocked: %v", err)
@@ -230,7 +258,7 @@ func TestEnsureRepositoryResetsToRemoteDefaultWhenBranchUnset(t *testing.T) {
 		t.Fatalf("write local master marker: %v", err)
 	}
 	storeDefault.mu.Lock()
-	if err := storeDefault.commitAndPushLocked("Update master marker", "branch.txt"); err != nil {
+	if err := storeDefault.commitAndPushLocked(context.Background(), "Update master marker", "branch.txt"); err != nil {
 		storeDefault.mu.Unlock()
 		t.Fatalf("commitAndPushLocked: %v", err)
 	}

@@ -3,6 +3,7 @@ package management
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,6 +25,9 @@ import (
 )
 
 const defaultAPICallTimeout = 60 * time.Second
+const maxAPICallResponseBodyBytes = 10 << 20
+
+var errAPICallResponseTooLarge = errors.New("response too large")
 
 const (
 	geminiOAuthClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
@@ -206,7 +210,11 @@ func (h *Handler) APICall(c *gin.Context) {
 		}
 	}()
 
-	respBody, errReadAll := io.ReadAll(resp.Body)
+	respBody, errReadAll := readAPICallResponseBody(resp.Body)
+	if errors.Is(errReadAll, errAPICallResponseTooLarge) {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "response too large"})
+		return
+	}
 	if errReadAll != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to read response"})
 		return
@@ -217,6 +225,18 @@ func (h *Handler) APICall(c *gin.Context) {
 		Header:     resp.Header,
 		Body:       string(respBody),
 	})
+}
+
+func readAPICallResponseBody(body io.Reader) ([]byte, error) {
+	limited := io.LimitReader(body, maxAPICallResponseBodyBytes+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxAPICallResponseBodyBytes {
+		return nil, errAPICallResponseTooLarge
+	}
+	return data, nil
 }
 
 func firstNonEmptyString(values ...*string) string {
@@ -392,7 +412,7 @@ func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *
 		}
 	}()
 
-	bodyBytes, errRead := io.ReadAll(resp.Body)
+	bodyBytes, errRead := readAPICallResponseBody(resp.Body)
 	if errRead != nil {
 		return "", errRead
 	}

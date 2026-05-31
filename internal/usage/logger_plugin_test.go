@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -98,6 +99,38 @@ func TestRequestStatisticsCapsRetainedDetailsAcrossModels(t *testing.T) {
 	}
 	if totalDetails != 3 {
 		t.Fatalf("retained details = %d, want 3", totalDetails)
+	}
+	if snapshot.TotalRequests != 5 {
+		t.Fatalf("snapshot total requests = %d, want 5", snapshot.TotalRequests)
+	}
+}
+
+func TestRequestStatisticsEvictsAggregateKeysWithOldDetails(t *testing.T) {
+	stats := NewRequestStatistics()
+	stats.maxDetails = 3
+	start := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)
+
+	for i := 0; i < 5; i++ {
+		stats.Record(context.Background(), coreusage.Record{
+			APIKey:      fmt.Sprintf("api-%d", i),
+			Model:       "gpt-5.4",
+			RequestedAt: start.Add(time.Duration(i) * time.Second),
+			Detail: coreusage.Detail{
+				InputTokens: 1,
+				TotalTokens: 1,
+			},
+		})
+	}
+
+	snapshot := stats.Snapshot()
+	if len(snapshot.APIs) > 3 {
+		t.Fatalf("api aggregate keys = %d, want at most 3", len(snapshot.APIs))
+	}
+	if _, exists := snapshot.APIs["api-0"]; exists {
+		t.Fatal("old api aggregate key should be evicted with its last detail")
+	}
+	if _, exists := snapshot.APIs["api-4"]; !exists {
+		t.Fatal("new api aggregate key should remain")
 	}
 	if snapshot.TotalRequests != 5 {
 		t.Fatalf("snapshot total requests = %d, want 5", snapshot.TotalRequests)

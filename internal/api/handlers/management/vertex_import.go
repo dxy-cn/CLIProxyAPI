@@ -3,8 +3,8 @@ package management
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -37,8 +37,12 @@ func (h *Handler) ImportVertexCredential(c *gin.Context) {
 	}
 	defer file.Close()
 
-	data, err := io.ReadAll(file)
+	data, err := readAuthFileBody(file)
 	if err != nil {
+		if errors.Is(err, errAuthFileTooLarge) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("failed to read file: %v", err)})
 		return
 	}

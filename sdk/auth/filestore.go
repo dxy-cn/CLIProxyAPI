@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -340,7 +339,7 @@ func refreshGeminiAccessToken(tokenMap map[string]any, httpClient *http.Client) 
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := readLimitedAuthResponseBody(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("refresh failed: status %d", resp.StatusCode)
 	}

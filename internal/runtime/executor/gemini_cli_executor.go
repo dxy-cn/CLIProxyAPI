@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -216,7 +215,7 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 			return resp, err
 		}
 
-		data, errRead := io.ReadAll(httpResp.Body)
+		data, errRead := helps.ReadLimitedResponseBody(httpResp.Body)
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("gemini cli executor: close response body error: %v", errClose)
 		}
@@ -363,7 +362,7 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 		}
 		helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 		if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-			data, errRead := io.ReadAll(httpResp.Body)
+			data, errRead := helps.ReadLimitedErrorBody(httpResp.Body)
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("gemini cli executor: close response body error: %v", errClose)
 			}
@@ -409,28 +408,32 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 					if bytes.HasPrefix(line, dataTag) {
 						segments := sdktranslator.TranslateStream(respCtx, to, from, attemptModel, opts.OriginalRequest, reqBody, bytes.Clone(line), &param)
 						for i := range segments {
-							out <- cliproxyexecutor.StreamChunk{Payload: segments[i]}
+							if !helps.SendStreamChunk(respCtx, out, cliproxyexecutor.StreamChunk{Payload: segments[i]}) {
+								return
+							}
 						}
 					}
 				}
 
 				segments := sdktranslator.TranslateStream(respCtx, to, from, attemptModel, opts.OriginalRequest, reqBody, []byte("[DONE]"), &param)
 				for i := range segments {
-					out <- cliproxyexecutor.StreamChunk{Payload: segments[i]}
+					if !helps.SendStreamChunk(respCtx, out, cliproxyexecutor.StreamChunk{Payload: segments[i]}) {
+						return
+					}
 				}
 				if errScan := scanner.Err(); errScan != nil {
 					helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 					reporter.PublishFailure(ctx)
-					out <- cliproxyexecutor.StreamChunk{Err: errScan}
+					helps.SendStreamChunk(respCtx, out, cliproxyexecutor.StreamChunk{Err: errScan})
 				}
 				return
 			}
 
-			data, errRead := io.ReadAll(resp.Body)
+			data, errRead := helps.ReadLimitedResponseBody(resp.Body)
 			if errRead != nil {
 				helps.RecordAPIResponseError(ctx, e.cfg, errRead)
 				reporter.PublishFailure(ctx)
-				out <- cliproxyexecutor.StreamChunk{Err: errRead}
+				helps.SendStreamChunk(respCtx, out, cliproxyexecutor.StreamChunk{Err: errRead})
 				return
 			}
 			helps.AppendAPIResponseChunk(ctx, e.cfg, data)
@@ -438,12 +441,16 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 			var param any
 			segments := sdktranslator.TranslateStream(respCtx, to, from, attemptModel, opts.OriginalRequest, reqBody, data, &param)
 			for i := range segments {
-				out <- cliproxyexecutor.StreamChunk{Payload: segments[i]}
+				if !helps.SendStreamChunk(respCtx, out, cliproxyexecutor.StreamChunk{Payload: segments[i]}) {
+					return
+				}
 			}
 
 			segments = sdktranslator.TranslateStream(respCtx, to, from, attemptModel, opts.OriginalRequest, reqBody, []byte("[DONE]"), &param)
 			for i := range segments {
-				out <- cliproxyexecutor.StreamChunk{Payload: segments[i]}
+				if !helps.SendStreamChunk(respCtx, out, cliproxyexecutor.StreamChunk{Payload: segments[i]}) {
+					return
+				}
 			}
 		}(httpResp, append([]byte(nil), payload...), attemptModel)
 
@@ -542,7 +549,7 @@ func (e *GeminiCLIExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.
 			helps.RecordAPIResponseError(ctx, e.cfg, errDo)
 			return cliproxyexecutor.Response{}, errDo
 		}
-		data, errRead := io.ReadAll(resp.Body)
+		data, errRead := helps.ReadLimitedResponseBody(resp.Body)
 		if errClose := resp.Body.Close(); errClose != nil {
 			helps.LogWithRequestID(ctx).Errorf("response body close error: %v", errClose)
 		}

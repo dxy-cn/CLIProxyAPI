@@ -245,7 +245,7 @@ func (s *GitTokenStore) EnsureRepository() error {
 	s.dirLock.Unlock()
 	if len(initPaths) > 0 {
 		s.mu.Lock()
-		err := s.commitAndPushLocked("Initialize git token store", initPaths...)
+		err := s.commitAndPushLocked(context.Background(), "Initialize git token store", initPaths...)
 		s.mu.Unlock()
 		if err != nil {
 			return err
@@ -255,9 +255,12 @@ func (s *GitTokenStore) EnsureRepository() error {
 }
 
 // Save persists token storage and metadata to the resolved auth file path.
-func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string, error) {
+func (s *GitTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (string, error) {
 	if auth == nil {
 		return "", fmt.Errorf("auth filestore: auth is nil")
+	}
+	if err := contextError(ctx); err != nil {
+		return "", err
 	}
 
 	path, err := s.resolveAuthPath(auth)
@@ -275,6 +278,9 @@ func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string
 	}
 
 	if err = s.EnsureRepository(); err != nil {
+		return "", err
+	}
+	if err = contextError(ctx); err != nil {
 		return "", err
 	}
 
@@ -330,7 +336,7 @@ func (s *GitTokenStore) Save(_ context.Context, auth *cliproxyauth.Auth) (string
 	if strings.TrimSpace(messageID) == "" {
 		messageID = filepath.Base(path)
 	}
-	if errCommit := s.commitAndPushLocked(fmt.Sprintf("Update auth %s", strings.TrimSpace(messageID)), relPath); errCommit != nil {
+	if errCommit := s.commitAndPushLocked(ctx, fmt.Sprintf("Update auth %s", strings.TrimSpace(messageID)), relPath); errCommit != nil {
 		return "", errCommit
 	}
 
@@ -373,16 +379,22 @@ func (s *GitTokenStore) List(_ context.Context) ([]*cliproxyauth.Auth, error) {
 }
 
 // Delete removes the auth file.
-func (s *GitTokenStore) Delete(_ context.Context, id string) error {
+func (s *GitTokenStore) Delete(ctx context.Context, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return fmt.Errorf("auth filestore: id is empty")
+	}
+	if err := contextError(ctx); err != nil {
+		return err
 	}
 	path, err := s.resolveDeletePath(id)
 	if err != nil {
 		return err
 	}
 	if err = s.EnsureRepository(); err != nil {
+		return err
+	}
+	if err = contextError(ctx); err != nil {
 		return err
 	}
 
@@ -398,7 +410,7 @@ func (s *GitTokenStore) Delete(_ context.Context, id string) error {
 			return errRel
 		}
 		messageID := id
-		if errCommit := s.commitAndPushLocked(fmt.Sprintf("Delete auth %s", messageID), rel); errCommit != nil {
+		if errCommit := s.commitAndPushLocked(ctx, fmt.Sprintf("Delete auth %s", messageID), rel); errCommit != nil {
 			return errCommit
 		}
 	}
@@ -407,11 +419,17 @@ func (s *GitTokenStore) Delete(_ context.Context, id string) error {
 
 // PersistAuthFiles commits and pushes the provided paths to the remote repository.
 // It no-ops when the store is not fully configured or when there are no paths.
-func (s *GitTokenStore) PersistAuthFiles(_ context.Context, message string, paths ...string) error {
+func (s *GitTokenStore) PersistAuthFiles(ctx context.Context, message string, paths ...string) error {
 	if len(paths) == 0 {
 		return nil
 	}
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	if err := s.EnsureRepository(); err != nil {
+		return err
+	}
+	if err := contextError(ctx); err != nil {
 		return err
 	}
 
@@ -437,7 +455,7 @@ func (s *GitTokenStore) PersistAuthFiles(_ context.Context, message string, path
 	if strings.TrimSpace(message) == "" {
 		message = "Sync watcher updates"
 	}
-	return s.commitAndPushLocked(message, filtered...)
+	return s.commitAndPushLocked(ctx, message, filtered...)
 }
 
 func (s *GitTokenStore) resolveDeletePath(id string) (string, error) {
@@ -782,7 +800,10 @@ func checkoutRemoteDefaultBranch(repo *git.Repository, worktree *git.Worktree, a
 	return nil
 }
 
-func (s *GitTokenStore) commitAndPushLocked(message string, relPaths ...string) error {
+func (s *GitTokenStore) commitAndPushLocked(ctx context.Context, message string, relPaths ...string) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	repoDir := s.repoDirSnapshot()
 	if repoDir == "" {
 		return fmt.Errorf("git token store: repository path not configured")
@@ -821,6 +842,9 @@ func (s *GitTokenStore) commitAndPushLocked(message string, relPaths ...string) 
 	if status.IsClean() {
 		return nil
 	}
+	if err = contextError(ctx); err != nil {
+		return err
+	}
 	if strings.TrimSpace(message) == "" {
 		message = "Update auth store"
 	}
@@ -847,7 +871,7 @@ func (s *GitTokenStore) commitAndPushLocked(message string, relPaths ...string) 
 		return errRewrite
 	}
 	s.maybeRunGC(repo)
-	if err = s.pushWithRecover(repo); err != nil {
+	if err = s.pushWithRecover(ctx, repo); err != nil {
 		if errors.Is(err, git.NoErrAlreadyUpToDate) {
 			return nil
 		}
@@ -856,7 +880,10 @@ func (s *GitTokenStore) commitAndPushLocked(message string, relPaths ...string) 
 	return nil
 }
 
-func (s *GitTokenStore) pushWithRecover(repo *git.Repository) (err error) {
+func (s *GitTokenStore) pushWithRecover(ctx context.Context, repo *git.Repository) (err error) {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic recovered in go-git push: %v", r)
@@ -922,8 +949,14 @@ func (s *GitTokenStore) maybeRunGC(repo *git.Repository) {
 }
 
 // PersistConfig commits and pushes configuration changes to git.
-func (s *GitTokenStore) PersistConfig(_ context.Context) error {
+func (s *GitTokenStore) PersistConfig(ctx context.Context) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	if err := s.EnsureRepository(); err != nil {
+		return err
+	}
+	if err := contextError(ctx); err != nil {
 		return err
 	}
 	configPath := s.ConfigPath()
@@ -942,7 +975,19 @@ func (s *GitTokenStore) PersistConfig(_ context.Context) error {
 	if err != nil {
 		return err
 	}
-	return s.commitAndPushLocked("Update config", rel)
+	return s.commitAndPushLocked(ctx, "Update config", rel)
+}
+
+func contextError(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
 }
 
 func ensureEmptyFile(path string) error {

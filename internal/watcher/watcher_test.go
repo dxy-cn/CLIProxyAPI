@@ -741,6 +741,77 @@ func TestPersistAsyncErrorPaths(t *testing.T) {
 	}
 }
 
+type blockingPersister struct {
+	started   chan struct{}
+	release   chan struct{}
+	active    int32
+	maxActive int32
+	authCalls int32
+}
+
+func (p *blockingPersister) PersistConfig(ctx context.Context) error {
+	return p.block(ctx)
+}
+
+func (p *blockingPersister) PersistAuthFiles(ctx context.Context, _ string, _ ...string) error {
+	atomic.AddInt32(&p.authCalls, 1)
+	return p.block(ctx)
+}
+
+func (p *blockingPersister) block(ctx context.Context) error {
+	active := atomic.AddInt32(&p.active, 1)
+	for {
+		current := atomic.LoadInt32(&p.maxActive)
+		if active <= current || atomic.CompareAndSwapInt32(&p.maxActive, current, active) {
+			break
+		}
+	}
+	select {
+	case p.started <- struct{}{}:
+	default:
+	}
+	defer atomic.AddInt32(&p.active, -1)
+	select {
+	case <-p.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestPersistAuthAsyncDoesNotRunUnboundedConcurrentPersists(t *testing.T) {
+	p := &blockingPersister{
+		started: make(chan struct{}, 32),
+		release: make(chan struct{}),
+	}
+	w := &Watcher{storePersister: p}
+
+	for i := 0; i < 20; i++ {
+		w.persistAuthAsync("msg", fmt.Sprintf("auth-%02d.json", i))
+	}
+
+	select {
+	case <-p.started:
+	case <-time.After(time.Second):
+		t.Fatal("persist worker did not start")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := atomic.LoadInt32(&p.maxActive); got > 1 {
+		t.Fatalf("persist calls ran concurrently: max active=%d", got)
+	}
+
+	close(p.release)
+	deadline := time.After(time.Second)
+	for atomic.LoadInt32(&p.active) != 0 {
+		select {
+		case <-deadline:
+			t.Fatal("persist calls did not drain")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
 func TestStopConfigReloadTimerSafeWhenNil(t *testing.T) {
 	w := &Watcher{}
 	w.stopConfigReloadTimer()

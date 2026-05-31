@@ -526,6 +526,39 @@ func TestSetWebsocketTimelineBody(t *testing.T) {
 	}
 }
 
+func TestResponsesWebsocketRejectsOversizedMessage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	limit := 10 * 1024 * 1024
+	if err := conn.WriteMessage(websocket.TextMessage, bytes.Repeat([]byte(" "), limit+1)); err != nil {
+		t.Fatalf("write oversized websocket message: %v", err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	_, payload, errReadMessage := conn.ReadMessage()
+	if errReadMessage == nil {
+		t.Fatalf("expected websocket read error after oversized message, got payload: %q", payload)
+	}
+}
+
 func TestRepairResponsesWebsocketToolCallsInsertsCachedOutput(t *testing.T) {
 	cache := newWebsocketToolOutputCache(time.Minute, 10)
 	sessionKey := "session-1"

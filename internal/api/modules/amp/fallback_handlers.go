@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
+	apihandlers "github.com/router-for-me/CLIProxyAPI/v6/sdk/api/handlers"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -116,8 +117,15 @@ func (fh *FallbackHandler) WrapHandler(handler gin.HandlerFunc) gin.HandlerFunc 
 		requestPath := c.Request.URL.Path
 
 		// Read the request body to extract the model name
-		bodyBytes, err := io.ReadAll(c.Request.Body)
+		bodyBytes, err := apihandlers.ReadLimitedRawData(c)
 		if err != nil {
+			if apihandlers.IsRequestBodyTooLarge(err) {
+				c.JSON(apihandlers.RequestBodyErrorStatus(err), gin.H{
+					"error":   "request_body_too_large",
+					"message": "Invalid request: " + err.Error(),
+				})
+				return
+			}
 			log.Errorf("amp fallback: failed to read request body: %v", err)
 			handler(c)
 			return

@@ -15,6 +15,7 @@ import (
 type SignatureEntry struct {
 	Signature string
 	Timestamp time.Time
+	sequence  uint64
 }
 
 const (
@@ -29,6 +30,8 @@ const (
 
 	// CacheCleanupInterval controls how often stale entries are purged
 	CacheCleanupInterval = 10 * time.Minute
+
+	signatureCacheMaxEntriesPerGroup = 4096
 )
 
 // signatureCache stores signatures by model group -> textHash -> SignatureEntry
@@ -39,8 +42,9 @@ var cacheCleanupOnce sync.Once
 
 // groupCache is the inner map type
 type groupCache struct {
-	mu      sync.RWMutex
-	entries map[string]SignatureEntry
+	mu           sync.RWMutex
+	entries      map[string]SignatureEntry
+	nextSequence uint64
 }
 
 // hashText creates a stable, Unicode-safe key from text content
@@ -112,9 +116,44 @@ func CacheSignature(modelName, text, signature string) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 
+	now := time.Now()
+	if _, exists := sc.entries[textHash]; !exists {
+		sc.evictExpiredLocked(now)
+		for len(sc.entries) >= signatureCacheMaxEntriesPerGroup {
+			sc.evictOldestLocked()
+		}
+	}
+	sc.nextSequence++
 	sc.entries[textHash] = SignatureEntry{
 		Signature: signature,
-		Timestamp: time.Now(),
+		Timestamp: now,
+		sequence:  sc.nextSequence,
+	}
+}
+
+func (sc *groupCache) evictExpiredLocked(now time.Time) {
+	for k, entry := range sc.entries {
+		if now.Sub(entry.Timestamp) > SignatureCacheTTL {
+			delete(sc.entries, k)
+		}
+	}
+}
+
+func (sc *groupCache) evictOldestLocked() {
+	var oldestKey string
+	var oldestEntry SignatureEntry
+	first := true
+	for key, entry := range sc.entries {
+		if first ||
+			entry.Timestamp.Before(oldestEntry.Timestamp) ||
+			(entry.Timestamp.Equal(oldestEntry.Timestamp) && entry.sequence < oldestEntry.sequence) {
+			oldestKey = key
+			oldestEntry = entry
+			first = false
+		}
+	}
+	if oldestKey != "" {
+		delete(sc.entries, oldestKey)
 	}
 }
 
@@ -161,7 +200,9 @@ func GetCachedSignature(modelName, text string) string {
 	}
 
 	// Refresh TTL on access (sliding expiration).
+	sc.nextSequence++
 	entry.Timestamp = now
+	entry.sequence = sc.nextSequence
 	sc.entries[textHash] = entry
 	sc.mu.Unlock()
 

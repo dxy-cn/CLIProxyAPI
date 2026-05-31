@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const maxNonStreamAggregateBytes = 10 * 1024 * 1024
+
 // HTTPRequest represents a proxied HTTP request delivered to websocket clients.
 type HTTPRequest struct {
 	Method  string
@@ -40,8 +42,11 @@ func (m *Manager) NonStream(ctx context.Context, provider string, req *HTTPReque
 	if req == nil {
 		return nil, fmt.Errorf("wsrelay: request is nil")
 	}
+	reqCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	msg := Message{ID: uuid.NewString(), Type: MessageTypeHTTPReq, Payload: encodeRequest(req)}
-	respCh, err := m.Send(ctx, provider, msg)
+	respCh, err := m.Send(reqCtx, provider, msg)
 	if err != nil {
 		return nil, err
 	}
@@ -92,6 +97,9 @@ func (m *Manager) NonStream(ctx context.Context, provider string, req *HTTPReque
 				}
 				chunk := decodeChunk(msg.Payload)
 				if len(chunk) > 0 {
+					if streamBody.Len()+len(chunk) > maxNonStreamAggregateBytes {
+						return nil, fmt.Errorf("wsrelay: non-stream response body exceeded %d bytes", maxNonStreamAggregateBytes)
+					}
 					streamBody.Write(chunk)
 				}
 			case MessageTypeStreamEnd:

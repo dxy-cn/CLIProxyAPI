@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -108,7 +107,7 @@ func (h *Handler) fetchCodexQuotaPayload(ctx context.Context, auth *coreauth.Aut
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readAPICallResponseBody(resp.Body)
 	if err != nil {
 		return resp.StatusCode, nil, fmt.Errorf("read codex quota response failed: %w", err)
 	}

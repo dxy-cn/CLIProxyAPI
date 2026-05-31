@@ -51,6 +51,9 @@ type Handler struct {
 	postAuthHook        coreauth.PostAuthHook
 	apiKeyStore         apikeys.Store
 	configUpdateHook    func(*config.Config)
+	attemptCleanupStop  chan struct{}
+	attemptCleanupDone  chan struct{}
+	attemptCleanupOnce  sync.Once
 }
 
 // NewHandler creates a new management handler instance.
@@ -67,6 +70,8 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		tokenStore:          sdkAuth.GetTokenStore(),
 		allowRemoteOverride: envSecret != "",
 		envSecret:           envSecret,
+		attemptCleanupStop:  make(chan struct{}),
+		attemptCleanupDone:  make(chan struct{}),
 	}
 	if store, ok := h.tokenStore.(apikeys.Store); ok {
 		h.apiKeyStore = store
@@ -79,12 +84,34 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 // removes stale IP entries from failedAttempts to prevent memory leaks.
 func (h *Handler) startAttemptCleanup() {
 	go func() {
+		defer close(h.attemptCleanupDone)
 		ticker := time.NewTicker(attemptCleanupInterval)
 		defer ticker.Stop()
-		for range ticker.C {
-			h.purgeStaleAttempts()
+		for {
+			select {
+			case <-ticker.C:
+				h.purgeStaleAttempts()
+			case <-h.attemptCleanupStop:
+				return
+			}
 		}
 	}()
+}
+
+// Close stops background workers owned by the management handler.
+func (h *Handler) Close() error {
+	if h == nil {
+		return nil
+	}
+	h.attemptCleanupOnce.Do(func() {
+		if h.attemptCleanupStop != nil {
+			close(h.attemptCleanupStop)
+		}
+	})
+	if h.attemptCleanupDone != nil {
+		<-h.attemptCleanupDone
+	}
+	return nil
 }
 
 // purgeStaleAttempts removes IP entries that have been idle beyond attemptMaxIdleTime

@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -9,12 +10,16 @@ import (
 )
 
 type fakeUsageStore struct {
-	stats AggregatedStats
+	stats       AggregatedStats
+	insertBatch func(context.Context, []UsageRecord) (int64, int64, error)
 }
 
 func (s *fakeUsageStore) Insert(context.Context, UsageRecord) error { return nil }
 
-func (s *fakeUsageStore) InsertBatch(context.Context, []UsageRecord) (int64, int64, error) {
+func (s *fakeUsageStore) InsertBatch(ctx context.Context, records []UsageRecord) (int64, int64, error) {
+	if s.insertBatch != nil {
+		return s.insertBatch(ctx, records)
+	}
 	return 0, 0, nil
 }
 
@@ -128,5 +133,56 @@ func TestDatabasePluginHandleUsage_NormalizesTotalTokens(t *testing.T) {
 	}
 	if plugin.buffer[0].TotalTokens != 72 {
 		t.Fatalf("unexpected normalized total tokens: got %d want 72", plugin.buffer[0].TotalTokens)
+	}
+}
+
+func TestDatabasePluginHandleUsageDropsNewestWhenBufferHardLimitReached(t *testing.T) {
+	plugin := &DatabasePlugin{
+		store:   &fakeUsageStore{},
+		buffer:  make([]UsageRecord, 0, defaultBufferSize),
+		flushCh: make(chan struct{}, 1),
+	}
+	limit := defaultMaxBufferSize
+
+	for i := 0; i < limit+1; i++ {
+		plugin.HandleUsage(context.Background(), coreusage.Record{
+			APIKey:      fmt.Sprintf("api-%d", i),
+			Model:       fmt.Sprintf("model-%d", i),
+			RequestedAt: time.Now(),
+			Detail: coreusage.Detail{
+				InputTokens: 1,
+				TotalTokens: 1,
+			},
+		})
+	}
+
+	if len(plugin.buffer) != limit {
+		t.Fatalf("buffer len = %d, want %d", len(plugin.buffer), limit)
+	}
+	if got := plugin.buffer[limit-1].Model; got != fmt.Sprintf("model-%d", limit-1) {
+		t.Fatalf("last retained model = %q, want model-%d", got, limit-1)
+	}
+}
+
+func TestDatabasePluginFlushUsesBoundedContext(t *testing.T) {
+	sawDeadline := false
+	store := &fakeUsageStore{
+		insertBatch: func(ctx context.Context, records []UsageRecord) (int64, int64, error) {
+			if _, ok := ctx.Deadline(); !ok {
+				t.Fatal("InsertBatch context has no deadline")
+			}
+			sawDeadline = true
+			return int64(len(records)), 0, nil
+		},
+	}
+	plugin := &DatabasePlugin{
+		store:  store,
+		buffer: []UsageRecord{{APIKey: "api-a", Model: "model-a"}},
+	}
+
+	plugin.flush()
+
+	if !sawDeadline {
+		t.Fatal("InsertBatch was not called")
 	}
 }

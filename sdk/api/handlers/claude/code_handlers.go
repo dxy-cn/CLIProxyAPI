@@ -12,7 +12,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -56,6 +55,20 @@ func (h *ClaudeCodeAPIHandler) Models() []map[string]any {
 	return modelRegistry.GetAvailableModels("claude")
 }
 
+func readClaudeRawJSON(c *gin.Context) ([]byte, bool) {
+	rawJSON, err := handlers.ReadLimitedRawData(c)
+	if err != nil {
+		c.JSON(handlers.RequestBodyErrorStatus(err), handlers.ErrorResponse{
+			Error: handlers.ErrorDetail{
+				Message: fmt.Sprintf("Invalid request: %v", err),
+				Type:    "invalid_request_error",
+			},
+		})
+		return nil, false
+	}
+	return rawJSON, true
+}
+
 // ClaudeMessages handles Claude-compatible streaming chat completions.
 // This function implements a sophisticated client rotation and quota management system
 // to ensure high availability and optimal resource utilization across multiple backend clients.
@@ -64,15 +77,8 @@ func (h *ClaudeCodeAPIHandler) Models() []map[string]any {
 //   - c: The Gin context for the request.
 func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 	// Extract raw JSON data from the incoming request
-	rawJSON, err := c.GetRawData()
-	// If data retrieval fails, return a 400 Bad Request error.
-	if err != nil {
-		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
-			Error: handlers.ErrorDetail{
-				Message: fmt.Sprintf("Invalid request: %v", err),
-				Type:    "invalid_request_error",
-			},
-		})
+	rawJSON, ok := readClaudeRawJSON(c)
+	if !ok {
 		return
 	}
 
@@ -93,15 +99,8 @@ func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 //   - c: The Gin context for the request.
 func (h *ClaudeCodeAPIHandler) ClaudeCountTokens(c *gin.Context) {
 	// Extract raw JSON data from the incoming request
-	rawJSON, err := c.GetRawData()
-	// If data retrieval fails, return a 400 Bad Request error.
-	if err != nil {
-		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
-			Error: handlers.ErrorDetail{
-				Message: fmt.Sprintf("Invalid request: %v", err),
-				Type:    "invalid_request_error",
-			},
-		})
+	rawJSON, ok := readClaudeRawJSON(c)
+	if !ok {
 		return
 	}
 
@@ -186,9 +185,17 @@ func (h *ClaudeCodeAPIHandler) handleNonStreamingResponse(c *gin.Context, rawJSO
 					log.Warnf("failed to close Claude gzip reader: %v", errClose)
 				}
 			}()
-			decompressed, errRead := io.ReadAll(gzReader)
+			decompressed, errRead := handlers.ReadLimitedResponseData(gzReader)
 			if errRead != nil {
 				log.Warnf("failed to read decompressed Claude response: %v", errRead)
+				c.JSON(http.StatusBadGateway, handlers.ErrorResponse{
+					Error: handlers.ErrorDetail{
+						Message: fmt.Sprintf("Failed to read decompressed response: %v", errRead),
+						Type:    "upstream_error",
+					},
+				})
+				cliCancel(errRead)
+				return
 			} else {
 				resp = decompressed
 			}

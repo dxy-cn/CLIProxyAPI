@@ -64,6 +64,24 @@ func TestSQLiteUsageStoreQueryMonitorRequestLogs(t *testing.T) {
 	assertStringSliceEqual(t, result.Filters.Sources, []string{"source-a"})
 }
 
+func TestSQLiteUsageStoreQueryMonitorRequestLogsClosesRowsBeforeFollowupQueries(t *testing.T) {
+	store := newTestSQLiteUsageStore(t)
+	defer store.Close()
+	store.db.SetMaxOpenConns(1)
+
+	base := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
+	insertUsageRecords(t, store,
+		UsageRecord{APIKey: "api-1", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-2 * time.Minute), TotalTokens: 10},
+		UsageRecord{APIKey: "api-1", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-1 * time.Minute), TotalTokens: 20},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := store.QueryMonitorRequestLogs(ctx, MonitorQueryFilter{}, 1, 2, 2); err != nil {
+		t.Fatalf("QueryMonitorRequestLogs with one DB connection failed: %v", err)
+	}
+}
+
 func TestSQLiteUsageStoreQueryMonitorRequestLogs_MaxRows(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteUsageStore(t)

@@ -56,6 +56,7 @@ const (
 	antigravityCreditsHintRefreshTimeout   = 5 * time.Second
 	antigravityShortQuotaCooldownThreshold = 5 * time.Minute
 	antigravityInstantRetryThreshold       = 3 * time.Second
+	maxAntigravityBufferedStreamBytes      = 10 * 1024 * 1024
 	// systemInstruction              = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"
 )
 
@@ -568,7 +569,7 @@ attemptLoop:
 			}
 
 			helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-			bodyBytes, errRead := io.ReadAll(httpResp.Body)
+			bodyBytes, errRead := helps.ReadLimitedResponseBody(httpResp.Body)
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("antigravity executor: close response body error: %v", errClose)
 			}
@@ -769,7 +770,7 @@ attemptLoop:
 			}
 			helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 			if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-				bodyBytes, errRead := io.ReadAll(httpResp.Body)
+				bodyBytes, errRead := helps.ReadLimitedErrorBody(httpResp.Body)
 				if errClose := httpResp.Body.Close(); errClose != nil {
 					log.Errorf("antigravity executor: close response body error: %v", errClose)
 				}
@@ -903,12 +904,14 @@ attemptLoop:
 						reporter.Publish(ctx, detail)
 					}
 
-					out <- cliproxyexecutor.StreamChunk{Payload: payload}
+					if !helps.SendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: payload}) {
+						return
+					}
 				}
 				if errScan := scanner.Err(); errScan != nil {
 					helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 					reporter.PublishFailure(ctx)
-					out <- cliproxyexecutor.StreamChunk{Err: errScan}
+					helps.SendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: errScan})
 				} else {
 					reporter.EnsurePublished(ctx)
 				}
@@ -920,6 +923,9 @@ attemptLoop:
 					return resp, chunk.Err
 				}
 				if len(chunk.Payload) > 0 {
+					if buffer.Len()+len(chunk.Payload)+1 > maxAntigravityBufferedStreamBytes {
+						return resp, fmt.Errorf("antigravity executor: buffered stream response exceeded %d bytes", maxAntigravityBufferedStreamBytes)
+					}
 					_, _ = buffer.Write(chunk.Payload)
 					_, _ = buffer.Write([]byte("\n"))
 				}
@@ -1235,7 +1241,7 @@ attemptLoop:
 			}
 			helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 			if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-				bodyBytes, errRead := io.ReadAll(httpResp.Body)
+				bodyBytes, errRead := helps.ReadLimitedErrorBody(httpResp.Body)
 				if errClose := httpResp.Body.Close(); errClose != nil {
 					log.Errorf("antigravity executor: close response body error: %v", errClose)
 				}
@@ -1372,17 +1378,21 @@ attemptLoop:
 
 					chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, bytes.Clone(payload), &param)
 					for i := range chunks {
-						out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}
+						if !helps.SendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: chunks[i]}) {
+							return
+						}
 					}
 				}
 				tail := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, []byte("[DONE]"), &param)
 				for i := range tail {
-					out <- cliproxyexecutor.StreamChunk{Payload: tail[i]}
+					if !helps.SendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: tail[i]}) {
+						return
+					}
 				}
 				if errScan := scanner.Err(); errScan != nil {
 					helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 					reporter.PublishFailure(ctx)
-					out <- cliproxyexecutor.StreamChunk{Err: errScan}
+					helps.SendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: errScan})
 				} else {
 					reporter.EnsurePublished(ctx)
 				}
@@ -1529,7 +1539,7 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
 		}
 
 		helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-		bodyBytes, errRead := io.ReadAll(httpResp.Body)
+		bodyBytes, errRead := helps.ReadLimitedResponseBody(httpResp.Body)
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("antigravity executor: close response body error: %v", errClose)
 		}
@@ -1692,7 +1702,7 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
 		}
 	}()
 
-	bodyBytes, errRead := io.ReadAll(httpResp.Body)
+	bodyBytes, errRead := helps.ReadLimitedResponseBody(httpResp.Body)
 	if errRead != nil {
 		return auth, errRead
 	}
@@ -1804,7 +1814,7 @@ func (e *AntigravityExecutor) updateAntigravityCreditsBalance(ctx context.Contex
 		}
 	}()
 
-	bodyBytes, errRead := io.ReadAll(httpResp.Body)
+	bodyBytes, errRead := helps.ReadLimitedResponseBody(httpResp.Body)
 	if errRead != nil || httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
 		log.Debugf("antigravity executor: loadCodeAssist returned status %d, err=%v", httpResp.StatusCode, errRead)
 		return

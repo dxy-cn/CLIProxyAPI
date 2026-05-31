@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -76,7 +75,10 @@ func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
 		return
 	}
 
-	rawJSON, _ := c.GetRawData()
+	rawJSON, ok := readGeminiRawJSON(c)
+	if !ok {
+		return
+	}
 	requestRawURI := c.Request.URL.Path
 
 	if requestRawURI == "/v1internal:generateContent" {
@@ -118,7 +120,16 @@ func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
 					log.Printf("warn: failed to close response body: %v", err)
 				}
 			}()
-			bodyBytes, _ := io.ReadAll(resp.Body)
+			bodyBytes, errReadBody := handlers.ReadLimitedResponseData(resp.Body)
+			if errReadBody != nil {
+				c.JSON(http.StatusBadGateway, handlers.ErrorResponse{
+					Error: handlers.ErrorDetail{
+						Message: fmt.Sprintf("Failed to read response body: %v", errReadBody),
+						Type:    "upstream_error",
+					},
+				})
+				return
+			}
 
 			c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
 				Error: handlers.ErrorDetail{
@@ -136,7 +147,7 @@ func (h *GeminiCLIAPIHandler) CLIHandler(c *gin.Context) {
 		for key, value := range resp.Header {
 			c.Header(key, value[0])
 		}
-		output, err := io.ReadAll(resp.Body)
+		output, err := handlers.ReadLimitedResponseData(resp.Body)
 		if err != nil {
 			log.Errorf("Failed to read response body: %v", err)
 			return

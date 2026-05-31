@@ -53,6 +53,7 @@ type Manager struct {
 	cond   *sync.Cond
 	queue  []queueItem
 	closed bool
+	maxLen int
 
 	pluginsMu sync.RWMutex
 	plugins   []Plugin
@@ -60,7 +61,13 @@ type Manager struct {
 
 // NewManager constructs a manager with a buffered queue.
 func NewManager(buffer int) *Manager {
-	m := &Manager{}
+	if buffer <= 0 {
+		buffer = 1
+	}
+	m := &Manager{
+		queue:  make([]queueItem, 0, buffer),
+		maxLen: buffer,
+	}
 	m.cond = sync.NewCond(&m.mu)
 	return m
 }
@@ -119,6 +126,12 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 		m.mu.Unlock()
 		return
 	}
+	if len(m.queue) >= m.maxLen {
+		queueSize := len(m.queue)
+		m.mu.Unlock()
+		log.WithField("queue_size", queueSize).Warn("usage: manager queue full, dropping usage record")
+		return
+	}
 	m.queue = append(m.queue, queueItem{ctx: ctx, record: record})
 	m.mu.Unlock()
 	m.cond.Signal()
@@ -135,6 +148,7 @@ func (m *Manager) run(ctx context.Context) {
 			return
 		}
 		item := m.queue[0]
+		m.queue[0] = queueItem{}
 		m.queue = m.queue[1:]
 		m.mu.Unlock()
 		m.dispatch(item)

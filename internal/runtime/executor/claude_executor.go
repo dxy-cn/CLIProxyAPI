@@ -249,7 +249,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 			helps.LogWithRequestID(ctx).Warn(msg)
 			return resp, statusErr{code: httpResp.StatusCode, msg: msg}
 		}
-		b, readErr := io.ReadAll(errBody)
+		b, readErr := helps.ReadLimitedErrorBody(errBody)
 		if readErr != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, readErr)
 			msg := fmt.Sprintf("failed to read error response body: %v", readErr)
@@ -277,7 +277,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 			log.Errorf("response body close error: %v", errClose)
 		}
 	}()
-	data, err := io.ReadAll(decodedBody)
+	data, err := helps.ReadLimitedResponseBody(decodedBody)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return resp, err
@@ -430,7 +430,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			helps.LogWithRequestID(ctx).Warn(msg)
 			return nil, statusErr{code: httpResp.StatusCode, msg: msg}
 		}
-		b, readErr := io.ReadAll(errBody)
+		b, readErr := helps.ReadLimitedErrorBody(errBody)
 		if readErr != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, readErr)
 			msg := fmt.Sprintf("failed to read error response body: %v", readErr)
@@ -482,12 +482,14 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				cloned := make([]byte, len(line)+1)
 				copy(cloned, line)
 				cloned[len(line)] = '\n'
-				out <- cliproxyexecutor.StreamChunk{Payload: cloned}
+				if !helps.SendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: cloned}) {
+					return
+				}
 			}
 			if errScan := scanner.Err(); errScan != nil {
 				helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 				reporter.PublishFailure(ctx)
-				out <- cliproxyexecutor.StreamChunk{Err: errScan}
+				helps.SendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: errScan})
 			}
 			return
 		}
@@ -519,13 +521,15 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				&param,
 			)
 			for i := range chunks {
-				out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}
+				if !helps.SendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Payload: chunks[i]}) {
+					return
+				}
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx)
-			out <- cliproxyexecutor.StreamChunk{Err: errScan}
+			helps.SendStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: errScan})
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
@@ -607,7 +611,7 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 			helps.LogWithRequestID(ctx).Warn(msg)
 			return cliproxyexecutor.Response{}, statusErr{code: resp.StatusCode, msg: msg}
 		}
-		b, readErr := io.ReadAll(errBody)
+		b, readErr := helps.ReadLimitedErrorBody(errBody)
 		if readErr != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, readErr)
 			msg := fmt.Sprintf("failed to read error response body: %v", readErr)
@@ -633,7 +637,7 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 			log.Errorf("response body close error: %v", errClose)
 		}
 	}()
-	data, err := io.ReadAll(decodedBody)
+	data, err := helps.ReadLimitedResponseBody(decodedBody)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return cliproxyexecutor.Response{}, err

@@ -630,7 +630,6 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 	if err != nil {
 		return MonitorRequestLogsResult{}, fmt.Errorf("usage store: query monitor request logs: %w", err)
 	}
-	defer rows.Close()
 
 	items := make([]MonitorRequestLog, 0, queryLimit)
 	groups := make(map[string]monitorGroupEntry)
@@ -656,6 +655,7 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 			&item.LatencyMs,
 			&item.FirstTokenLatencyMs,
 		); err != nil {
+			_ = closeRows(rows, "monitor request logs")
 			return MonitorRequestLogsResult{}, fmt.Errorf("usage store: scan monitor request logs: %w", err)
 		}
 		item.Failed = failed != 0
@@ -669,7 +669,11 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 		}
 	}
 	if err = rows.Err(); err != nil {
+		_ = closeRows(rows, "monitor request logs")
 		return MonitorRequestLogsResult{}, fmt.Errorf("usage store: iterate monitor request logs: %w", err)
+	}
+	if err = closeRows(rows, "monitor request logs"); err != nil {
+		return MonitorRequestLogsResult{}, err
 	}
 
 	groupStats := make(map[string]MonitorRequestGroupStats, len(groups))
@@ -712,11 +716,11 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 		if countErr != nil {
 			return MonitorRequestLogsResult{}, fmt.Errorf("usage store: batch group stats count: %w", countErr)
 		}
-		defer countRows.Close()
 		for countRows.Next() {
 			var src, mdl string
 			var total2, success int64
 			if countErr = countRows.Scan(&src, &mdl, &total2, &success); countErr != nil {
+				_ = closeRows(countRows, "batch group stats")
 				return MonitorRequestLogsResult{}, fmt.Errorf("usage store: scan batch group stats: %w", countErr)
 			}
 			key := MonitorGroupKey(normalizeMonitorSource(src), mdl)
@@ -725,7 +729,11 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 			}
 		}
 		if countErr = countRows.Err(); countErr != nil {
+			_ = closeRows(countRows, "batch group stats")
 			return MonitorRequestLogsResult{}, fmt.Errorf("usage store: iterate batch group stats: %w", countErr)
+		}
+		if countErr = closeRows(countRows, "batch group stats"); countErr != nil {
+			return MonitorRequestLogsResult{}, countErr
 		}
 
 		// Batch query: recent requests per (source, model) group using ROW_NUMBER
@@ -764,13 +772,13 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 		if recentErr != nil {
 			return MonitorRequestLogsResult{}, fmt.Errorf("usage store: batch group recent: %w", recentErr)
 		}
-		defer recentRows.Close()
 		recentMap := make(map[string][]MonitorRecentRequest, len(groups))
 		for recentRows.Next() {
 			var src, mdl string
 			var failed int
 			var ts int64
 			if recentErr = recentRows.Scan(&src, &mdl, &failed, &ts); recentErr != nil {
+				_ = closeRows(recentRows, "batch group recent")
 				return MonitorRequestLogsResult{}, fmt.Errorf("usage store: scan batch group recent: %w", recentErr)
 			}
 			key := MonitorGroupKey(normalizeMonitorSource(src), mdl)
@@ -781,7 +789,11 @@ func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter M
 			}
 		}
 		if recentErr = recentRows.Err(); recentErr != nil {
+			_ = closeRows(recentRows, "batch group recent")
 			return MonitorRequestLogsResult{}, fmt.Errorf("usage store: iterate batch group recent: %w", recentErr)
+		}
+		if recentErr = closeRows(recentRows, "batch group recent"); recentErr != nil {
+			return MonitorRequestLogsResult{}, recentErr
 		}
 		for key, recent := range recentMap {
 			reverseRecentRequests(recent)
@@ -903,13 +915,13 @@ func (s *sqliteUsageStore) QueryMonitorChannelStats(ctx context.Context, filter 
 		if crErr != nil {
 			return MonitorChannelStatsResult{}, fmt.Errorf("usage store: batch channel recent: %w", crErr)
 		}
-		defer crRows.Close()
 		channelRecentMap := make(map[string][]MonitorRecentRequest)
 		for crRows.Next() {
 			var src string
 			var failed int
 			var ts int64
 			if crErr = crRows.Scan(&src, &failed, &ts); crErr != nil {
+				_ = closeRows(crRows, "batch channel recent")
 				return MonitorChannelStatsResult{}, fmt.Errorf("usage store: scan batch channel recent: %w", crErr)
 			}
 			normalized := normalizeMonitorSource(src)
@@ -918,7 +930,11 @@ func (s *sqliteUsageStore) QueryMonitorChannelStats(ctx context.Context, filter 
 			})
 		}
 		if crErr = crRows.Err(); crErr != nil {
+			_ = closeRows(crRows, "batch channel recent")
 			return MonitorChannelStatsResult{}, fmt.Errorf("usage store: iterate batch channel recent: %w", crErr)
+		}
+		if crErr = closeRows(crRows, "batch channel recent"); crErr != nil {
+			return MonitorChannelStatsResult{}, crErr
 		}
 		for i := range items {
 			if recent, ok := channelRecentMap[items[i].Source]; ok {
@@ -942,7 +958,6 @@ func (s *sqliteUsageStore) QueryMonitorChannelStats(ctx context.Context, filter 
 		if mrErr != nil {
 			return MonitorChannelStatsResult{}, fmt.Errorf("usage store: batch model recent: %w", mrErr)
 		}
-		defer mrRows.Close()
 		type sourceModelKey struct{ source, model string }
 		modelRecentMap := make(map[sourceModelKey][]MonitorRecentRequest)
 		for mrRows.Next() {
@@ -950,6 +965,7 @@ func (s *sqliteUsageStore) QueryMonitorChannelStats(ctx context.Context, filter 
 			var failed int
 			var ts int64
 			if mrErr = mrRows.Scan(&src, &mdl, &failed, &ts); mrErr != nil {
+				_ = closeRows(mrRows, "batch model recent")
 				return MonitorChannelStatsResult{}, fmt.Errorf("usage store: scan batch model recent: %w", mrErr)
 			}
 			key := sourceModelKey{source: normalizeMonitorSource(src), model: mdl}
@@ -958,7 +974,11 @@ func (s *sqliteUsageStore) QueryMonitorChannelStats(ctx context.Context, filter 
 			})
 		}
 		if mrErr = mrRows.Err(); mrErr != nil {
+			_ = closeRows(mrRows, "batch model recent")
 			return MonitorChannelStatsResult{}, fmt.Errorf("usage store: iterate batch model recent: %w", mrErr)
+		}
+		if mrErr = closeRows(mrRows, "batch model recent"); mrErr != nil {
+			return MonitorChannelStatsResult{}, mrErr
 		}
 		for i := range items {
 			for j := range items[i].Models {
@@ -1074,7 +1094,6 @@ func (s *sqliteUsageStore) QueryMonitorFailureStats(ctx context.Context, filter 
 		if frErr != nil {
 			return MonitorFailureStatsResult{}, fmt.Errorf("usage store: batch failure recent: %w", frErr)
 		}
-		defer frRows.Close()
 
 		type sourceModelKey struct{ source, model string }
 		failureRecentMap := make(map[sourceModelKey][]MonitorRecentRequest)
@@ -1083,6 +1102,7 @@ func (s *sqliteUsageStore) QueryMonitorFailureStats(ctx context.Context, filter 
 			var failed int
 			var ts int64
 			if frErr = frRows.Scan(&src, &mdl, &failed, &ts); frErr != nil {
+				_ = closeRows(frRows, "batch failure recent")
 				return MonitorFailureStatsResult{}, fmt.Errorf("usage store: scan batch failure recent: %w", frErr)
 			}
 			key := sourceModelKey{source: normalizeMonitorSource(src), model: mdl}
@@ -1091,7 +1111,11 @@ func (s *sqliteUsageStore) QueryMonitorFailureStats(ctx context.Context, filter 
 			})
 		}
 		if frErr = frRows.Err(); frErr != nil {
+			_ = closeRows(frRows, "batch failure recent")
 			return MonitorFailureStatsResult{}, fmt.Errorf("usage store: iterate batch failure recent: %w", frErr)
+		}
+		if frErr = closeRows(frRows, "batch failure recent"); frErr != nil {
+			return MonitorFailureStatsResult{}, frErr
 		}
 		for key, recent := range failureRecentMap {
 			reverseRecentRequests(recent)

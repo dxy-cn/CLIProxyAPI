@@ -2,9 +2,13 @@ package management
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
@@ -154,6 +158,38 @@ func TestAPICallTransportAPIKeyAuthFallsBackToConfigProxyURL(t *testing.T) {
 				t.Fatalf("proxy URL = %v, want %s", proxyURL, tc.wantProxy)
 			}
 		})
+	}
+}
+
+func TestAPICallRejectsOversizedUpstreamResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", 10<<20+1)))
+	}))
+	defer upstream.Close()
+
+	h := &Handler{cfg: &config.Config{}}
+	payload, err := json.Marshal(apiCallRequest{
+		Method: http.MethodGet,
+		URL:    upstream.URL,
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/api-call", strings.NewReader(string(payload)))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.APICall(ctx)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("APICall status = %d, want %d; body=%s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "response too large") {
+		t.Fatalf("APICall body = %s, want response too large error", rec.Body.String())
 	}
 }
 

@@ -18,6 +18,8 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+const maxAmpProxyBufferedResponseBytes = 10 * 1024 * 1024
+
 func removeQueryValuesMatching(req *http.Request, key string, match string) {
 	if req == nil || req.URL == nil || match == "" {
 		return
@@ -54,6 +56,20 @@ type readCloser struct {
 
 func (rc *readCloser) Read(p []byte) (int, error) { return rc.r.Read(p) }
 func (rc *readCloser) Close() error               { return rc.c.Close() }
+
+func readAllUpTo(r io.Reader, maxBytes int64) ([]byte, bool, error) {
+	if maxBytes < 0 {
+		return nil, true, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, true, nil
+	}
+	return data, false, nil
+}
 
 // createReverseProxy creates a reverse proxy handler for Amp upstream
 // with automatic gzip decompression via ModifyResponse
@@ -129,7 +145,11 @@ func createReverseProxy(upstreamURL string, secretSource SecretSource) (*httputi
 		// If n < 2, we didn't get enough bytes, so it's not gzip
 		if n >= 2 && header[0] == 0x1f && header[1] == 0x8b {
 			// It's gzip - read the rest of the body
-			rest, err := io.ReadAll(originalBody)
+			rest, tooLarge, err := readAllUpTo(originalBody, int64(maxAmpProxyBufferedResponseBytes-n))
+			if tooLarge {
+				_ = originalBody.Close()
+				return fmt.Errorf("amp proxy: compressed response body exceeded %d bytes", maxAmpProxyBufferedResponseBytes)
+			}
 			if err != nil {
 				// Restore what we read and return original body (preserve Close behavior)
 				resp.Body = &readCloser{
@@ -140,7 +160,7 @@ func createReverseProxy(upstreamURL string, secretSource SecretSource) (*httputi
 			}
 
 			// Reconstruct complete gzipped data
-			gzippedData := append(header[:n], rest...)
+			gzippedData := append(bytes.Clone(header[:n]), rest...)
 
 			// Decompress
 			gzipReader, err := gzip.NewReader(bytes.NewReader(gzippedData))
@@ -152,8 +172,12 @@ func createReverseProxy(upstreamURL string, secretSource SecretSource) (*httputi
 				return nil
 			}
 
-			decompressed, err := io.ReadAll(gzipReader)
+			decompressed, tooLarge, err := readAllUpTo(gzipReader, maxAmpProxyBufferedResponseBytes)
 			_ = gzipReader.Close()
+			if tooLarge {
+				_ = originalBody.Close()
+				return fmt.Errorf("amp proxy: decompressed response body exceeded %d bytes", maxAmpProxyBufferedResponseBytes)
+			}
 			if err != nil {
 				log.Warnf("amp proxy: gzip decompress error: %v", err)
 				// Close original body and return in-memory copy

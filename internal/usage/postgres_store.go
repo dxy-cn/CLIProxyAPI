@@ -322,15 +322,22 @@ func (s *pgUsageStore) GetAggregatedStats(ctx context.Context) (AggregatedStats,
 	if err != nil {
 		return stats, fmt.Errorf("usage store: query api stats: %w", err)
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var key string
 		var as APIStats
 		if err = rows.Scan(&key, &as.TotalRequests, &as.TotalTokens); err != nil {
+			_ = closeRows(rows, "api stats")
 			return stats, fmt.Errorf("usage store: scan api stats: %w", err)
 		}
 		as.Models = make(map[string]ModelStats)
 		stats.APIs[key] = as
+	}
+	if err = rows.Err(); err != nil {
+		_ = closeRows(rows, "api stats")
+		return stats, fmt.Errorf("usage store: iterate api stats: %w", err)
+	}
+	if err = closeRows(rows, "api stats"); err != nil {
+		return stats, err
 	}
 
 	// By API key + Model
@@ -342,17 +349,24 @@ func (s *pgUsageStore) GetAggregatedStats(ctx context.Context) (AggregatedStats,
 	if err != nil {
 		return stats, fmt.Errorf("usage store: query model stats: %w", err)
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var apiKey, model string
 		var ms ModelStats
 		if err = rows.Scan(&apiKey, &model, &ms.TotalRequests, &ms.TotalTokens); err != nil {
+			_ = closeRows(rows, "model stats")
 			return stats, fmt.Errorf("usage store: scan model stats: %w", err)
 		}
 		if api, ok := stats.APIs[apiKey]; ok {
 			api.Models[model] = ms
 			stats.APIs[apiKey] = api
 		}
+	}
+	if err = rows.Err(); err != nil {
+		_ = closeRows(rows, "model stats")
+		return stats, fmt.Errorf("usage store: iterate model stats: %w", err)
+	}
+	if err = closeRows(rows, "model stats"); err != nil {
+		return stats, err
 	}
 
 	// By day
@@ -364,15 +378,22 @@ func (s *pgUsageStore) GetAggregatedStats(ctx context.Context) (AggregatedStats,
 	if err != nil {
 		return stats, fmt.Errorf("usage store: query day stats: %w", err)
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var day string
 		var count, tokens int64
 		if err = rows.Scan(&day, &count, &tokens); err != nil {
+			_ = closeRows(rows, "day stats")
 			return stats, fmt.Errorf("usage store: scan day stats: %w", err)
 		}
 		stats.RequestsByDay[day] = count
 		stats.TokensByDay[day] = tokens
+	}
+	if err = rows.Err(); err != nil {
+		_ = closeRows(rows, "day stats")
+		return stats, fmt.Errorf("usage store: iterate day stats: %w", err)
+	}
+	if err = closeRows(rows, "day stats"); err != nil {
+		return stats, err
 	}
 
 	// By hour
@@ -384,15 +405,22 @@ func (s *pgUsageStore) GetAggregatedStats(ctx context.Context) (AggregatedStats,
 	if err != nil {
 		return stats, fmt.Errorf("usage store: query hour stats: %w", err)
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var hour string
 		var count, tokens int64
 		if err = rows.Scan(&hour, &count, &tokens); err != nil {
+			_ = closeRows(rows, "hour stats")
 			return stats, fmt.Errorf("usage store: scan hour stats: %w", err)
 		}
 		stats.RequestsByHour[hour] = count
 		stats.TokensByHour[hour] = tokens
+	}
+	if err = rows.Err(); err != nil {
+		_ = closeRows(rows, "hour stats")
+		return stats, fmt.Errorf("usage store: iterate hour stats: %w", err)
+	}
+	if err = closeRows(rows, "hour stats"); err != nil {
+		return stats, err
 	}
 
 	// DetailCount only — full Details are available via GetDetails (paginated).
@@ -440,6 +468,9 @@ func (s *pgUsageStore) GetDetails(ctx context.Context, offset, limit int) ([]Det
 		}
 		detail.Failed = (failed != 0)
 		details = append(details, detail)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("usage store: iterate details: %w", err)
 	}
 
 	return details, nil

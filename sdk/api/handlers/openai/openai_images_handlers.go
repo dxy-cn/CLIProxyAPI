@@ -37,14 +37,32 @@ type imageCallResult struct {
 
 type sseFrameAccumulator struct {
 	pending []byte
+	err     error
+}
+
+func (a *sseFrameAccumulator) Err() error {
+	if a == nil {
+		return nil
+	}
+	return a.err
 }
 
 func (a *sseFrameAccumulator) AddChunk(chunk []byte) [][]byte {
-	if len(chunk) == 0 {
+	if a == nil || a.err != nil || len(chunk) == 0 {
 		return nil
 	}
 
-	if responsesSSENeedsLineBreak(a.pending, chunk) {
+	needsLineBreak := responsesSSENeedsLineBreak(a.pending, chunk)
+	extraBytes := len(chunk)
+	if needsLineBreak {
+		extraBytes++
+	}
+	if len(a.pending)+extraBytes > responsesSSEPendingMaxBytes {
+		a.pending = a.pending[:0]
+		a.err = responsesSSEPendingExceededError()
+		return nil
+	}
+	if needsLineBreak {
 		a.pending = append(a.pending, '\n')
 	}
 	a.pending = append(a.pending, chunk...)
@@ -73,7 +91,7 @@ func (a *sseFrameAccumulator) AddChunk(chunk []byte) [][]byte {
 }
 
 func (a *sseFrameAccumulator) Flush() [][]byte {
-	if len(a.pending) == 0 {
+	if a == nil || a.err != nil || len(a.pending) == 0 {
 		return nil
 	}
 
@@ -122,6 +140,9 @@ func multipartFileToDataURL(fileHeader *multipart.FileHeader) (string, error) {
 	if fileHeader == nil {
 		return "", fmt.Errorf("upload file is nil")
 	}
+	if fileHeader.Size > handlers.MaxRequestBodyBytes {
+		return "", fmt.Errorf("upload file too large: limit is %d bytes", handlers.MaxRequestBodyBytes)
+	}
 	f, err := fileHeader.Open()
 	if err != nil {
 		return "", fmt.Errorf("open upload file failed: %w", err)
@@ -132,9 +153,12 @@ func multipartFileToDataURL(fileHeader *multipart.FileHeader) (string, error) {
 		}
 	}()
 
-	data, err := io.ReadAll(f)
+	data, err := io.ReadAll(io.LimitReader(f, handlers.MaxRequestBodyBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("read upload file failed: %w", err)
+	}
+	if int64(len(data)) > handlers.MaxRequestBodyBytes {
+		return "", fmt.Errorf("upload file too large: limit is %d bytes", handlers.MaxRequestBodyBytes)
 	}
 
 	mediaType := strings.TrimSpace(fileHeader.Header.Get("Content-Type"))
@@ -174,14 +198,8 @@ func parseBoolField(raw string, fallback bool) bool {
 }
 
 func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
-	rawJSON, err := c.GetRawData()
-	if err != nil {
-		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
-			Error: handlers.ErrorDetail{
-				Message: fmt.Sprintf("Invalid request: %v", err),
-				Type:    "invalid_request_error",
-			},
-		})
+	rawJSON, ok := readOpenAIRawJSON(c)
+	if !ok {
 		return
 	}
 	if !json.Valid(rawJSON) {
@@ -392,14 +410,8 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 }
 
 func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
-	rawJSON, err := c.GetRawData()
-	if err != nil {
-		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
-			Error: handlers.ErrorDetail{
-				Message: fmt.Sprintf("Invalid request: %v", err),
-				Type:    "invalid_request_error",
-			},
-		})
+	rawJSON, ok := readOpenAIRawJSON(c)
+	if !ok {
 		return
 	}
 	if !json.Valid(rawJSON) {
@@ -881,6 +893,11 @@ func (h *OpenAIAPIHandler) forwardImagesStream(ctx context.Context, c *gin.Conte
 			return
 		}
 	}
+	if err := acc.Err(); err != nil {
+		emitError(&interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err})
+		cancel(err)
+		return
+	}
 
 	for {
 		select {
@@ -910,6 +927,11 @@ func (h *OpenAIAPIHandler) forwardImagesStream(ctx context.Context, c *gin.Conte
 					cancel(nil)
 					return
 				}
+			}
+			if err := acc.Err(); err != nil {
+				emitError(&interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err})
+				cancel(err)
+				return
 			}
 		}
 	}

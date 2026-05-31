@@ -45,7 +45,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const oauthCallbackSuccessHTML = `<html><head><meta charset="utf-8"><title>Authentication successful</title><script>setTimeout(function(){window.close();},5000);</script></head><body><h1>Authentication successful!</h1><p>You can close this window.</p><p>This window will close automatically in 5 seconds.</p></body></html>`
+const (
+	oauthCallbackSuccessHTML = `<html><head><meta charset="utf-8"><title>Authentication successful</title><script>setTimeout(function(){window.close();},5000);</script></head><body><h1>Authentication successful!</h1><p>You can close this window.</p><p>This window will close automatically in 5 seconds.</p></body></html>`
+	maxInboundBodyBytes      = 64 << 20
+)
 
 type serverOptionConfig struct {
 	extraMiddleware      []gin.HandlerFunc
@@ -66,6 +69,15 @@ func defaultRequestLoggerFactory(cfg *config.Config, configPath string) logging.
 	configDir := filepath.Dir(configPath)
 	logsDir := logging.ResolveLogDirectory(cfg)
 	return logging.NewFileRequestLogger(cfg.RequestLog, logsDir, configDir, cfg.ErrorLogsMaxFiles)
+}
+
+func limitRequestBodySize(maxBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c != nil && c.Request != nil && c.Request.Body != nil && maxBytes > 0 {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+		}
+		c.Next()
+	}
 }
 
 // WithMiddleware appends additional Gin middleware during server construction.
@@ -136,6 +148,10 @@ type Server struct {
 
 	// muxHTTPListener receives HTTP connections selected by the multiplexer.
 	muxHTTPListener *muxListener
+
+	// muxSniffConns tracks accepted connections that are still in protocol detection.
+	muxSniffMu    sync.Mutex
+	muxSniffConns map[net.Conn]struct{}
 
 	// handlers contains the API handlers for processing requests.
 	handlers    *handlers.BaseAPIHandler
@@ -280,6 +296,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	// Save initial YAML snapshot
 	s.oldConfigYaml, _ = yaml.Marshal(cfg)
 	s.UpdateBindingConfig(cfg)
+	engine.Use(limitRequestBodySize(maxInboundBodyBytes))
 	s.applyAccessConfig(nil, cfg)
 	if authManager != nil {
 		authManager.SetRetryConfig(cfg.RequestRetry, time.Duration(cfg.MaxRetryInterval)*time.Second, cfg.MaxRetryCredentials)
@@ -971,6 +988,11 @@ func (s *Server) Stop(ctx context.Context) error {
 		default:
 		}
 	}
+	if s.mgmt != nil {
+		if err := s.mgmt.Close(); err != nil {
+			log.Debugf("failed to close management handler: %v", err)
+		}
+	}
 
 	if s.muxHTTPListener != nil {
 		_ = s.muxHTTPListener.Close()
@@ -980,6 +1002,7 @@ func (s *Server) Stop(ctx context.Context) error {
 			log.Debugf("failed to close shared listener: %v", errClose)
 		}
 	}
+	s.closeMuxSniffConns()
 
 	// Shutdown the HTTP server.
 	if err := s.server.Shutdown(ctx); err != nil {

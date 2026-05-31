@@ -241,6 +241,44 @@ func TestModifyResponse_DecompressesChunkedJSON(t *testing.T) {
 	})
 }
 
+func TestModifyResponseRejectsOversizedGzipCompressedBody(t *testing.T) {
+	proxy, err := createReverseProxy("http://example.com", NewStaticSecretSource("k"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	limit := 10 * 1024 * 1024
+	body := append([]byte{0x1f, 0x8b}, bytes.Repeat([]byte("x"), limit+1)...)
+	resp := mkResp(http.StatusOK, http.Header{}, body)
+
+	err = proxy.ModifyResponse(resp)
+	if err == nil {
+		t.Fatal("expected oversized compressed body error")
+	}
+	if !strings.Contains(err.Error(), "amp proxy: compressed response body exceeded") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestModifyResponseRejectsOversizedGzipDecompressedBody(t *testing.T) {
+	proxy, err := createReverseProxy("http://example.com", NewStaticSecretSource("k"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	limit := 10 * 1024 * 1024
+	gzipped := gzipBytes(bytes.Repeat([]byte("x"), limit+1))
+	resp := mkResp(http.StatusOK, http.Header{}, gzipped)
+
+	err = proxy.ModifyResponse(resp)
+	if err == nil {
+		t.Fatal("expected oversized decompressed body error")
+	}
+	if !strings.Contains(err.Error(), "amp proxy: decompressed response body exceeded") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestReverseProxy_InjectsHeaders(t *testing.T) {
 	gotHeaders := make(chan http.Header, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

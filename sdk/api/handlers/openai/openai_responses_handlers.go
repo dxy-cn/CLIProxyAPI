@@ -23,6 +23,8 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+const responsesSSEPendingMaxBytes = 10 * 1024 * 1024
+
 func writeResponsesSSEChunk(w io.Writer, chunk []byte) {
 	if w == nil || len(chunk) == 0 {
 		return
@@ -44,15 +46,53 @@ func writeResponsesSSEChunk(w io.Writer, chunk []byte) {
 	}
 }
 
+func responsesSSEPendingExceededError() error {
+	return fmt.Errorf("responses sse pending buffer exceeded %d bytes", responsesSSEPendingMaxBytes)
+}
+
+func writeResponsesSSEError(w io.Writer, errMsg *interfaces.ErrorMessage) {
+	if w == nil || errMsg == nil {
+		return
+	}
+	status := http.StatusInternalServerError
+	if errMsg.StatusCode > 0 {
+		status = errMsg.StatusCode
+	}
+	errText := http.StatusText(status)
+	if errMsg.Error != nil && errMsg.Error.Error() != "" {
+		errText = errMsg.Error.Error()
+	}
+	chunk := handlers.BuildOpenAIResponsesStreamErrorChunk(status, errText, 0)
+	_, _ = fmt.Fprintf(w, "\nevent: error\ndata: %s\n\n", string(chunk))
+}
+
 type responsesSSEFramer struct {
 	pending []byte
+	err     error
+}
+
+func (f *responsesSSEFramer) Err() error {
+	if f == nil {
+		return nil
+	}
+	return f.err
 }
 
 func (f *responsesSSEFramer) WriteChunk(w io.Writer, chunk []byte) {
-	if len(chunk) == 0 {
+	if f == nil || f.err != nil || len(chunk) == 0 {
 		return
 	}
-	if responsesSSENeedsLineBreak(f.pending, chunk) {
+	needsLineBreak := responsesSSENeedsLineBreak(f.pending, chunk)
+	extraBytes := len(chunk)
+	if needsLineBreak {
+		extraBytes++
+	}
+	if len(f.pending)+extraBytes > responsesSSEPendingMaxBytes {
+		f.pending = f.pending[:0]
+		f.err = responsesSSEPendingExceededError()
+		return
+	}
+	if needsLineBreak {
 		f.pending = append(f.pending, '\n')
 	}
 	f.pending = append(f.pending, chunk...)
@@ -77,7 +117,7 @@ func (f *responsesSSEFramer) WriteChunk(w io.Writer, chunk []byte) {
 }
 
 func (f *responsesSSEFramer) Flush(w io.Writer) {
-	if len(f.pending) == 0 {
+	if f == nil || f.err != nil || len(f.pending) == 0 {
 		return
 	}
 	if len(bytes.TrimSpace(f.pending)) == 0 {
@@ -243,15 +283,8 @@ func (h *OpenAIResponsesAPIHandler) OpenAIResponsesModels(c *gin.Context) {
 // Parameters:
 //   - c: The Gin context containing the HTTP request and response
 func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
-	rawJSON, err := c.GetRawData()
-	// If data retrieval fails, return a 400 Bad Request error.
-	if err != nil {
-		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
-			Error: handlers.ErrorDetail{
-				Message: fmt.Sprintf("Invalid request: %v", err),
-				Type:    "invalid_request_error",
-			},
-		})
+	rawJSON, ok := readOpenAIRawJSON(c)
+	if !ok {
 		return
 	}
 
@@ -266,14 +299,8 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 }
 
 func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
-	rawJSON, err := c.GetRawData()
-	if err != nil {
-		c.JSON(http.StatusBadRequest, handlers.ErrorResponse{
-			Error: handlers.ErrorDetail{
-				Message: fmt.Sprintf("Invalid request: %v", err),
-				Type:    "invalid_request_error",
-			},
-		})
+	rawJSON, ok := readOpenAIRawJSON(c)
+	if !ok {
 		return
 	}
 
@@ -467,6 +494,13 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 			setSSEHeaders()
 			handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 			framer.WriteChunk(c.Writer, chunk)
+			if err := framer.Err(); err != nil {
+				errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err}
+				writeResponsesSSEError(c.Writer, errMsg)
+				flusher.Flush()
+				cancel(err)
+				return
+			}
 			flusher.Flush()
 			completedOutput := []byte("[]")
 			completed := false
@@ -512,8 +546,18 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStreamWithCapture(c *gin.Con
 	completedOutput := []byte("[]")
 	completed := false
 	var terminalErr *interfaces.ErrorMessage
+	emitFramerError := func(err error) {
+		if err == nil || terminalErr != nil {
+			return
+		}
+		terminalErr = &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err}
+		writeResponsesSSEError(c.Writer, terminalErr)
+	}
 	h.ForwardStream(c, flusher, cancel, data, errs, handlers.StreamForwardOptions{
 		WriteChunk: func(chunk []byte) {
+			if terminalErr != nil {
+				return
+			}
 			for _, payload := range websocketJSONPayloadsFromChunk(chunk) {
 				if gjson.GetBytes(payload, "type").String() == wsEventTypeCompleted {
 					completed = true
@@ -521,25 +565,23 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStreamWithCapture(c *gin.Con
 				}
 			}
 			framer.WriteChunk(c.Writer, chunk)
+			if err := framer.Err(); err != nil {
+				emitFramerError(err)
+				cancel(err)
+			}
 		},
 		WriteTerminalError: func(errMsg *interfaces.ErrorMessage) {
-			terminalErr = errMsg
-			framer.Flush(c.Writer)
-			if errMsg == nil {
+			if terminalErr != nil {
 				return
 			}
-			status := http.StatusInternalServerError
-			if errMsg.StatusCode > 0 {
-				status = errMsg.StatusCode
-			}
-			errText := http.StatusText(status)
-			if errMsg.Error != nil && errMsg.Error.Error() != "" {
-				errText = errMsg.Error.Error()
-			}
-			chunk := handlers.BuildOpenAIResponsesStreamErrorChunk(status, errText, 0)
-			_, _ = fmt.Fprintf(c.Writer, "\nevent: error\ndata: %s\n\n", string(chunk))
+			terminalErr = errMsg
+			framer.Flush(c.Writer)
+			writeResponsesSSEError(c.Writer, errMsg)
 		},
 		WriteDone: func() {
+			if terminalErr != nil {
+				return
+			}
 			framer.Flush(c.Writer)
 			_, _ = c.Writer.Write([]byte("\n"))
 		},

@@ -16,7 +16,9 @@ import (
 
 const (
 	defaultBufferSize      = 100
+	defaultMaxBufferSize   = defaultBufferSize * 100
 	defaultFlushInterval   = 5 * time.Second
+	defaultFlushTimeout    = 30 * time.Second
 	defaultRetentionDays   = 30
 	defaultCleanupInterval = 4 * time.Hour
 )
@@ -222,7 +224,10 @@ func (p *DatabasePlugin) flush() {
 	p.buffer = make([]UsageRecord, 0, defaultBufferSize)
 	p.bufferMu.Unlock()
 
-	added, skipped, err := p.store.InsertBatch(context.Background(), records)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultFlushTimeout)
+	defer cancel()
+
+	added, skipped, err := p.store.InsertBatch(ctx, records)
 	if err != nil {
 		log.WithError(err).Warn("usage: failed to flush records to database")
 	} else if skipped > 0 {
@@ -279,6 +284,12 @@ func (p *DatabasePlugin) HandleUsage(ctx context.Context, record coreusage.Recor
 	}
 
 	p.bufferMu.Lock()
+	if len(p.buffer) >= defaultMaxBufferSize {
+		bufferSize := len(p.buffer)
+		p.bufferMu.Unlock()
+		log.WithField("buffer_size", bufferSize).Warn("usage: database buffer full, dropping usage record")
+		return
+	}
 	p.buffer = append(p.buffer, dbRecord)
 	shouldFlush := len(p.buffer) >= defaultBufferSize
 	p.bufferMu.Unlock()

@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -138,5 +139,26 @@ func TestForwardResponsesStreamDropsIncompleteTrailingDataChunkOnFlush(t *testin
 
 	if got := recorder.Body.String(); got != "\n" {
 		t.Fatalf("expected incomplete trailing data to be dropped on flush.\nGot: %q", got)
+	}
+}
+
+func TestForwardResponsesStreamEmitsErrorWhenPendingExceedsCap(t *testing.T) {
+	h, recorder, c, flusher := newResponsesStreamTestHandler(t)
+
+	data := make(chan []byte, 1)
+	errs := make(chan *interfaces.ErrorMessage)
+	limit := 10 * 1024 * 1024
+	data <- append([]byte(`data: {"type":"response.created","padding":"`), bytes.Repeat([]byte("x"), limit+1)...)
+	close(data)
+	close(errs)
+
+	h.forwardResponsesStream(c, flusher, func(error) {}, data, errs, nil)
+
+	body := recorder.Body.String()
+	if !strings.Contains(body, "event: error") {
+		t.Fatalf("expected SSE error event, got: %q", body)
+	}
+	if !strings.Contains(body, "responses sse pending buffer exceeded") {
+		t.Fatalf("expected pending cap error, got: %q", body)
 	}
 }

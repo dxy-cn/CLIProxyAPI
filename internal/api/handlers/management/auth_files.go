@@ -47,6 +47,9 @@ const (
 	codexCallbackPort     = 1455
 	geminiCLIEndpoint     = "https://cloudcode-pa.googleapis.com"
 	geminiCLIVersion      = "v1internal"
+
+	maxAuthFileBodyBytes         int64 = 1 << 20
+	maxAuthExternalResponseBytes int64 = 1 << 20
 )
 
 type callbackForwarder struct {
@@ -60,6 +63,7 @@ var (
 	callbackForwarders    = make(map[int]*callbackForwarder)
 	errAuthFileMustBeJSON = errors.New("auth file must be .json")
 	errAuthFileNotFound   = errors.New("auth file not found")
+	errAuthFileTooLarge   = errors.New("auth file too large")
 )
 
 func extractLastRefreshTimestamp(meta map[string]any) (time.Time, bool) {
@@ -603,6 +607,32 @@ func isUnsafeAuthFileName(name string) bool {
 	return false
 }
 
+func readAuthFileBody(body io.Reader) ([]byte, error) {
+	return readLimitedManagementBody(body, maxAuthFileBodyBytes, errAuthFileTooLarge)
+}
+
+func readAuthExternalResponseBody(body io.Reader) ([]byte, error) {
+	return readLimitedManagementBody(body, maxAuthExternalResponseBytes, nil)
+}
+
+func readLimitedManagementBody(body io.Reader, maxBytes int64, errTooLarge error) ([]byte, error) {
+	if body == nil {
+		return nil, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(body, maxBytes+1))
+	if err != nil {
+		return data, err
+	}
+	if int64(len(data)) <= maxBytes {
+		return data, nil
+	}
+	data = data[:maxBytes]
+	if errTooLarge != nil {
+		return data, fmt.Errorf("%w: limit is %d bytes", errTooLarge, maxBytes)
+	}
+	return data, nil
+}
+
 // Download single auth file by name
 func (h *Handler) DownloadAuthFile(c *gin.Context) {
 	name := strings.TrimSpace(c.Query("name"))
@@ -645,6 +675,10 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		if _, errUpload := h.storeUploadedAuthFile(ctx, fileHeaders[0]); errUpload != nil {
 			if errors.Is(errUpload, errAuthFileMustBeJSON) {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "file must be .json"})
+				return
+			}
+			if errors.Is(errUpload, errAuthFileTooLarge) {
+				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "auth file too large"})
 				return
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": errUpload.Error()})
@@ -697,8 +731,12 @@ func (h *Handler) UploadAuthFile(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "name must end with .json"})
 		return
 	}
-	data, err := io.ReadAll(c.Request.Body)
+	data, err := readAuthFileBody(c.Request.Body)
 	if err != nil {
+		if errors.Is(err, errAuthFileTooLarge) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "auth file too large"})
+			return
+		}
 		c.JSON(400, gin.H{"error": "failed to read body"})
 		return
 	}
@@ -829,7 +867,7 @@ func (h *Handler) storeUploadedAuthFile(ctx context.Context, file *multipart.Fil
 	}
 	defer src.Close()
 
-	data, err := io.ReadAll(src)
+	data, err := readAuthFileBody(src)
 	if err != nil {
 		return "", fmt.Errorf("failed to read uploaded file: %w", err)
 	}
@@ -868,7 +906,7 @@ func requestedAuthFileNamesForDelete(c *gin.Context) ([]string, error) {
 		return names, nil
 	}
 
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := readAuthFileBody(c.Request.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read body")
 	}
@@ -1697,7 +1735,7 @@ func (h *Handler) RequestGeminiCLIToken(c *gin.Context) {
 			}
 		}()
 
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := readAuthExternalResponseBody(resp.Body)
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			log.Errorf("Get user info request failed with status %d: %s", resp.StatusCode, string(bodyBytes))
 			SetOAuthSessionError(state, fmt.Sprintf("Get user info request failed with status %d", resp.StatusCode))
@@ -2514,7 +2552,7 @@ func callGeminiCLI(ctx context.Context, httpClient *http.Client, endpoint string
 	}()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := readAuthExternalResponseBody(resp.Body)
 		return fmt.Errorf("api request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
@@ -2547,7 +2585,7 @@ func fetchGCPProjects(ctx context.Context, httpClient *http.Client) ([]interface
 	}()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := readAuthExternalResponseBody(resp.Body)
 		return nil, fmt.Errorf("project list request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
@@ -2578,7 +2616,7 @@ func checkCloudAPIIsEnabled(ctx context.Context, httpClient *http.Client, projec
 		}
 
 		if resp.StatusCode == http.StatusOK {
-			bodyBytes, _ := io.ReadAll(resp.Body)
+			bodyBytes, _ := readAuthExternalResponseBody(resp.Body)
 			if gjson.GetBytes(bodyBytes, "state").String() == "ENABLED" {
 				_ = resp.Body.Close()
 				continue
@@ -2598,7 +2636,7 @@ func checkCloudAPIIsEnabled(ctx context.Context, httpClient *http.Client, projec
 			return false, fmt.Errorf("failed to execute request: %w", errDo)
 		}
 
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := readAuthExternalResponseBody(resp.Body)
 		errMessage := string(bodyBytes)
 		errMessageResult := gjson.GetBytes(bodyBytes, "error.message")
 		if errMessageResult.Exists() {

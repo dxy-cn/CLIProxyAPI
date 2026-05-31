@@ -35,6 +35,7 @@ const (
 	wsTimelineBodyKey    = "WEBSOCKET_TIMELINE_OVERRIDE"
 	wsTimelineMaxBytes   = 256 * 1024
 	wsTimelineMaxPayload = 4 * 1024
+	wsReadLimit          = responsesSSEPendingMaxBytes
 )
 
 var responsesWebsocketUpgrader = websocket.Upgrader{
@@ -53,6 +54,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	if err != nil {
 		return
 	}
+	conn.SetReadLimit(wsReadLimit)
 	passthroughSessionID := uuid.NewString()
 	downstreamSessionKey := websocketDownstreamSessionKey(c.Request)
 	retainResponsesWebsocketToolCaches(downstreamSessionKey)

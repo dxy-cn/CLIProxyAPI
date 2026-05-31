@@ -76,10 +76,10 @@ func TestGetMonitorHourlyTokens_DatabasePluginIncludesCurrentPartialHour(t *test
 		t.Fatalf("expected database plugin to be initialized")
 	}
 
-	anchor := time.Now().Local().Truncate(time.Hour)
-	partialHourRecord := anchor.Add(17 * time.Minute)
+	partialHourRecord := time.Now().Local().Add(-time.Minute)
+	anchor := partialHourRecord.Truncate(time.Hour)
 	start := anchor.Add(-23 * time.Hour)
-	end := anchor.Add(27 * time.Minute)
+	end := partialHourRecord.Add(time.Minute)
 
 	added, skipped, err := plugin.ImportRecords(usage.StatisticsSnapshot{
 		APIs: map[string]usage.APISnapshot{
