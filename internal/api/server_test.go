@@ -747,6 +747,27 @@ func TestCodexDirectRouteAppliesAccountBindMiddleware(t *testing.T) {
 	}
 }
 
+func TestAuthMiddlewareRejectsWhenNoProvidersAreConfigured(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	router.Use(AuthMiddleware(sdkaccess.NewManager()))
+	router.GET("/protected", func(c *gin.Context) {
+		t.Fatalf("request reached protected handler without an API key provider")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "Missing API key") {
+		t.Fatalf("response did not explain missing key: %s", rr.Body.String())
+	}
+}
+
 func testCodexJWT(t *testing.T, accountID string) string {
 	t.Helper()
 

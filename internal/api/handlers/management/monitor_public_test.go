@@ -94,6 +94,39 @@ auth:
 	}
 }
 
+func TestPublicMonitorAPIKeyMiddlewareDoesNotFallbackWhenStoreIsAuthoritative(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	configYaml := []byte(`
+api-keys:
+  - sk-stale
+`)
+	if err := os.WriteFile(configPath, configYaml, 0o600); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	h := NewHandler(&proxyconfig.Config{
+		SDKConfig: proxyconfig.SDKConfig{
+			APIKeys: proxyconfig.FlexAPIKeyList{"sk-stale"},
+		},
+	}, configPath, nil)
+	h.apiKeyStore = &fakeAPIKeyStore{}
+
+	router := gin.New()
+	router.GET("/public-monitor/quota", h.PublicMonitorAPIKeyMiddleware(), func(c *gin.Context) {
+		t.Fatalf("stale key reached credential handler")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/public-monitor/quota?api_key=sk-stale", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestPublicMonitorAPIKeyMiddlewareForcesValidatedKeyFilter(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

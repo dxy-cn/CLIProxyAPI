@@ -200,11 +200,10 @@ func (h *Handler) monitorAPIKeyRecords(ctx context.Context) []monitorAPIKeyRecor
 	}
 	if h.apiKeyStore != nil {
 		records, err := h.apiKeyStore.ListAPIKeyRecords(ctx)
-		if err == nil {
-			if normalized := storeMonitorAPIKeyRecords(records); len(normalized) > 0 {
-				return normalized
-			}
+		if err != nil {
+			return nil
 		}
+		return storeMonitorAPIKeyRecords(records)
 	}
 
 	configFilePath := strings.TrimSpace(h.configFilePath)
