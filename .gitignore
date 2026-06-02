@@ -27,19 +27,16 @@ auths/*
 
 # Documentation
 docs/*
-AGENTS.md
 CLAUDE.md
 GEMINI.md
 
 # Tooling metadata
 .vscode/*
 .worktrees/
-.codex/*
 .claude/*
 .gemini/*
 .serena/*
 .agent/*
-.agents/*
 .opencode/*
 .idea/*
 .beads/*

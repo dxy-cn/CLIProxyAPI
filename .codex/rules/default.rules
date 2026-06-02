@@ -1,0 +1,32 @@
+prefix_rule(
+    pattern = ["git", ["commit", "push", "tag", "reset", "checkout", "remote"]],
+    decision = "prompt",
+    justification = "Repository history or remote changes require explicit review.",
+    match = [
+        "git commit -m update",
+        "git push origin pre-main",
+        "git tag v1.0.0",
+        "git reset --hard HEAD",
+        "git checkout main",
+        "git remote set-url origin git@example.com:x/y.git",
+    ],
+)
+
+prefix_rule(
+    pattern = ["rm", "-rf"],
+    decision = "prompt",
+    justification = "Recursive deletion should be reviewed before running.",
+    match = [
+        "rm -rf tmp",
+        "rm -rf .git",
+    ],
+)
+
+prefix_rule(
+    pattern = ["go", "get"],
+    decision = "prompt",
+    justification = "Go dependency changes should be intentional and verified.",
+    match = [
+        "go get github.com/example/pkg",
+    ],
+)
