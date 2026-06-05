@@ -2,20 +2,21 @@
 
 English | [Chinese](README_CN.md)
 
-CLI Proxy API is a Go backend that exposes one proxy endpoint for multiple AI client protocols. It accepts OpenAI-compatible Chat Completions, Completions, Images, Responses, Anthropic Claude Messages, Gemini native calls, Codex Responses, Codex WebSocket traffic, and Amp CLI provider calls, then routes each request to the configured upstream account, API key, OAuth token, or OpenAI-compatible provider.
+CLI Proxy API is a Go backend that exposes one proxy endpoint for multiple AI client protocols. It accepts OpenAI-compatible Chat Completions, Completions, Images, Videos, Responses, Anthropic Claude Messages, Gemini native calls, Codex Responses, Codex WebSocket traffic, xAI image/video calls, and Amp CLI provider calls, then routes each request to the configured upstream account, API key, OAuth token, or OpenAI-compatible provider.
 
 The server is built around a shared runtime that handles authentication, model registration, protocol translation, retries, credential scheduling, request logging, usage statistics, and management APIs.
 
 ## Main Capabilities
 
-- Unified API surface for OpenAI, Claude, Gemini, Codex, and Amp-compatible clients.
-- Multiple upstream credential types: OAuth token files, provider API keys, Vertex service accounts, OpenAI-compatible providers, and Amp upstream keys.
+- Unified API surface for OpenAI, Claude, Gemini, Codex, xAI, and Amp-compatible clients.
+- Multiple upstream credential types: OAuth token files, provider API keys, Vertex service accounts, OpenAI-compatible providers, xAI OAuth credentials, and Amp upstream keys.
 - Request translation between client protocols and provider executors.
 - Model registry with aliases, prefixes, exclusions, provider-specific model lists, and embedded model catalog fallback.
 - Credential routing strategies: `round-robin`, `fill-first`, `sequential-fill`, and `account-bind`.
+- OpenAI-compatible image and video endpoints, including xAI Grok image and video models.
 - Codex Responses WebSocket forwarding with optional WebSocket authentication.
-- Management API and web control panel for config, auth files, API keys, model monitor data, usage, logs, and routing settings.
-- Request logging, rotating application logs, health checks, optional pprof, and usage persistence.
+- Management API and web control panel for config, auth files, API keys, API-key usage, model monitor data, usage queues, logs, and routing settings.
+- Request logging, rotating application logs, health checks, optional pprof, Redis-style usage queues, and usage persistence.
 - Local file, PostgreSQL, MySQL, object store, or Git-backed config/auth storage.
 - SDK package for embedding the same proxy runtime in another Go application.
 
@@ -30,7 +31,8 @@ The server is built around a shared runtime that handles authentication, model r
 | Vertex / AI Studio          | Vertex import or stored OAuth credentials     | Gemini/Vertex executor and translated request handling                                            |
 | Antigravity                 | Antigravity OAuth login files                 | Model execution, signature handling, and optional credits fallback                                |
 | Kimi                        | Kimi device login files                       | Chat-completion style execution through the shared runtime                                        |
-| OpenAI-compatible providers | `openai-compatibility` entries                | Configurable base URL, API key, headers, model aliases, and compact responses                     |
+| xAI                         | xAI OAuth auth files                          | Chat, image, and video execution, including Grok image/video models and OAuth callback flow       |
+| OpenAI-compatible providers | `openai-compatibility` entries                | Configurable base URL, API key, headers, model aliases, compact responses, and image-capable models |
 | Amp                         | `ampcode` config                              | Amp management proxy, provider aliases, Gemini bridge, and fallback to upstream Amp control plane |
 
 ## API Surface
@@ -53,6 +55,11 @@ Main client-facing routes:
 | `POST /v1/completions`              | OpenAI Completions                                               |
 | `POST /v1/images/generations`       | OpenAI-compatible image generation                               |
 | `POST /v1/images/edits`             | OpenAI-compatible image edits                                    |
+| `POST /v1/videos`                   | OpenAI-compatible video creation backed by xAI Grok video models |
+| `POST /v1/videos/generations`       | xAI video generation endpoint                                    |
+| `POST /v1/videos/edits`             | xAI video edit endpoint                                          |
+| `POST /v1/videos/extensions`        | xAI video extension endpoint                                     |
+| `GET /v1/videos/:request_id`        | Retrieve xAI video request status or result                      |
 | `POST /v1/messages`                 | Anthropic Claude Messages                                        |
 | `POST /v1/messages/count_tokens`    | Claude token counting                                            |
 | `POST /v1/responses`                | OpenAI/Codex Responses API                                       |
@@ -135,6 +142,7 @@ go run ./cmd/server --config config.yaml --codex-device-login
 go run ./cmd/server --config config.yaml --claude-login
 go run ./cmd/server --config config.yaml --antigravity-login
 go run ./cmd/server --config config.yaml --kimi-login
+go run ./cmd/server --config config.yaml --xai-login
 ```
 
 Useful login flags:
@@ -167,6 +175,7 @@ See [config.example.yaml](config.example.yaml) for the full schema. Important to
 | `local-model`               | Use only the embedded model catalog                                     |
 | `force-model-prefix`        | Require prefixed model names for prefixed credentials                   |
 | `request-log`               | Enable detailed request logging                                         |
+| `disable-image-generation`  | Disable image tool injection globally or only on chat-style endpoints   |
 | `passthrough-headers`       | Forward selected upstream response headers to clients                   |
 | `request-retry`             | Retry count for failed provider requests                                |
 | `max-retry-credentials`     | Limit how many credentials are attempted per failed request             |
@@ -175,12 +184,19 @@ See [config.example.yaml](config.example.yaml) for the full schema. Important to
 | `streaming.bootstrap-retries` | Retry count before any streaming bytes are sent, including TTFT timeout |
 | `disable-cooling`           | Disable quota cooldown scheduling                                       |
 | `usage-statistics-enabled`  | Enable in-memory usage aggregation                                      |
+| `redis-usage-queue-retention-seconds` | In-memory usage queue retention for the Management API                  |
 | `usage-persistence-enabled` | Persist usage data to PostgreSQL, MySQL, or SQLite                      |
 | `ws-auth`                   | Require auth on WebSocket endpoints                                     |
+| `remote-management`         | Management secret, remote access, and control panel asset settings      |
+| `remote-management.disable-control-panel` | Disable the bundled management panel route and panel asset download     |
+| `remote-management.disable-auto-update-panel` | Disable background management panel asset updates                       |
+| `remote-management.panel-release-url` | Override the management panel release asset URL                         |
 | `routing.strategy`          | Credential selection strategy                                           |
 | `payload`                   | Default, override, raw override, and filter rules for provider payloads |
 
 Provider sections support common controls such as `api-key`, `priority`, `prefix`, `base-url`, `proxy-url`, `models`, `headers`, and `excluded-models`, depending on provider type.
+
+`disable-image-generation` accepts `false`, `true`, or `"chat"`. `true` disables `image_generation` injection and returns `404` for `/v1/images/*` endpoints. `"chat"` only disables image generation injection on non-image endpoints while keeping image endpoints available.
 
 ## Routing and Models
 
@@ -218,16 +234,19 @@ Then open:
 
 ```text
 http://127.0.0.1:8317/management.html
+http://127.0.0.1:8317/user/monitor
 ```
 
 The management API provides endpoints for:
 
 - reading and updating `config.yaml`;
 - managing API keys and auth files;
-- OAuth helper flows;
+- API-key usage summaries and live usage queue records;
+- OAuth helper flows, including xAI;
 - model and quota monitor data;
 - request logs and usage statistics;
 - routing strategy and WebSocket auth settings;
+- public monitor endpoints for scoped API keys;
 - Amp configuration and monitor metadata.
 
 Keep `allow-remote: false` for local-only administration unless the server is protected by TLS, a trusted reverse proxy, and a strong management key.
@@ -248,6 +267,8 @@ External stores are selected with environment variables. A local `.env` file in 
 Startup preference is PostgreSQL, then MySQL, then object store, then Git store, then local files.
 
 When `usage-persistence-enabled` is true, usage persistence uses PostgreSQL first when `PGSTORE_DSN` is present, then MySQL when `MYSQLSTORE_DSN` is present, otherwise SQLite in `auth-dir`.
+
+When Home control-plane mode is enabled, the server can receive Home credentials through `--home-jwt` or `HOME_JWT`. `--home-disable-cluster-discovery` keeps the configured endpoint instead of discovering a cluster endpoint.
 
 ## Amp Integration
 
@@ -287,7 +308,9 @@ Important directories:
 | `internal/api`              | Gin server, public API routes, management route registration                                             |
 | `internal/api/modules/amp`  | Amp integration routes and upstream fallback                                                             |
 | `internal/config`           | YAML schema, config loading, migration helpers                                                           |
-| `internal/runtime/executor` | Provider executors for Codex, Claude, Gemini, Vertex, Antigravity, Kimi, and OpenAI-compatible upstreams |
+| `internal/runtime/executor` | Provider executors for Codex, Claude, Gemini, Vertex, Antigravity, Kimi, xAI, and OpenAI-compatible upstreams |
+| `internal/home`             | Optional Home control-plane integration                                                                  |
+| `internal/redisqueue`       | Redis-style usage queue protocol and refresh notifications                                               |
 | `internal/translator`       | Protocol translation between client request formats and runtime requests                                 |
 | `internal/store`            | PostgreSQL, MySQL, object store, Git, and file-backed storage                                            |
 | `internal/usage`            | Usage aggregation and persistence                                                                        |
