@@ -12,18 +12,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/api"
-	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/redisqueue"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
-	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/wsrelay"
-	sdkaccess "github.com/router-for-me/CLIProxyAPI/v6/sdk/access"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
-	"github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/wsrelay"
+	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -350,17 +350,15 @@ func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
 	if s.coreManager == nil {
 		return
 	}
-	GlobalModelRegistry().UnregisterClient(id)
+	id = strings.TrimSpace(id)
+	var provider string
 	if existing, ok := s.coreManager.GetByID(id); ok && existing != nil {
-		existing.Disabled = true
-		existing.Status = coreauth.StatusDisabled
-		if _, err := s.coreManager.Update(ctx, existing); err != nil {
-			log.Errorf("failed to disable auth %s: %v", id, err)
-		}
-		if strings.EqualFold(strings.TrimSpace(existing.Provider), "codex") {
-			executor.CloseCodexWebsocketSessionsForAuthID(existing.ID, "auth_removed")
-			s.ensureExecutorsForAuth(existing)
-		}
+		provider = strings.TrimSpace(existing.Provider)
+	}
+	GlobalModelRegistry().UnregisterClient(id)
+	s.coreManager.Remove(ctx, id)
+	if strings.EqualFold(provider, "codex") {
+		executor.CloseCodexWebsocketSessionsForAuthID(id, "auth_removed")
 	}
 	s.coreManager.ResetSelectorState()
 }
@@ -486,6 +484,8 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 		return
 	}
 	switch strings.ToLower(a.Provider) {
+	case "xai":
+		s.coreManager.RegisterExecutor(executor.NewXAIExecutor(s.cfg))
 	case "vertex":
 		s.coreManager.RegisterExecutor(executor.NewGeminiVertexExecutor(s.cfg))
 	case "aistudio":
@@ -1024,7 +1024,11 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 							modelID = m.Name
 						}
 						thinking := m.Thinking
-						if thinking == nil {
+						modelType := "openai-compatibility"
+						if m.Image {
+							modelType = registry.OpenAIImageModelType
+							thinking = nil
+						} else if thinking == nil {
 							thinking = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
 						}
 						ms = append(ms, &ModelInfo{
@@ -1032,7 +1036,7 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 							Object:      "model",
 							Created:     time.Now().Unix(),
 							OwnedBy:     compat.Name,
-							Type:        "openai-compatibility",
+							Type:        modelType,
 							DisplayName: modelID,
 							UserDefined: false,
 							Thinking:    thinking,

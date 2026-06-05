@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -17,7 +17,7 @@ const (
 	responsesHTTPSessionTTL             = 30 * time.Minute
 	responsesHTTPSessionCleanupInterval = time.Minute
 	responsesHTTPSessionMaxSessions     = 1 << 13
-	responsesHTTPSessionMaxBytes        = 1 << 10
+	responsesHTTPSessionMaxBytes        = 10 * 1024 * 1024
 )
 
 var defaultResponsesHTTPSessionStore = newResponsesHTTPSessionStore(responsesHTTPSessionTTL)

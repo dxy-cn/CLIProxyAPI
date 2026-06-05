@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/apikeys"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeys"
 )
 
 const defaultAPIKeyTable = "api_key_store"

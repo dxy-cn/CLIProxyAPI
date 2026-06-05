@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
 func TestNewConfigSynthesizer(t *testing.T) {
@@ -68,9 +68,10 @@ func TestConfigSynthesizer_ClaudeKeys(t *testing.T) {
 		Config: &config.Config{
 			ClaudeKey: []config.ClaudeKey{
 				{
-					APIKey:  "sk-ant-api-xxx",
-					Prefix:  "main",
-					BaseURL: "https://api.anthropic.com",
+					APIKey:         "sk-ant-api-xxx",
+					Prefix:         "main",
+					BaseURL:        "https://api.anthropic.com",
+					DisableCooling: true,
 					Models: []config.ClaudeModel{
 						{Name: "claude-3-opus"},
 						{Name: "claude-3-sonnet"},
@@ -104,6 +105,9 @@ func TestConfigSynthesizer_ClaudeKeys(t *testing.T) {
 	}
 	if _, ok := auths[0].Attributes["models_hash"]; !ok {
 		t.Error("expected models_hash in attributes")
+	}
+	if v, ok := auths[0].Metadata["disable_cooling"].(bool); !ok || !v {
+		t.Errorf("expected disable_cooling=true, got %v", auths[0].Metadata["disable_cooling"])
 	}
 }
 
@@ -139,11 +143,12 @@ func TestConfigSynthesizer_CodexKeys(t *testing.T) {
 		Config: &config.Config{
 			CodexKey: []config.CodexKey{
 				{
-					APIKey:     "codex-key-123",
-					Prefix:     "dev",
-					BaseURL:    "https://api.openai.com",
-					ProxyURL:   "http://proxy.local",
-					Websockets: true,
+					APIKey:         "codex-key-123",
+					Prefix:         "dev",
+					BaseURL:        "https://api.openai.com",
+					ProxyURL:       "http://proxy.local",
+					Websockets:     true,
+					DisableCooling: true,
 				},
 			},
 		},
@@ -170,6 +175,9 @@ func TestConfigSynthesizer_CodexKeys(t *testing.T) {
 	}
 	if auths[0].Attributes["websockets"] != "true" {
 		t.Errorf("expected websockets=true, got %s", auths[0].Attributes["websockets"])
+	}
+	if v, ok := auths[0].Metadata["disable_cooling"].(bool); !ok || !v {
+		t.Errorf("expected disable_cooling=true, got %v", auths[0].Metadata["disable_cooling"])
 	}
 }
 
@@ -209,8 +217,9 @@ func TestConfigSynthesizer_OpenAICompat(t *testing.T) {
 			name: "with APIKeyEntries",
 			compat: []config.OpenAICompatibility{
 				{
-					Name:    "CustomProvider",
-					BaseURL: "https://custom.api.com",
+					Name:           "CustomProvider",
+					BaseURL:        "https://custom.api.com",
+					DisableCooling: true,
 					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
 						{APIKey: "key-1"},
 						{APIKey: "key-2"},
@@ -272,6 +281,13 @@ func TestConfigSynthesizer_OpenAICompat(t *testing.T) {
 			}
 			if len(auths) != tt.wantLen {
 				t.Fatalf("expected %d auths, got %d", tt.wantLen, len(auths))
+			}
+			if tt.name == "with APIKeyEntries" {
+				for i := range auths {
+					if v, ok := auths[i].Metadata["disable_cooling"].(bool); !ok || !v {
+						t.Fatalf("expected auth[%d].disable_cooling=true, got %v", i, auths[i].Metadata["disable_cooling"])
+					}
+				}
 			}
 		})
 	}

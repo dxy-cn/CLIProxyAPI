@@ -47,6 +47,9 @@ type SDKConfig struct {
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
+	// DisableImageGeneration controls whether the built-in image_generation tool is injected/allowed.
+	DisableImageGeneration DisableImageGenerationMode `yaml:"disable-image-generation" json:"disable-image-generation"`
+
 	// LocalModel disables remote model catalog fetching and uses only the embedded models.json catalog.
 	LocalModel bool `yaml:"local-model" json:"local-model"`
 
@@ -79,6 +82,10 @@ type SDKConfig struct {
 	// PassthroughHeaders controls whether upstream response headers are forwarded to downstream clients.
 	// Default is false (disabled).
 	PassthroughHeaders bool `yaml:"passthrough-headers" json:"passthrough-headers"`
+
+	// GPTImage2BaseModel sets the base model used when proxying GPT Image 2
+	// through the Codex image tool.
+	GPTImage2BaseModel string `yaml:"gpt-image-2-base-model,omitempty" json:"gpt-image-2-base-model,omitempty"`
 
 	// Streaming configures server-side streaming behavior (keep-alives and safe bootstrap retries).
 	Streaming StreamingConfig `yaml:"streaming" json:"streaming"`

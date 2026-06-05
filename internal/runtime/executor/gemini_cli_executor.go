@@ -15,15 +15,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor/helps"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/geminicli"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
-	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
-	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/geminicli"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -117,7 +117,7 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 		return resp, err
 	}
 
-	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
 	from := opts.SourceFormat
@@ -138,7 +138,10 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 
 	basePayload = fixGeminiCLIImageAspectRatio(baseModel, basePayload)
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
-	basePayload = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, "gemini", "request", basePayload, originalTranslated, requestedModel)
+	requestPath := helps.PayloadRequestPath(opts)
+	basePayload = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, "gemini", from.String(), "request", basePayload, originalTranslated, requestedModel, requestPath, opts.Headers)
+	basePayload = cleanGeminiCLIRequestSchemas(basePayload)
+	reporter.SetTranslatedReasoningEffort(basePayload, to.String())
 
 	action := "generateContent"
 	if req.Metadata != nil {
@@ -154,6 +157,7 @@ func (e *GeminiCLIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 	}
 
 	httpClient := newHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient = reporter.TrackHTTPClient(httpClient)
 	respCtx := context.WithValue(ctx, "alt", opts.Alt)
 
 	var authID, authLabel, authType, authValue string
@@ -272,7 +276,7 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 		return nil, err
 	}
 
-	reporter := helps.NewUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
 
 	from := opts.SourceFormat
@@ -293,7 +297,10 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 
 	basePayload = fixGeminiCLIImageAspectRatio(baseModel, basePayload)
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
-	basePayload = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, "gemini", "request", basePayload, originalTranslated, requestedModel)
+	requestPath := helps.PayloadRequestPath(opts)
+	basePayload = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, "gemini", from.String(), "request", basePayload, originalTranslated, requestedModel, requestPath, opts.Headers)
+	basePayload = cleanGeminiCLIRequestSchemas(basePayload)
+	reporter.SetTranslatedReasoningEffort(basePayload, to.String())
 
 	projectID := resolveGeminiProjectID(auth)
 
@@ -303,6 +310,7 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 	}
 
 	httpClient := newHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient = reporter.TrackHTTPClient(httpClient)
 	respCtx := context.WithValue(ctx, "alt", opts.Alt)
 
 	var authID, authLabel, authType, authValue string
@@ -426,6 +434,7 @@ func (e *GeminiCLIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 					reporter.PublishFailure(ctx)
 					helps.SendStreamChunk(respCtx, out, cliproxyexecutor.StreamChunk{Err: errScan})
 				}
+				reporter.EnsurePublished(ctx)
 				return
 			}
 
@@ -511,6 +520,7 @@ func (e *GeminiCLIExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.
 		payload = deleteJSONField(payload, "model")
 		payload = deleteJSONField(payload, "request.safetySettings")
 		payload = fixGeminiCLIImageAspectRatio(baseModel, payload)
+		payload = cleanGeminiCLIRequestSchemas(payload)
 
 		tok, errTok := tokenSource.Token()
 		if errTok != nil {
@@ -580,7 +590,10 @@ func (e *GeminiCLIExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.
 }
 
 // Refresh refreshes the authentication credentials (no-op for Gemini CLI).
-func (e *GeminiCLIExecutor) Refresh(_ context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+func (e *GeminiCLIExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	if refreshed, handled, err := helps.RefreshAuthViaHome(ctx, e.cfg, auth); handled {
+		return refreshed, err
+	}
 	return auth, nil
 }
 
@@ -590,36 +603,42 @@ func prepareGeminiCLITokenSource(ctx context.Context, cfg *config.Config, auth *
 		return nil, nil, fmt.Errorf("gemini-cli auth metadata missing")
 	}
 
-	var base map[string]any
-	if tokenRaw, ok := metadata["token"].(map[string]any); ok && tokenRaw != nil {
-		base = cloneMap(tokenRaw)
-	} else {
-		base = make(map[string]any)
-	}
-
-	var token oauth2.Token
-	if len(base) > 0 {
-		if raw, err := json.Marshal(base); err == nil {
-			_ = json.Unmarshal(raw, &token)
+	buildToken := func(meta map[string]any) (map[string]any, oauth2.Token) {
+		var base map[string]any
+		if tokenRaw, ok := meta["token"].(map[string]any); ok && tokenRaw != nil {
+			base = cloneMap(tokenRaw)
+		} else {
+			base = make(map[string]any)
 		}
-	}
 
-	if token.AccessToken == "" {
-		token.AccessToken = stringValue(metadata, "access_token")
-	}
-	if token.RefreshToken == "" {
-		token.RefreshToken = stringValue(metadata, "refresh_token")
-	}
-	if token.TokenType == "" {
-		token.TokenType = stringValue(metadata, "token_type")
-	}
-	if token.Expiry.IsZero() {
-		if expiry := stringValue(metadata, "expiry"); expiry != "" {
-			if ts, err := time.Parse(time.RFC3339, expiry); err == nil {
-				token.Expiry = ts
+		var token oauth2.Token
+		if len(base) > 0 {
+			if raw, err := json.Marshal(base); err == nil {
+				_ = json.Unmarshal(raw, &token)
 			}
 		}
+
+		if token.AccessToken == "" {
+			token.AccessToken = stringValue(meta, "access_token")
+		}
+		if token.RefreshToken == "" {
+			token.RefreshToken = stringValue(meta, "refresh_token")
+		}
+		if token.TokenType == "" {
+			token.TokenType = stringValue(meta, "token_type")
+		}
+		if token.Expiry.IsZero() {
+			if expiry := stringValue(meta, "expiry"); expiry != "" {
+				if ts, err := time.Parse(time.RFC3339, expiry); err == nil {
+					token.Expiry = ts
+				}
+			}
+		}
+
+		return base, token
 	}
+
+	base, token := buildToken(metadata)
 
 	conf := &oauth2.Config{
 		ClientID:     geminiOAuthClientID,
@@ -631,6 +650,29 @@ func prepareGeminiCLITokenSource(ctx context.Context, cfg *config.Config, auth *
 	ctxToken := ctx
 	if httpClient := helps.NewProxyAwareHTTPClient(ctx, cfg, auth, 0); httpClient != nil {
 		ctxToken = context.WithValue(ctxToken, oauth2.HTTPClient, httpClient)
+	}
+
+	if cfg != nil && cfg.Home.Enabled {
+		now := time.Now()
+		if token.AccessToken == "" || (!token.Expiry.IsZero() && token.Expiry.Before(now.Add(30*time.Second))) {
+			refreshed, handled, errRefresh := helps.RefreshAuthViaHome(ctx, cfg, auth)
+			if handled {
+				if errRefresh != nil {
+					return nil, nil, errRefresh
+				}
+				auth = refreshed
+				metadata = geminiOAuthMetadata(auth)
+				if metadata == nil {
+					return nil, nil, fmt.Errorf("gemini-cli auth metadata missing")
+				}
+				base, token = buildToken(metadata)
+			}
+		}
+		if token.AccessToken == "" {
+			return nil, nil, fmt.Errorf("gemini-cli access token missing")
+		}
+		updateGeminiCLITokenMetadata(auth, base, &token)
+		return oauth2.StaticTokenSource(&token), base, nil
 	}
 
 	src := conf.TokenSource(ctxToken, &token)
@@ -806,6 +848,65 @@ func deleteJSONField(body []byte, key string) []byte {
 		return body
 	}
 	return updated
+}
+
+func cleanGeminiCLIRequestSchemas(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	hasTools := gjson.GetBytes(body, "request.tools.0").Exists()
+	hasResponseSchema := gjson.GetBytes(body, "request.generationConfig.responseSchema").Exists()
+	hasResponseJSONSchema := gjson.GetBytes(body, "request.generationConfig.responseJsonSchema").Exists()
+	if !hasTools && !hasResponseSchema && !hasResponseJSONSchema {
+		return body
+	}
+
+	tools := gjson.GetBytes(body, "request.tools")
+	if tools.IsArray() {
+		for i, tool := range tools.Array() {
+			for _, declarationsKey := range []string{"function_declarations", "functionDeclarations"} {
+				funcDecls := tool.Get(declarationsKey)
+				if !funcDecls.IsArray() {
+					continue
+				}
+				for j, decl := range funcDecls.Array() {
+					for _, schemaKey := range []string{"parameters", "parametersJsonSchema"} {
+						params := decl.Get(schemaKey)
+						if !params.Exists() || !params.IsObject() {
+							continue
+						}
+						cleaned := util.CleanJSONSchemaForGemini(params.Raw)
+						path := fmt.Sprintf("request.tools.%d.%s.%d.%s", i, declarationsKey, j, schemaKey)
+						updated, errSet := sjson.SetRawBytes(body, path, []byte(cleaned))
+						if errSet != nil {
+							log.Errorf("gemini cli executor: failed to set cleaned schema at %s: %v", path, errSet)
+							continue
+						}
+						body = updated
+					}
+				}
+			}
+		}
+	}
+
+	for _, schemaPath := range []string{
+		"request.generationConfig.responseSchema",
+		"request.generationConfig.responseJsonSchema",
+	} {
+		responseSchema := gjson.GetBytes(body, schemaPath)
+		if !responseSchema.IsObject() {
+			continue
+		}
+		cleaned := util.CleanJSONSchemaForGemini(responseSchema.Raw)
+		updated, errSet := sjson.SetRawBytes(body, schemaPath, []byte(cleaned))
+		if errSet != nil {
+			log.Errorf("gemini cli executor: failed to set cleaned response schema at %s: %v", schemaPath, errSet)
+			continue
+		}
+		body = updated
+	}
+
+	return body
 }
 
 func fixGeminiCLIImageAspectRatio(modelName string, rawJSON []byte) []byte {

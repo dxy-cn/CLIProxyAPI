@@ -3,8 +3,8 @@ package diff
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
 func TestBuildConfigChangeDetails(t *testing.T) {
@@ -280,6 +280,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 			RequestLog:                 true,
 			ProxyURL:                   "http://new-proxy",
 			APIKeys:                    sdkconfig.FlexAPIKeyList{" key-1 ", "key-2"},
+			DisableImageGeneration:     config.DisableImageGenerationAll,
 			ForceModelPrefix:           true,
 			NonStreamKeepAliveInterval: 5,
 			Streaming: sdkconfig.StreamingConfig{
@@ -293,6 +294,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 	expectContains(t, details, "logging-to-file: false -> true")
 	expectContains(t, details, "usage-statistics-enabled: false -> true")
 	expectContains(t, details, "disable-cooling: false -> true")
+	expectContains(t, details, "disable-image-generation: false -> true")
 	expectContains(t, details, "request-log: false -> true")
 	expectContains(t, details, "request-retry: 1 -> 2")
 	expectContains(t, details, "max-retry-credentials: 1 -> 3")
@@ -410,9 +412,10 @@ func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 			SecretKey:              "",
 		},
 		SDKConfig: sdkconfig.SDKConfig{
-			RequestLog: true,
-			ProxyURL:   "http://new-proxy",
-			APIKeys:    sdkconfig.FlexAPIKeyList{"keyB"},
+			RequestLog:             true,
+			ProxyURL:               "http://new-proxy",
+			APIKeys:                sdkconfig.FlexAPIKeyList{"keyB"},
+			DisableImageGeneration: config.DisableImageGenerationAll,
 		},
 		OAuthExcludedModels: map[string][]string{"p1": {"b", "c"}, "p2": {"d"}},
 		OpenAICompatibility: []config.OpenAICompatibility{
@@ -438,6 +441,7 @@ func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 	expectContains(t, changes, "logging-to-file: false -> true")
 	expectContains(t, changes, "usage-statistics-enabled: false -> true")
 	expectContains(t, changes, "disable-cooling: false -> true")
+	expectContains(t, changes, "disable-image-generation: false -> true")
 	expectContains(t, changes, "request-retry: 1 -> 2")
 	expectContains(t, changes, "max-retry-credentials: 1 -> 3")
 	expectContains(t, changes, "max-retry-interval: 1 -> 3")

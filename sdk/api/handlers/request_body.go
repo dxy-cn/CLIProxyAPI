@@ -38,6 +38,10 @@ func ReadLimitedRawData(c *gin.Context) ([]byte, error) {
 	return data, nil
 }
 
+func ReadRequestBody(c *gin.Context) ([]byte, error) {
+	return ReadLimitedRawData(c)
+}
+
 func IsRequestBodyTooLarge(err error) bool {
 	return errors.Is(err, ErrRequestBodyTooLarge)
 }

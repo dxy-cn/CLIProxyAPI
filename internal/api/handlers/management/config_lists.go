@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/apikeys"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/apikeys"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
 // Generic helpers for list[string]
