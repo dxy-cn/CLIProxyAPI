@@ -451,7 +451,20 @@ func (h *Handler) PutErrorLogsMaxFiles(c *gin.Context) {
 // Request log
 func (h *Handler) GetRequestLog(c *gin.Context) { c.JSON(200, gin.H{"request-log": h.cfg.RequestLog}) }
 func (h *Handler) PutRequestLog(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.RequestLog = v })
+	var body struct {
+		Value *bool `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	h.cfg.RequestLog = *body.Value
+	if !h.persist(c) {
+		return
+	}
+	if h.configUpdateHook != nil {
+		h.configUpdateHook(h.cfg)
+	}
 }
 
 // Websocket auth

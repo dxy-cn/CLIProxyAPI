@@ -53,6 +53,59 @@ func TestPutRoutingStrategyAcceptsSequentialFillAlias(t *testing.T) {
 	}
 }
 
+func TestPutRequestLogAppliesRuntimeUpdateHook(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("request-log: true\n"), 0o600); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	cfg := &config.Config{
+		SDKConfig: config.SDKConfig{
+			RequestLog: true,
+		},
+	}
+	h := NewHandler(cfg, configPath, coreauth.NewManager(nil, nil, nil))
+
+	hookCalled := false
+	hookRequestLog := true
+	h.SetConfigUpdateHook(func(updated *config.Config) {
+		hookCalled = true
+		hookRequestLog = updated.RequestLog
+	})
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/request-log", strings.NewReader(`{"value":false}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.PutRequestLog(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PutRequestLog status = %d, want %d with body %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if cfg.RequestLog {
+		t.Fatalf("cfg.RequestLog = true, want false")
+	}
+	if !hookCalled {
+		t.Fatalf("config update hook was not called")
+	}
+	if hookRequestLog {
+		t.Fatalf("hook RequestLog = true, want false")
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read saved config: %v", err)
+	}
+	if !strings.Contains(string(data), "request-log: false") {
+		t.Fatalf("saved config = %q, want request-log: false", string(data))
+	}
+}
+
 func TestGetConfigYAMLIncludesConfigHash(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 	gin.SetMode(gin.TestMode)
