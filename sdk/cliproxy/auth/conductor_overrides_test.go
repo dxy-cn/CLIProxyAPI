@@ -319,14 +319,49 @@ func newUnauthorizedEvictionTestManager(t *testing.T) (*Manager, *authFallbackEx
 	return manager, executor, store, model, badAuthID, goodAuthID
 }
 
-func assertUnauthorizedAuthEvicted(t *testing.T, manager *Manager, store *deleteTrackingStore, badAuthID string) {
+func assertUnauthorizedAuthRetainedWithError(t *testing.T, manager *Manager, store *deleteTrackingStore, badAuthID, model string) {
 	t.Helper()
-	if _, ok := manager.GetByID(badAuthID); ok {
-		t.Fatalf("expected unauthorized auth %q to be evicted", badAuthID)
+	auth, ok := manager.GetByID(badAuthID)
+	if !ok {
+		t.Fatalf("expected unauthorized auth %q to be retained", badAuthID)
+	}
+	if auth.Status != StatusError {
+		t.Fatalf("auth status = %s, want %s", auth.Status, StatusError)
+	}
+	if auth.StatusMessage != "unauthorized" {
+		t.Fatalf("auth status message = %q, want unauthorized", auth.StatusMessage)
+	}
+	if !auth.Unavailable {
+		t.Fatalf("auth unavailable = false, want true")
+	}
+	if auth.LastError == nil {
+		t.Fatalf("expected auth LastError to be recorded")
+	}
+	if got := auth.LastError.StatusCode(); got != http.StatusUnauthorized {
+		t.Fatalf("auth LastError status = %d, want %d", got, http.StatusUnauthorized)
+	}
+	state := auth.ModelStates[model]
+	if state == nil {
+		t.Fatalf("expected model state for %q", model)
+	}
+	if state.Status != StatusError {
+		t.Fatalf("model state status = %s, want %s", state.Status, StatusError)
+	}
+	if state.StatusMessage != "unauthorized" {
+		t.Fatalf("model state status message = %q, want unauthorized", state.StatusMessage)
+	}
+	if !state.Unavailable {
+		t.Fatalf("model state unavailable = false, want true")
+	}
+	if state.LastError == nil {
+		t.Fatalf("expected model LastError to be recorded")
+	}
+	if got := state.LastError.StatusCode(); got != http.StatusUnauthorized {
+		t.Fatalf("model LastError status = %d, want %d", got, http.StatusUnauthorized)
 	}
 	gotDeleted := store.DeletedIDs()
-	if len(gotDeleted) != 1 || gotDeleted[0] != badAuthID {
-		t.Fatalf("deleted auth IDs = %v, want [%s]", gotDeleted, badAuthID)
+	if len(gotDeleted) != 0 {
+		t.Fatalf("deleted auth IDs = %v, want none", gotDeleted)
 	}
 }
 
@@ -441,7 +476,7 @@ func TestManager_MaxRetryCredentials_LimitsCrossCredentialRetries(t *testing.T) 
 	}
 }
 
-func TestManager_Execute_UnauthorizedAuthEviction(t *testing.T) {
+func TestManager_Execute_UnauthorizedAuthRetainedWithError(t *testing.T) {
 	manager, executor, store, model, badAuthID, goodAuthID := newUnauthorizedEvictionTestManager(t)
 
 	var buf bytes.Buffer
@@ -468,10 +503,10 @@ func TestManager_Execute_UnauthorizedAuthEviction(t *testing.T) {
 	if gotCalls := executor.ExecuteCalls(); len(gotCalls) != 2 || gotCalls[0] != badAuthID || gotCalls[1] != goodAuthID {
 		t.Fatalf("execute calls = %v, want [%s %s]", gotCalls, badAuthID, goodAuthID)
 	}
-	assertUnauthorizedAuthEvicted(t, manager, store, badAuthID)
+	assertUnauthorizedAuthRetainedWithError(t, manager, store, badAuthID, model)
 	logOutput := buf.String()
-	if !strings.Contains(logOutput, "evicting unauthorized auth") {
-		t.Fatalf("expected info log for unauthorized auth eviction, got: %s", logOutput)
+	if !strings.Contains(logOutput, "retaining unauthorized auth") {
+		t.Fatalf("expected info log for unauthorized auth retention, got: %s", logOutput)
 	}
 	if !strings.Contains(logOutput, badAuthID) {
 		t.Fatalf("expected log to contain auth id %q, got: %s", badAuthID, logOutput)
@@ -481,7 +516,7 @@ func TestManager_Execute_UnauthorizedAuthEviction(t *testing.T) {
 	}
 }
 
-func TestManager_ExecuteCount_UnauthorizedAuthEviction(t *testing.T) {
+func TestManager_ExecuteCount_UnauthorizedAuthRetainedWithError(t *testing.T) {
 	manager, executor, store, model, badAuthID, goodAuthID := newUnauthorizedEvictionTestManager(t)
 
 	resp, errExecute := manager.ExecuteCount(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
@@ -494,10 +529,10 @@ func TestManager_ExecuteCount_UnauthorizedAuthEviction(t *testing.T) {
 	if gotCalls := executor.CountCalls(); len(gotCalls) != 2 || gotCalls[0] != badAuthID || gotCalls[1] != goodAuthID {
 		t.Fatalf("count calls = %v, want [%s %s]", gotCalls, badAuthID, goodAuthID)
 	}
-	assertUnauthorizedAuthEvicted(t, manager, store, badAuthID)
+	assertUnauthorizedAuthRetainedWithError(t, manager, store, badAuthID, model)
 }
 
-func TestManager_ExecuteStream_UnauthorizedAuthEviction(t *testing.T) {
+func TestManager_ExecuteStream_UnauthorizedAuthRetainedWithError(t *testing.T) {
 	manager, executor, store, model, badAuthID, goodAuthID := newUnauthorizedEvictionTestManager(t)
 
 	streamResult, errExecute := manager.ExecuteStream(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
@@ -517,7 +552,7 @@ func TestManager_ExecuteStream_UnauthorizedAuthEviction(t *testing.T) {
 	if gotCalls := executor.StreamCalls(); len(gotCalls) != 2 || gotCalls[0] != badAuthID || gotCalls[1] != goodAuthID {
 		t.Fatalf("stream calls = %v, want [%s %s]", gotCalls, badAuthID, goodAuthID)
 	}
-	assertUnauthorizedAuthEvicted(t, manager, store, badAuthID)
+	assertUnauthorizedAuthRetainedWithError(t, manager, store, badAuthID, model)
 }
 
 func TestManager_ExecuteStream_PinnedUnauthorizedBootstrapReturnsStreamError(t *testing.T) {
@@ -557,7 +592,7 @@ func TestManager_ExecuteStream_PinnedUnauthorizedBootstrapReturnsStreamError(t *
 	if gotCalls := executor.StreamCalls(); len(gotCalls) != 1 || gotCalls[0] != badAuthID {
 		t.Fatalf("stream calls = %v, want [%s]", gotCalls, badAuthID)
 	}
-	assertUnauthorizedAuthEvicted(t, manager, store, badAuthID)
+	assertUnauthorizedAuthRetainedWithError(t, manager, store, badAuthID, model)
 }
 
 func TestManager_ModelSupportBadRequest_FallsBackAndSuspendsAuth(t *testing.T) {

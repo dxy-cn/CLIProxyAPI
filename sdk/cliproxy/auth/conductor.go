@@ -2509,6 +2509,16 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 					} else {
 						switch statusCode {
 						case 401:
+							state.StatusMessage = "unauthorized"
+							auth.StatusMessage = "unauthorized"
+							if state.LastError != nil {
+								state.LastError.Code = "unauthorized"
+								state.LastError.Retryable = false
+							}
+							if auth.LastError != nil {
+								auth.LastError.Code = "unauthorized"
+								auth.LastError.Retryable = false
+							}
 							if disableCooling {
 								state.NextRetryAfter = time.Time{}
 							} else {
@@ -3140,12 +3150,12 @@ func (m *Manager) evictUnauthorizedAuth(ctx context.Context, auth *Auth, provide
 
 	entry := logEntryWithRequestID(ctx)
 	if model != "" {
-		entry.Infof("evicting unauthorized auth provider=%s auth=%s model=%s due to 401", provider, auth.ID, model)
+		entry.Infof("retaining unauthorized auth provider=%s auth=%s model=%s due to 401", provider, auth.ID, model)
 	} else {
-		entry.Infof("evicting unauthorized auth provider=%s auth=%s due to 401", provider, auth.ID)
+		entry.Infof("retaining unauthorized auth provider=%s auth=%s due to 401", provider, auth.ID)
 	}
 
-	return m.evictAuth(ctx, auth.ID)
+	return nil
 }
 
 // nextQuotaCooldown returns the next cooldown duration and updated backoff level for repeated quota errors.

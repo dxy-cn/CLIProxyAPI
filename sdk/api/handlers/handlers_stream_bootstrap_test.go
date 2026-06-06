@@ -669,8 +669,8 @@ func TestExecuteStreamWithAuthManager_EnrichesBootstrapRetryAuthUnavailableError
 	if !errors.As(gotErr.Error, &authErr) || authErr == nil {
 		t.Fatalf("expected coreauth.Error, got %T", gotErr.Error)
 	}
-	if authErr.Code != "auth_not_found" {
-		t.Fatalf("code = %q, want %q", authErr.Code, "auth_not_found")
+	if authErr.Code != "auth_unavailable" {
+		t.Fatalf("code = %q, want %q", authErr.Code, "auth_unavailable")
 	}
 	if !strings.Contains(authErr.Message, "providers=codex") {
 		t.Fatalf("message missing provider context: %q", authErr.Message)
