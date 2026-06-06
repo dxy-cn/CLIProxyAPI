@@ -762,7 +762,7 @@ func TestAccountBindMiddleware_DefaultModelAccountIgnoredWithoutAccountBindStrat
 	}
 }
 
-func TestAccountBindMiddleware_DefaultModelAccountAppliesWithAccountBindStrategy(t *testing.T) {
+func TestAccountBindMiddleware_DefaultModelAccountDoesNotReplaceMissingBinding(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	tmpDir := t.TempDir()
 	authDir := filepath.Join(tmpDir, "auth")
@@ -773,6 +773,9 @@ func TestAccountBindMiddleware_DefaultModelAccountAppliesWithAccountBindStrategy
 	cfg := &proxyconfig.Config{
 		SDKConfig: sdkconfig.SDKConfig{
 			APIKeys: sdkconfig.FlexAPIKeyList{"sk-client"},
+			APIKeyAuthIdentityBindings: map[string]string{
+				"sk-client": "codex:chatgpt:acct-missing",
+			},
 		},
 		Port:                   0,
 		AuthDir:                authDir,
@@ -805,17 +808,112 @@ func TestAccountBindMiddleware_DefaultModelAccountAppliesWithAccountBindStrategy
 	s := NewServer(cfg, authManager, sdkaccess.NewManager(), filepath.Join(tmpDir, "config.yaml"))
 	s.UpdateBindingConfig(cfg)
 
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	c.Set("apiKey", "sk-client")
+	internallogging.SetGinRequestID(c, "req-test-1")
 
 	s.accountBindMiddleware()(c)
 
-	if c.IsAborted() {
-		t.Fatalf("middleware should not abort when default-model-account resolves; status=%d", c.Writer.Status())
+	if !c.IsAborted() {
+		t.Fatalf("missing explicit binding must reject instead of using default-model-account")
 	}
-	if got := sdkapi.BoundAuthIndexFromContext(c.Request.Context()); got != registered.Index {
-		t.Fatalf("default-model-account not injected: got %q, want %q", got, registered.Index)
+	if c.Writer.Status() != http.StatusBadRequest {
+		t.Fatalf("strict rejection should be 400, got %d", c.Writer.Status())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
+	}
+	if body["error"] != accountBindUnboundErrorMessage {
+		t.Fatalf("error = %q", body["error"])
+	}
+	if body["request_id"] != "req-test-1" {
+		t.Fatalf("request_id = %q, want req-test-1", body["request_id"])
+	}
+	if got := sdkapi.BoundAuthIndexFromContext(c.Request.Context()); got != "" {
+		t.Fatalf("missing explicit binding must not inject auth_index: got %q; default was %q", got, registered.Index)
+	}
+}
+
+func TestAccountBindMiddleware_AuthenticatedUserAPIKeyUsesExplicitBindingBeforeDefault(t *testing.T) {
+	const clientKey = "sk-client"
+
+	gin.SetMode(gin.TestMode)
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+
+	cfg := &proxyconfig.Config{
+		SDKConfig: sdkconfig.SDKConfig{
+			APIKeys: sdkconfig.FlexAPIKeyList{clientKey},
+			APIKeyAuthIdentityBindings: map[string]string{
+				clientKey: "codex:chatgpt:acct-bound",
+			},
+		},
+		Port:                   0,
+		AuthDir:                authDir,
+		Debug:                  true,
+		LoggingToFile:          false,
+		UsageStatisticsEnabled: false,
+		RemoteManagement:       proxyconfig.RemoteManagement{DisableControlPanel: true},
+		Routing: proxyconfig.RoutingConfig{
+			Strategy:            "account-bind",
+			DefaultModelAccount: "codex:chatgpt:acct-default",
+		},
+	}
+
+	authManager := auth.NewManager(nil, nil, nil)
+	boundAuth, err := authManager.Register(context.Background(), &auth.Auth{
+		ID:       "auth-bound",
+		Provider: "codex",
+		FileName: "codex-bound.json",
+		Metadata: map[string]any{
+			"id_token": testCodexJWT(t, "acct-bound"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("register bound auth: %v", err)
+	}
+	defaultAuth, err := authManager.Register(context.Background(), &auth.Auth{
+		ID:       "auth-default",
+		Provider: "codex",
+		FileName: "codex-default.json",
+		Metadata: map[string]any{
+			"id_token": testCodexJWT(t, "acct-default"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("register default auth: %v", err)
+	}
+	if boundAuth.Index == "" || defaultAuth.Index == "" || boundAuth.Index == defaultAuth.Index {
+		t.Fatalf("test auth indexes must be non-empty and distinct: bound=%q default=%q", boundAuth.Index, defaultAuth.Index)
+	}
+
+	s := NewServer(cfg, authManager, sdkaccess.NewManager(), filepath.Join(tmpDir, "config.yaml"))
+
+	router := gin.New()
+	router.Use(AuthMiddleware(s.accessManager))
+	router.Use(s.accountBindMiddleware())
+	router.POST("/v1/chat/completions", func(c *gin.Context) {
+		got := sdkapi.BoundAuthIndexFromContext(c.Request.Context())
+		if got != boundAuth.Index {
+			t.Fatalf("account-bind used %q, want explicit binding %q; default was %q", got, boundAuth.Index, defaultAuth.Index)
+		}
+		c.Status(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer "+clientKey)
+	rr := httptest.NewRecorder()
+
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("unexpected status: got %d body=%s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -994,6 +1092,13 @@ func TestCodexDirectRouteAppliesAccountBindMiddleware(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "account-bind: no auth_index bound") {
 		t.Fatalf("codex direct route did not return account-bind rejection: body=%s", rr.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v body=%s", err, rr.Body.String())
+	}
+	if len(body["request_id"]) != 8 {
+		t.Fatalf("codex direct route request_id length = %d value=%q", len(body["request_id"]), body["request_id"])
 	}
 }
 

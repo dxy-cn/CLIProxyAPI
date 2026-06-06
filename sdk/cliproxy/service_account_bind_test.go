@@ -81,7 +81,45 @@ func TestServiceLookupBoundAuthIndexAppliesResolvedIdentityBindingsWithAccountBi
 		t.Fatalf("binding not active in account-bind: got=%q ok=%v", got, ok)
 	}
 	if got, ok := service.LookupBoundAuthIndex("sk-other"); !ok || got != defaultAuth.Index {
-		t.Fatalf("default binding not active in account-bind: got=%q ok=%v", got, ok)
+		t.Fatalf("default binding not active for unbound key in account-bind: got=%q ok=%v", got, ok)
+	}
+}
+
+func TestServiceLookupBoundAuthIndexRejectsUnresolvedIdentityBindingWithDefaultModelAccount(t *testing.T) {
+	const clientKey = "sk-client"
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	defaultAuth, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "auth-default",
+		Provider: "codex",
+		FileName: "codex-default.json",
+		Metadata: map[string]any{
+			"id_token": testCodexJWT(t, "acct-default"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("register default auth: %v", err)
+	}
+
+	service := &Service{
+		cfg:         &config.Config{},
+		coreManager: manager,
+	}
+	service.rebuildBindingMap(&config.Config{
+		SDKConfig: config.SDKConfig{
+			APIKeys: config.FlexAPIKeyList{clientKey},
+			APIKeyAuthIdentityBindings: map[string]string{
+				clientKey: "codex:chatgpt:acct-missing",
+			},
+		},
+		Routing: internalconfig.RoutingConfig{
+			Strategy:            "account-bind",
+			DefaultModelAccount: "codex:chatgpt:acct-default",
+		},
+	})
+
+	if got, ok := service.LookupBoundAuthIndex(clientKey); ok || got != "" {
+		t.Fatalf("unresolved binding must not fall back to default-model-account: got=%q ok=%v default=%q", got, ok, defaultAuth.Index)
 	}
 }
 

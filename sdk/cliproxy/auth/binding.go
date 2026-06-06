@@ -4,17 +4,19 @@ import "strings"
 
 // ResolveBindingIndexes converts persisted binding references into current auth_index values.
 // Only auth_identity is accepted as a durable binding reference.
-func ResolveBindingIndexes(auths []*Auth, indexBindings, identityBindings map[string]string, defaultRef string) (map[string]string, string) {
+func ResolveBindingIndexes(auths []*Auth, indexBindings, identityBindings map[string]string, defaultRef string) (map[string]string, string, map[string]struct{}) {
 	_ = indexBindings
 
 	identityToIndex := StableIdentityIndexMap(auths)
 	resolved := make(map[string]string, len(identityBindings))
+	explicitKeys := make(map[string]struct{}, len(identityBindings))
 	for clientKey, identity := range identityBindings {
 		clientKey = strings.TrimSpace(clientKey)
 		identity = strings.TrimSpace(identity)
 		if clientKey == "" || identity == "" {
 			continue
 		}
+		explicitKeys[clientKey] = struct{}{}
 		if authIndex := identityToIndex[identity]; authIndex != "" {
 			resolved[clientKey] = authIndex
 		}
@@ -22,7 +24,10 @@ func ResolveBindingIndexes(auths []*Auth, indexBindings, identityBindings map[st
 	if len(resolved) == 0 {
 		resolved = nil
 	}
-	return resolved, resolveDefaultBindingRef(strings.TrimSpace(defaultRef), identityToIndex)
+	if len(explicitKeys) == 0 {
+		explicitKeys = nil
+	}
+	return resolved, resolveDefaultBindingRef(strings.TrimSpace(defaultRef), identityToIndex), explicitKeys
 }
 
 // StableIdentityIndexMap maps each durable identity to the current runtime auth_index.

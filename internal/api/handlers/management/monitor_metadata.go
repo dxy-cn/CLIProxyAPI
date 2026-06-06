@@ -301,17 +301,14 @@ func (h *Handler) boundAuthForMonitorKey(clientKey string) *coreauth.Auth {
 	}
 
 	auths := h.authManager.List()
-	bindingMap, defaultAuthIndex := coreauth.ResolveBindingIndexes(
+	bindingMap, defaultAuthIndex, explicitBindingKeys := coreauth.ResolveBindingIndexes(
 		auths,
 		h.cfg.APIKeyAuthBindings,
 		h.cfg.APIKeyAuthIdentityBindings,
 		h.cfg.Routing.DefaultModelAccount,
 	)
 
-	authIndex := strings.TrimSpace(bindingMap[clientKey])
-	if authIndex == "" {
-		authIndex = strings.TrimSpace(defaultAuthIndex)
-	}
+	authIndex := monitorBoundAuthIndex(clientKey, bindingMap, explicitBindingKeys, defaultAuthIndex)
 	if authIndex == "" {
 		return nil
 	}
@@ -345,27 +342,21 @@ func (h *Handler) publicMonitorScopedAPIKeys(ctx context.Context, clientKey stri
 	}
 
 	auths := h.authManager.List()
-	bindingMap, defaultAuthIndex := coreauth.ResolveBindingIndexes(
+	bindingMap, defaultAuthIndex, explicitBindingKeys := coreauth.ResolveBindingIndexes(
 		auths,
 		h.cfg.APIKeyAuthBindings,
 		h.cfg.APIKeyAuthIdentityBindings,
 		h.cfg.Routing.DefaultModelAccount,
 	)
 
-	currentAuthIndex := strings.TrimSpace(bindingMap[clientKey])
-	if currentAuthIndex == "" {
-		currentAuthIndex = strings.TrimSpace(defaultAuthIndex)
-	}
+	currentAuthIndex := monitorBoundAuthIndex(clientKey, bindingMap, explicitBindingKeys, defaultAuthIndex)
 	if currentAuthIndex == "" {
 		return nil
 	}
 
 	keys := make([]string, 0, len(records))
 	for _, record := range records {
-		recordAuthIndex := strings.TrimSpace(bindingMap[record.APIKey])
-		if recordAuthIndex == "" {
-			recordAuthIndex = strings.TrimSpace(defaultAuthIndex)
-		}
+		recordAuthIndex := monitorBoundAuthIndex(record.APIKey, bindingMap, explicitBindingKeys, defaultAuthIndex)
 		if recordAuthIndex == currentAuthIndex {
 			keys = append(keys, record.APIKey)
 		}
@@ -375,6 +366,20 @@ func (h *Handler) publicMonitorScopedAPIKeys(ctx context.Context, clientKey stri
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func monitorBoundAuthIndex(clientKey string, bindingMap map[string]string, explicitBindingKeys map[string]struct{}, defaultAuthIndex string) string {
+	clientKey = strings.TrimSpace(clientKey)
+	if clientKey == "" {
+		return ""
+	}
+	if authIndex := strings.TrimSpace(bindingMap[clientKey]); authIndex != "" {
+		return authIndex
+	}
+	if _, hasExplicitBinding := explicitBindingKeys[clientKey]; hasExplicitBinding {
+		return ""
+	}
+	return strings.TrimSpace(defaultAuthIndex)
 }
 
 func (h *Handler) PublicMonitorAPIKeyMiddleware() gin.HandlerFunc {

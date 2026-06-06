@@ -91,15 +91,18 @@ type Service struct {
 	// wsGateway manages websocket Gemini providers.
 	wsGateway *wsrelay.Manager
 
-	// bindingMu protects bindingMap and defaultBoundAuthIndex.
+	// bindingMu protects bindingMap, explicitBindingKeys, and defaultBoundAuthIndex.
 	bindingMu sync.RWMutex
 
-	// bindingMap maps client API key strings to their bound auth_index.
+	// bindingMap maps client API key strings to their resolved bound auth_index.
 	// Non-nil only when routing.strategy is "account-bind".
 	bindingMap map[string]string
 
-	// defaultBoundAuthIndex is the fallback auth_index when a client API key
-	// has no explicit binding (routing.default-model-account).
+	// explicitBindingKeys records client keys with configured auth_identity, even
+	// when the identity cannot be resolved to a current auth_index.
+	explicitBindingKeys map[string]struct{}
+
+	// defaultBoundAuthIndex is used only for client keys with no explicit binding.
 	defaultBoundAuthIndex string
 }
 
@@ -382,6 +385,7 @@ func (s *Service) rebuildBindingMap(cfg *config.Config) {
 		s.bindingMu.Lock()
 		defer s.bindingMu.Unlock()
 		s.bindingMap = nil
+		s.explicitBindingKeys = nil
 		s.defaultBoundAuthIndex = ""
 		return
 	}
@@ -390,7 +394,7 @@ func (s *Service) rebuildBindingMap(cfg *config.Config) {
 	if s.coreManager != nil {
 		auths = s.coreManager.List()
 	}
-	bindingMap, defaultBoundAuthIndex := coreauth.ResolveBindingIndexes(
+	bindingMap, defaultBoundAuthIndex, explicitBindingKeys := coreauth.ResolveBindingIndexes(
 		auths,
 		cfg.APIKeyAuthBindings,
 		cfg.APIKeyAuthIdentityBindings,
@@ -399,11 +403,12 @@ func (s *Service) rebuildBindingMap(cfg *config.Config) {
 	s.bindingMu.Lock()
 	defer s.bindingMu.Unlock()
 	s.bindingMap = bindingMap // may be nil; that is fine
+	s.explicitBindingKeys = explicitBindingKeys
 	s.defaultBoundAuthIndex = defaultBoundAuthIndex
 }
 
-// LookupBoundAuthIndex returns the auth_index for the given client API key.
-// Falls back to the default-model-account when no explicit binding exists.
+// LookupBoundAuthIndex returns the explicitly bound auth_index for the given client API key.
+// Client keys with no explicit binding may use default-model-account.
 // Returns ("", false) when account-bind is not active or no binding is found.
 func (s *Service) LookupBoundAuthIndex(clientKey string) (string, bool) {
 	if s == nil {
@@ -416,6 +421,9 @@ func (s *Service) LookupBoundAuthIndex(clientKey string) (string, bool) {
 		if idx, ok := s.bindingMap[clientKey]; ok && idx != "" {
 			return idx, true
 		}
+	}
+	if _, hasExplicitBinding := s.explicitBindingKeys[clientKey]; hasExplicitBinding {
+		return "", false
 	}
 	if s.defaultBoundAuthIndex != "" {
 		return s.defaultBoundAuthIndex, true

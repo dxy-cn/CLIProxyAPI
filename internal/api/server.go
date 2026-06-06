@@ -221,11 +221,14 @@ type Server struct {
 	keepAliveHeartbeat chan struct{}
 	keepAliveStop      chan struct{}
 
-	// bindingMu protects bindingMap and defaultBoundAuthIndex.
+	// bindingMu protects bindingMap, explicitBindingKeys, and defaultBoundAuthIndex.
 	bindingMu sync.RWMutex
-	// bindingMap maps client API key strings to their bound auth_index.
+	// bindingMap maps client API key strings to their resolved bound auth_index.
 	// Non-nil only when routing.strategy is "account-bind".
-	bindingMap            map[string]string
+	bindingMap map[string]string
+	// explicitBindingKeys records client keys with configured auth_identity, even
+	// when the identity cannot be resolved to a current auth_index.
+	explicitBindingKeys   map[string]struct{}
 	defaultBoundAuthIndex string
 	// strictBinding is true when routing.strategy == "account-bind": unbound client keys are rejected.
 	strictBinding bool
@@ -1643,6 +1646,7 @@ func (s *Server) UpdateBindingConfig(cfg *config.Config) {
 		s.bindingMu.Lock()
 		defer s.bindingMu.Unlock()
 		s.bindingMap = nil
+		s.explicitBindingKeys = nil
 		s.defaultBoundAuthIndex = ""
 		s.strictBinding = false
 		return
@@ -1652,7 +1656,7 @@ func (s *Server) UpdateBindingConfig(cfg *config.Config) {
 	if s.authManager != nil {
 		auths = s.authManager.List()
 	}
-	bindingMap, defaultBoundAuthIndex := auth.ResolveBindingIndexes(
+	bindingMap, defaultBoundAuthIndex, explicitBindingKeys := auth.ResolveBindingIndexes(
 		auths,
 		cfg.APIKeyAuthBindings,
 		cfg.APIKeyAuthIdentityBindings,
@@ -1661,6 +1665,7 @@ func (s *Server) UpdateBindingConfig(cfg *config.Config) {
 	s.bindingMu.Lock()
 	defer s.bindingMu.Unlock()
 	s.bindingMap = bindingMap // may be nil
+	s.explicitBindingKeys = explicitBindingKeys
 	s.defaultBoundAuthIndex = defaultBoundAuthIndex
 	s.strictBinding = true
 }
@@ -1671,39 +1676,45 @@ func (s *Server) lookupBoundAuthIndex(clientKey string) (string, bool, bool) {
 	}
 	s.bindingMu.RLock()
 	bindingMap := s.bindingMap
+	explicitBindingKeys := s.explicitBindingKeys
 	defaultIdx := s.defaultBoundAuthIndex
 	strict := s.strictBinding
 	s.bindingMu.RUnlock()
 
-	active := len(bindingMap) > 0 || defaultIdx != "" || strict
+	active := len(bindingMap) > 0 || len(explicitBindingKeys) > 0 || defaultIdx != "" || strict
 	if !active {
 		return "", false, false
 	}
 
 	authIdx := ""
 	clientKey = strings.TrimSpace(clientKey)
-	if clientKey != "" && len(bindingMap) > 0 {
-		authIdx = bindingMap[clientKey]
+	if clientKey != "" {
+		if len(bindingMap) > 0 {
+			authIdx = bindingMap[clientKey]
+		}
+		if authIdx != "" {
+			return authIdx, strict, true
+		}
+		if _, hasExplicitBinding := explicitBindingKeys[clientKey]; hasExplicitBinding {
+			return "", strict, true
+		}
 	}
-	if authIdx == "" {
+	if defaultIdx != "" {
 		authIdx = defaultIdx
 	}
 	return authIdx, strict, true
 }
 
+const accountBindUnboundErrorMessage = "account-bind: no auth_index bound for this API key"
+
 func (s *Server) resolveCurrentBoundAuthIndex(c *gin.Context) (string, bool, error) {
-	clientKey := ""
-	if c != nil {
-		if raw, ok := c.Get("apiKey"); ok {
-			clientKey, _ = raw.(string)
-		}
-	}
+	clientKey := clientAPIKeyFromGinContext(c)
 	authIdx, strict, active := s.lookupBoundAuthIndex(clientKey)
 	if !active {
 		return "", true, nil
 	}
 	if authIdx == "" && strict {
-		return "", true, errors.New("account-bind: no auth_index bound for this API key and no default-model-account configured")
+		return "", true, accountBindUnboundError(c)
 	}
 	return authIdx, true, nil
 }
@@ -1712,10 +1723,7 @@ func (s *Server) resolveCurrentBoundAuthIndex(c *gin.Context) (string, bool, err
 // injects it into the request context when account-bind routing is active.
 func (s *Server) accountBindMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		clientKey := ""
-		if raw, ok := c.Get("apiKey"); ok {
-			clientKey, _ = raw.(string)
-		}
+		clientKey := clientAPIKeyFromGinContext(c)
 		authIdx, strict, active := s.lookupBoundAuthIndex(clientKey)
 		if !active {
 			c.Next()
@@ -1723,9 +1731,7 @@ func (s *Server) accountBindMiddleware() gin.HandlerFunc {
 		}
 		if authIdx == "" {
 			if strict {
-				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-					"error": "account-bind: no auth_index bound for this API key and no default-model-account configured",
-				})
+				c.AbortWithStatusJSON(http.StatusBadRequest, accountBindUnboundErrorBody(c))
 				return
 			}
 			c.Next()
@@ -1736,6 +1742,46 @@ func (s *Server) accountBindMiddleware() gin.HandlerFunc {
 		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	}
+}
+
+func clientAPIKeyFromGinContext(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	for _, key := range []string{"userApiKey", "apiKey"} {
+		if raw, ok := c.Get(key); ok {
+			if value, _ := raw.(string); strings.TrimSpace(value) != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func accountBindUnboundError(c *gin.Context) error {
+	requestID := accountBindRequestID(c)
+	if requestID == "" {
+		return errors.New(accountBindUnboundErrorMessage)
+	}
+	return fmt.Errorf("%s (request_id: %s)", accountBindUnboundErrorMessage, requestID)
+}
+
+func accountBindUnboundErrorBody(c *gin.Context) gin.H {
+	return gin.H{
+		"error":      accountBindUnboundErrorMessage,
+		"request_id": accountBindRequestID(c),
+	}
+}
+
+func accountBindRequestID(c *gin.Context) string {
+	requestID := strings.TrimSpace(logging.GetGinRequestID(c))
+	if requestID != "" {
+		return requestID
+	}
+	if c != nil && c.Request != nil {
+		return strings.TrimSpace(logging.GetRequestID(c.Request.Context()))
+	}
+	return ""
 }
 
 // (management handlers moved to internal/api/handlers/management)
