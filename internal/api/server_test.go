@@ -826,11 +826,11 @@ func TestAccountBindMiddleware_DefaultModelAccountDoesNotReplaceMissingBinding(t
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
 	}
-	if body["error"] != accountBindUnboundErrorMessage {
+	if body["error"] != accountBindUnboundErrorMessage+" (request id: req-test-1)" {
 		t.Fatalf("error = %q", body["error"])
 	}
-	if body["request_id"] != "req-test-1" {
-		t.Fatalf("request_id = %q, want req-test-1", body["request_id"])
+	if _, ok := body["request_id"]; ok {
+		t.Fatalf("response must not include request_id field: %#v", body)
 	}
 	if got := sdkapi.BoundAuthIndexFromContext(c.Request.Context()); got != "" {
 		t.Fatalf("missing explicit binding must not inject auth_index: got %q; default was %q", got, registered.Index)
@@ -1097,8 +1097,18 @@ func TestCodexDirectRouteAppliesAccountBindMiddleware(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v body=%s", err, rr.Body.String())
 	}
-	if len(body["request_id"]) != 8 {
-		t.Fatalf("codex direct route request_id length = %d value=%q", len(body["request_id"]), body["request_id"])
+	if _, ok := body["request_id"]; ok {
+		t.Fatalf("response must not include request_id field: %#v", body)
+	}
+	errorMessage := body["error"]
+	requestIDPrefix := " (request id: "
+	start := strings.LastIndex(errorMessage, requestIDPrefix)
+	if start < 0 || !strings.HasSuffix(errorMessage, ")") {
+		t.Fatalf("error must include request id suffix: %q", errorMessage)
+	}
+	requestID := strings.TrimSuffix(errorMessage[start+len(requestIDPrefix):], ")")
+	if len(requestID) != 32 {
+		t.Fatalf("codex direct route request id length = %d value=%q", len(requestID), requestID)
 	}
 }
 

@@ -1759,18 +1759,21 @@ func clientAPIKeyFromGinContext(c *gin.Context) string {
 }
 
 func accountBindUnboundError(c *gin.Context) error {
-	requestID := accountBindRequestID(c)
-	if requestID == "" {
-		return errors.New(accountBindUnboundErrorMessage)
-	}
-	return fmt.Errorf("%s (request_id: %s)", accountBindUnboundErrorMessage, requestID)
+	return errors.New(accountBindUnboundErrorMessageWithRequestID(c))
 }
 
 func accountBindUnboundErrorBody(c *gin.Context) gin.H {
 	return gin.H{
-		"error":      accountBindUnboundErrorMessage,
-		"request_id": accountBindRequestID(c),
+		"error": accountBindUnboundErrorMessageWithRequestID(c),
 	}
+}
+
+func accountBindUnboundErrorMessageWithRequestID(c *gin.Context) string {
+	requestID := accountBindRequestID(c)
+	if requestID == "" {
+		return accountBindUnboundErrorMessage
+	}
+	return fmt.Sprintf("%s (request id: %s)", accountBindUnboundErrorMessage, requestID)
 }
 
 func accountBindRequestID(c *gin.Context) string {
