@@ -1,14 +1,17 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 )
 
 type schedulerProviderTestExecutor struct {
@@ -87,6 +90,68 @@ func TestManager_RefreshAuthUnauthorizedFailureStopsAutoRefreshRetry(t *testing.
 	}
 	if _, shouldSchedule := nextRefreshCheckAt(now, updated, time.Second); shouldSchedule {
 		t.Fatal("expected unauthorized auth to be removed from the auto-refresh schedule")
+	}
+}
+
+func TestManager_RefreshAuthFailureLogsSafeAccountIdentifiers(t *testing.T) {
+	ctx := context.Background()
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	manager.RegisterExecutor(unauthorizedRefreshTestExecutor{
+		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "codex"},
+	})
+
+	auth := &Auth{
+		ID:       "refresh-log-auth",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"api_key": "sk-secret-refresh-log",
+		},
+		Metadata: map[string]any{
+			"id_token": testJWT(t, map[string]any{
+				"https://api.openai.com/auth": map[string]any{
+					"chatgpt_account_id": "acct-refresh-log",
+				},
+			}),
+			"refresh_token": "rt-secret-refresh-log",
+		},
+	}
+	registered, errRegister := manager.Register(ctx, auth)
+	if errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	var buf bytes.Buffer
+	logger := log.StandardLogger()
+	oldOut := logger.Out
+	oldFormatter := logger.Formatter
+	oldLevel := logger.Level
+	log.SetOutput(&buf)
+	log.SetFormatter(&log.TextFormatter{DisableTimestamp: true, DisableColors: true})
+	log.SetLevel(log.WarnLevel)
+	defer func() {
+		log.SetOutput(oldOut)
+		log.SetFormatter(oldFormatter)
+		log.SetLevel(oldLevel)
+	}()
+
+	manager.refreshAuth(ctx, auth.ID)
+
+	logOutput := buf.String()
+	for _, want := range []string{
+		"auth refresh failed",
+		"auth_id=refresh-log-auth",
+		"auth_index=" + registered.Index,
+		`auth_identity="codex:chatgpt:acct-refresh-log"`,
+		"provider=codex",
+	} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("refresh failure log missing %q: %s", want, logOutput)
+		}
+	}
+	for _, secret := range []string{"sk-secret-refresh-log", "rt-secret-refresh-log"} {
+		if strings.Contains(logOutput, secret) {
+			t.Fatalf("refresh failure log leaked secret %q: %s", secret, logOutput)
+		}
 	}
 }
 

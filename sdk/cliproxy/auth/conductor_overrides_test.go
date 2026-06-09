@@ -516,6 +516,64 @@ func TestManager_Execute_UnauthorizedAuthRetainedWithError(t *testing.T) {
 	}
 }
 
+func TestManager_UnauthorizedRetentionLogIncludesBindingIdentifiers(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	auth := &Auth{
+		ID:       "bound-auth",
+		Index:    "idx-bound",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"id_token": testJWT(t, map[string]any{
+				"https://api.openai.com/auth": map[string]any{
+					"chatgpt_account_id": "acct-bound",
+				},
+			}),
+			"refresh_token": "rt-secret-bound",
+		},
+	}
+
+	var buf bytes.Buffer
+	logger := log.StandardLogger()
+	oldOut := logger.Out
+	oldFormatter := logger.Formatter
+	oldLevel := logger.Level
+	log.SetOutput(&buf)
+	log.SetFormatter(&log.TextFormatter{DisableTimestamp: true, DisableColors: true})
+	log.SetLevel(log.InfoLevel)
+	defer func() {
+		log.SetOutput(oldOut)
+		log.SetFormatter(oldFormatter)
+		log.SetLevel(oldLevel)
+	}()
+
+	err := manager.evictUnauthorizedAuth(context.Background(), auth, "codex", "gpt-5", map[string]any{
+		cliproxyexecutor.BoundAuthIndexMetadataKey:  "idx-bound",
+		cliproxyexecutor.BoundAuthSourceMetadataKey: "default-model-account",
+	})
+	if err != nil {
+		t.Fatalf("retain unauthorized auth: %v", err)
+	}
+
+	logOutput := buf.String()
+	for _, want := range []string{
+		"retaining unauthorized auth due to 401",
+		"auth_id=bound-auth",
+		"auth_index=idx-bound",
+		`auth_identity="codex:chatgpt:acct-bound"`,
+		"bound_auth_index=idx-bound",
+		"bound_auth_source=default-model-account",
+		"provider=codex",
+		"model=gpt-5",
+	} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("unauthorized retention log missing %q: %s", want, logOutput)
+		}
+	}
+	if strings.Contains(logOutput, "rt-secret-bound") {
+		t.Fatalf("unauthorized retention log leaked refresh token: %s", logOutput)
+	}
+}
+
 func TestManager_ExecuteCount_UnauthorizedAuthRetainedWithError(t *testing.T) {
 	manager, executor, store, model, badAuthID, goodAuthID := newUnauthorizedEvictionTestManager(t)
 

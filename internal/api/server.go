@@ -1670,9 +1670,14 @@ func (s *Server) UpdateBindingConfig(cfg *config.Config) {
 	s.strictBinding = true
 }
 
-func (s *Server) lookupBoundAuthIndex(clientKey string) (string, bool, bool) {
+const (
+	accountBindSourceExplicit = "api-key-auth-identity"
+	accountBindSourceDefault  = "default-model-account"
+)
+
+func (s *Server) lookupBoundAuthBinding(clientKey string) (string, string, bool, bool) {
 	if s == nil {
-		return "", false, false
+		return "", "", false, false
 	}
 	s.bindingMu.RLock()
 	bindingMap := s.bindingMap
@@ -1683,7 +1688,7 @@ func (s *Server) lookupBoundAuthIndex(clientKey string) (string, bool, bool) {
 
 	active := len(bindingMap) > 0 || len(explicitBindingKeys) > 0 || defaultIdx != "" || strict
 	if !active {
-		return "", false, false
+		return "", "", false, false
 	}
 
 	authIdx := ""
@@ -1693,23 +1698,24 @@ func (s *Server) lookupBoundAuthIndex(clientKey string) (string, bool, bool) {
 			authIdx = bindingMap[clientKey]
 		}
 		if authIdx != "" {
-			return authIdx, strict, true
+			return authIdx, accountBindSourceExplicit, strict, true
 		}
 		if _, hasExplicitBinding := explicitBindingKeys[clientKey]; hasExplicitBinding {
-			return "", strict, true
+			return "", accountBindSourceExplicit, strict, true
 		}
 	}
 	if defaultIdx != "" {
 		authIdx = defaultIdx
+		return authIdx, accountBindSourceDefault, strict, true
 	}
-	return authIdx, strict, true
+	return "", "", strict, true
 }
 
 const accountBindUnboundErrorMessage = "account-bind: no auth_index bound for this API key"
 
 func (s *Server) resolveCurrentBoundAuthIndex(c *gin.Context) (string, bool, error) {
 	clientKey := clientAPIKeyFromGinContext(c)
-	authIdx, strict, active := s.lookupBoundAuthIndex(clientKey)
+	authIdx, _, strict, active := s.lookupBoundAuthBinding(clientKey)
 	if !active {
 		return "", true, nil
 	}
@@ -1724,7 +1730,7 @@ func (s *Server) resolveCurrentBoundAuthIndex(c *gin.Context) (string, bool, err
 func (s *Server) accountBindMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		clientKey := clientAPIKeyFromGinContext(c)
-		authIdx, strict, active := s.lookupBoundAuthIndex(clientKey)
+		authIdx, source, strict, active := s.lookupBoundAuthBinding(clientKey)
 		if !active {
 			c.Next()
 			return
@@ -1739,6 +1745,7 @@ func (s *Server) accountBindMiddleware() gin.HandlerFunc {
 		}
 
 		ctx := handlers.WithBoundAuthIndex(c.Request.Context(), authIdx)
+		ctx = handlers.WithBoundAuthSource(ctx, source)
 		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	}

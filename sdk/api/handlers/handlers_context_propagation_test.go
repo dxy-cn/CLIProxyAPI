@@ -18,11 +18,13 @@ import (
 // routing strategy instead of honoring the per-key binding.
 func TestGetContextWithCancel_PropagatesBoundAuthIndex(t *testing.T) {
 	const wantIdx = "2a2d14935e2bcab3"
+	const wantSource = "default-model-account"
 
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	req = req.WithContext(WithBoundAuthIndex(req.Context(), wantIdx))
+	req = req.WithContext(WithBoundAuthSource(req.Context(), wantSource))
 	c.Request = req
 
 	h := &BaseAPIHandler{Cfg: &sdkconfig.SDKConfig{}}
@@ -37,5 +39,8 @@ func TestGetContextWithCancel_PropagatesBoundAuthIndex(t *testing.T) {
 	meta := requestExecutionMetadata(cliCtx)
 	if v, ok := meta[coreexecutor.BoundAuthIndexMetadataKey].(string); !ok || v != wantIdx {
 		t.Fatalf("requestExecutionMetadata did not carry bound auth_index: got %v, want %q", meta[coreexecutor.BoundAuthIndexMetadataKey], wantIdx)
+	}
+	if v, ok := meta[coreexecutor.BoundAuthSourceMetadataKey].(string); !ok || v != wantSource {
+		t.Fatalf("requestExecutionMetadata did not carry bound auth source: got %v, want %q", meta[coreexecutor.BoundAuthSourceMetadataKey], wantSource)
 	}
 }

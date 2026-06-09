@@ -60,6 +60,7 @@ type pinnedAuthContextKey struct{}
 type selectedAuthCallbackContextKey struct{}
 type executionSessionContextKey struct{}
 type boundAuthIndexContextKey struct{}
+type boundAuthSourceContextKey struct{}
 type disallowFreeAuthContextKey struct{}
 
 // WithPinnedAuthID returns a child context that requests execution on a specific auth ID.
@@ -96,6 +97,18 @@ func WithBoundAuthIndex(ctx context.Context, idx string) context.Context {
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, boundAuthIndexContextKey{}, idx)
+}
+
+// WithBoundAuthSource returns a child context tagged with the account-bind source.
+func WithBoundAuthSource(ctx context.Context, source string) context.Context {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, boundAuthSourceContextKey{}, source)
 }
 
 // WithExecutionSessionID returns a child context tagged with a long-lived execution session ID.
@@ -258,6 +271,9 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if boundAuthIndex := boundAuthIndexFromContext(ctx); boundAuthIndex != "" {
 		meta[coreexecutor.BoundAuthIndexMetadataKey] = boundAuthIndex
 	}
+	if boundAuthSource := boundAuthSourceFromContext(ctx); boundAuthSource != "" {
+		meta[coreexecutor.BoundAuthSourceMetadataKey] = boundAuthSource
+	}
 	if disallowFreeAuthFromContext(ctx) {
 		meta[coreexecutor.DisallowFreeAuthMetadataKey] = true
 	}
@@ -349,6 +365,21 @@ func boundAuthIndexFromContext(ctx context.Context) string {
 		return ""
 	}
 	raw := ctx.Value(boundAuthIndexContextKey{})
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case []byte:
+		return strings.TrimSpace(string(v))
+	default:
+		return ""
+	}
+}
+
+func boundAuthSourceFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	raw := ctx.Value(boundAuthSourceContextKey{})
 	switch v := raw.(type) {
 	case string:
 		return strings.TrimSpace(v)
@@ -475,6 +506,9 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 		} else if requestID = logging.GetGinRequestID(c); requestID != "" {
 			parentCtx = logging.WithRequestID(parentCtx, requestID)
 		}
+	}
+	if source := boundAuthSourceFromContext(requestCtx); source != "" {
+		parentCtx = WithBoundAuthSource(parentCtx, source)
 	}
 	if boundIdx, ok, err := h.ResolveBoundAuthIndex(c); err == nil && ok && boundIdx != "" {
 		parentCtx = WithBoundAuthIndex(parentCtx, boundIdx)

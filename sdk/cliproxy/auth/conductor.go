@@ -840,7 +840,7 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
 	}
 }
 
-func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk) *cliproxyexecutor.StreamResult {
+func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel string, headers http.Header, meta map[string]any, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk) *cliproxyexecutor.StreamResult {
 	out := make(chan cliproxyexecutor.StreamChunk)
 	go func() {
 		defer close(out)
@@ -855,7 +855,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				}
 				m.MarkResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr})
 				if isUnauthorizedResult(rerr) {
-					if errEvict := m.evictUnauthorizedAuth(ctx, auth, provider, resultModel); errEvict != nil {
+					if errEvict := m.evictUnauthorizedAuth(ctx, auth, provider, resultModel, meta); errEvict != nil {
 						logEntryWithRequestID(ctx).Warnf("evict unauthorized auth %s failed: %v", auth.ID, errEvict)
 					}
 				}
@@ -994,7 +994,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			close(closedCh)
 			remaining = closedCh
 		}
-		return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, buffered, remaining), nil
+		return m.wrapStreamResult(ctx, auth.Clone(), provider, resultModel, streamResult.Headers, opts.Metadata, buffered, remaining), nil
 	}
 	if lastErr == nil {
 		lastErr = &Error{Code: "auth_not_found", Message: "no upstream model available"}
@@ -1512,7 +1512,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				}
 				m.MarkResult(execCtx, result)
 				if isUnauthorizedError(errExec) {
-					if errEvict := m.evictUnauthorizedAuth(execCtx, auth, provider, resultModel); errEvict != nil {
+					if errEvict := m.evictUnauthorizedAuth(execCtx, auth, provider, resultModel, opts.Metadata); errEvict != nil {
 						logEntryWithRequestID(execCtx).Warnf("evict unauthorized auth %s failed: %v", auth.ID, errEvict)
 					}
 					authErr = errExec
@@ -1612,7 +1612,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				}
 				m.MarkResult(execCtx, result)
 				if isUnauthorizedError(errExec) {
-					if errEvict := m.evictUnauthorizedAuth(execCtx, auth, provider, resultModel); errEvict != nil {
+					if errEvict := m.evictUnauthorizedAuth(execCtx, auth, provider, resultModel, opts.Metadata); errEvict != nil {
 						logEntryWithRequestID(execCtx).Warnf("evict unauthorized auth %s failed: %v", auth.ID, errEvict)
 					}
 					authErr = errExec
@@ -1695,7 +1695,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				return nil, errCtx
 			}
 			if isUnauthorizedError(errStream) {
-				if errEvict := m.evictUnauthorizedAuth(execCtx, auth, provider, routeModel); errEvict != nil {
+				if errEvict := m.evictUnauthorizedAuth(execCtx, auth, provider, routeModel, opts.Metadata); errEvict != nil {
 					logEntryWithRequestID(execCtx).Warnf("evict unauthorized auth %s failed: %v", auth.ID, errEvict)
 				}
 				lastErr = errStream
@@ -3138,7 +3138,7 @@ func (m *Manager) evictAuth(ctx context.Context, authID string) error {
 	return nil
 }
 
-func (m *Manager) evictUnauthorizedAuth(ctx context.Context, auth *Auth, provider, model string) error {
+func (m *Manager) evictUnauthorizedAuth(ctx context.Context, auth *Auth, provider, model string, meta map[string]any) error {
 	if auth == nil {
 		return nil
 	}
@@ -3148,11 +3148,14 @@ func (m *Manager) evictUnauthorizedAuth(ctx context.Context, auth *Auth, provide
 	}
 	model = strings.TrimSpace(model)
 
-	entry := logEntryWithRequestID(ctx)
+	entry := logEntryWithRequestID(ctx).WithFields(authLogFields(auth)).WithFields(bindingLogFields(meta))
+	if provider != "" {
+		entry = entry.WithField("provider", provider)
+	}
 	if model != "" {
-		entry.Infof("retaining unauthorized auth provider=%s auth=%s model=%s due to 401", provider, auth.ID, model)
+		entry.WithField("model", model).Info("retaining unauthorized auth due to 401")
 	} else {
-		entry.Infof("retaining unauthorized auth provider=%s auth=%s due to 401", provider, auth.ID)
+		entry.Info("retaining unauthorized auth due to 401")
 	}
 
 	return nil
@@ -4547,6 +4550,7 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 	log.Debugf("refreshed %s, %s, %v", auth.Provider, auth.ID, err)
 	now := time.Now()
 	if err != nil {
+		logEntryWithRequestID(ctx).WithFields(authLogFields(cloned)).WithError(err).Warn("auth refresh failed")
 		unauthorized := isUnauthorizedError(err)
 		shouldReschedule := false
 		m.mu.Lock()
@@ -4647,6 +4651,59 @@ func logEntryWithRequestID(ctx context.Context) *log.Entry {
 		return log.WithField("request_id", reqID)
 	}
 	return log.NewEntry(log.StandardLogger())
+}
+
+func authLogFields(auth *Auth) log.Fields {
+	fields := log.Fields{}
+	if auth == nil {
+		return fields
+	}
+	if id := strings.TrimSpace(auth.ID); id != "" {
+		fields["auth_id"] = id
+	}
+	index := strings.TrimSpace(auth.Index)
+	if index == "" {
+		index = strings.TrimSpace(auth.EnsureIndex())
+	}
+	if index != "" {
+		fields["auth_index"] = index
+	}
+	if identity := strings.TrimSpace(auth.StableIdentity()); identity != "" {
+		fields["auth_identity"] = identity
+	}
+	if provider := strings.TrimSpace(auth.Provider); provider != "" {
+		fields["provider"] = provider
+	}
+	return fields
+}
+
+func bindingLogFields(meta map[string]any) log.Fields {
+	fields := log.Fields{}
+	if boundIdx := boundAuthIndexFromMetadata(meta); boundIdx != "" {
+		fields["bound_auth_index"] = boundIdx
+	}
+	if source := boundAuthSourceFromMetadata(meta); source != "" {
+		fields["bound_auth_source"] = source
+	}
+	return fields
+}
+
+func boundAuthSourceFromMetadata(meta map[string]any) string {
+	if len(meta) == 0 {
+		return ""
+	}
+	raw, ok := meta[cliproxyexecutor.BoundAuthSourceMetadataKey]
+	if !ok || raw == nil {
+		return ""
+	}
+	switch val := raw.(type) {
+	case string:
+		return strings.TrimSpace(val)
+	case []byte:
+		return strings.TrimSpace(string(val))
+	default:
+		return ""
+	}
 }
 
 func debugLogAuthSelection(entry *log.Entry, auth *Auth, provider string, model string) {
