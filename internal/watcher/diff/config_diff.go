@@ -95,6 +95,12 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.QuotaExceeded.AntigravityCredits != newCfg.QuotaExceeded.AntigravityCredits {
 		changes = append(changes, fmt.Sprintf("quota-exceeded.antigravity-credits: %t -> %t", oldCfg.QuotaExceeded.AntigravityCredits, newCfg.QuotaExceeded.AntigravityCredits))
 	}
+	if strings.TrimSpace(oldCfg.QuotaWarning.WebhookURL) != strings.TrimSpace(newCfg.QuotaWarning.WebhookURL) {
+		changes = append(changes, fmt.Sprintf("quota-warning.webhook-url: %s", redactedPresenceChange(oldCfg.QuotaWarning.WebhookURL, newCfg.QuotaWarning.WebhookURL)))
+	}
+	if oldCfg.QuotaWarning.Threshold != newCfg.QuotaWarning.Threshold {
+		changes = append(changes, fmt.Sprintf("quota-warning.threshold: %d -> %d", oldCfg.QuotaWarning.Threshold, newCfg.QuotaWarning.Threshold))
+	}
 
 	if oldCfg.Codex.IdentityConfuse != newCfg.Codex.IdentityConfuse {
 		changes = append(changes, fmt.Sprintf("codex.identity-confuse: %t -> %t", oldCfg.Codex.IdentityConfuse, newCfg.Codex.IdentityConfuse))
@@ -384,6 +390,21 @@ func equalStringMap(a, b map[string]string) bool {
 		}
 	}
 	return true
+}
+
+func redactedPresenceChange(oldValue string, newValue string) string {
+	oldTrimmed := strings.TrimSpace(oldValue)
+	newTrimmed := strings.TrimSpace(newValue)
+	switch {
+	case oldTrimmed == "" && newTrimmed != "":
+		return "created"
+	case oldTrimmed != "" && newTrimmed == "":
+		return "deleted"
+	case oldTrimmed != newTrimmed:
+		return "updated"
+	default:
+		return "unchanged"
+	}
 }
 
 func formatProxyURL(raw string) string {

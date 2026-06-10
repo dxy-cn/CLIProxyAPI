@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -330,6 +331,76 @@ func TestPutConfigYAMLAcceptsMatchingConfigHash(t *testing.T) {
 	}
 	if got := rec.Header().Get(configHashHeader); got != configContentHash(data) {
 		t.Fatalf("%s = %q, want %q", configHashHeader, got, configContentHash(data))
+	}
+}
+
+func TestPutConfigYAMLDispatchesQuotaWarningAfterEnablingConfig(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	original := []byte("quota-warning:\n  webhook-url: \"\"\n  threshold: 0\n")
+	if err := os.WriteFile(configPath, original, 0o600); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "codex-auth",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"note": "saved-config-note",
+		},
+	}); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	h := &Handler{
+		cfg:                &config.Config{},
+		configFilePath:     configPath,
+		authManager:        manager,
+		quotaWarningSent:   make(map[string]struct{}),
+		quotaWarningSender: func(_ context.Context, _ string, _ string) error { return nil },
+	}
+	h.quotaWarningFetcher = func(_ context.Context, auth *coreauth.Auth) (int, gin.H, error) {
+		if auth.ID != "codex-auth" {
+			t.Fatalf("unexpected auth: %s", auth.ID)
+		}
+		return http.StatusOK, gin.H{"rate_limit": gin.H{"primary_window": gin.H{
+			"used_percent":         85,
+			"limit_window_seconds": 18000,
+			"reset_at":             1777777777,
+		}}}, nil
+	}
+
+	var sentMu sync.Mutex
+	var sent []string
+	h.quotaWarningSender = func(_ context.Context, _ string, content string) error {
+		sentMu.Lock()
+		defer sentMu.Unlock()
+		sent = append(sent, content)
+		return nil
+	}
+
+	next := "quota-warning:\n  webhook-url: \"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test\"\n  threshold: 20\n"
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/config.yaml", strings.NewReader(next))
+	ctx.Request.Header.Set("Content-Type", "application/yaml")
+	ctx.Request.Header.Set("If-Match", `"`+configContentHash(original)+`"`)
+
+	h.PutConfigYAML(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PutConfigYAML status = %d, want %d with body %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	waitForQuotaWarningSent(t, &sentMu, &sent, 1)
+	sentMu.Lock()
+	content := sent[0]
+	sentMu.Unlock()
+	if !strings.Contains(content, "凭证名称: saved-config-note") {
+		t.Fatalf("warning content missing saved config credential note: %s", content)
 	}
 }
 

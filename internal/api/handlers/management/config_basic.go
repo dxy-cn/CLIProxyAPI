@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -308,9 +309,9 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		return
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	currentData, err := os.ReadFile(h.configFilePath)
 	if err != nil {
+		h.mu.Unlock()
 		if os.IsNotExist(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not_found", "message": "config file not found"})
 			return
@@ -323,6 +324,7 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 
 	expectedHash := requestedConfigHash(c)
 	if expectedHash == "" {
+		h.mu.Unlock()
 		c.JSON(http.StatusPreconditionRequired, gin.H{
 			"error":   "config_version_required",
 			"message": "config version is required; reload config before saving",
@@ -330,6 +332,7 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		return
 	}
 	if !configPreconditionMatches(expectedHash, currentHash) {
+		h.mu.Unlock()
 		c.JSON(http.StatusConflict, gin.H{
 			"error":        "config_conflict",
 			"message":      "config has been modified; reload before saving",
@@ -339,16 +342,24 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 	}
 
 	if errWrite := WriteConfig(h.configFilePath, body); errWrite != nil {
+		h.mu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "write_failed", "message": errWrite.Error()})
 		return
 	}
 	// Reload into handler to keep memory in sync
 	newCfg, err := config.LoadConfig(h.configFilePath)
 	if err != nil {
+		h.mu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "reload_failed", "message": err.Error()})
 		return
 	}
+	oldCfg := h.cfg
 	h.cfg = newCfg
+	dispatchQuotaWarnings := h.shouldDispatchQuotaWarningsAfterConfigChange(oldCfg, newCfg)
+	h.mu.Unlock()
+	if dispatchQuotaWarnings {
+		go h.dispatchQuotaWarningsForCurrentCodexAuths(context.Background())
+	}
 	if updatedData, errRead := os.ReadFile(h.configFilePath); errRead == nil {
 		setConfigVersionHeaders(c, configContentHash(updatedData))
 	}

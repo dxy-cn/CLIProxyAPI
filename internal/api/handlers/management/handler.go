@@ -3,6 +3,7 @@
 package management
 
 import (
+	"context"
 	"crypto/subtle"
 	"fmt"
 	"net/http"
@@ -54,6 +55,16 @@ type Handler struct {
 	attemptCleanupStop  chan struct{}
 	attemptCleanupDone  chan struct{}
 	attemptCleanupOnce  sync.Once
+	quotaWarningMu      sync.Mutex
+	quotaWarningSent    map[string]struct{}
+	quotaWarningSender  quotaWarningSender
+	quotaWarningFetcher quotaWarningQuotaFetcher
+	quotaWarningVersion int64
+	quotaWarningScanMu  sync.Mutex
+	quotaWarningRunning bool
+	quotaWarningStop    chan struct{}
+	quotaWarningDone    chan struct{}
+	quotaWarningOnce    sync.Once
 }
 
 // NewHandler creates a new management handler instance.
@@ -72,11 +83,16 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		envSecret:           envSecret,
 		attemptCleanupStop:  make(chan struct{}),
 		attemptCleanupDone:  make(chan struct{}),
+		quotaWarningSent:    make(map[string]struct{}),
+		quotaWarningSender:  sendWeComQuotaWarning,
+		quotaWarningStop:    make(chan struct{}),
+		quotaWarningDone:    make(chan struct{}),
 	}
 	if store, ok := h.tokenStore.(apikeys.Store); ok {
 		h.apiKeyStore = store
 	}
 	h.startAttemptCleanup()
+	h.startQuotaWarningScanner(context.Background(), quotaWarningScanInterval)
 	return h
 }
 
@@ -108,8 +124,16 @@ func (h *Handler) Close() error {
 			close(h.attemptCleanupStop)
 		}
 	})
+	h.quotaWarningOnce.Do(func() {
+		if h.quotaWarningStop != nil {
+			close(h.quotaWarningStop)
+		}
+	})
 	if h.attemptCleanupDone != nil {
 		<-h.attemptCleanupDone
+	}
+	if h.quotaWarningDone != nil {
+		<-h.quotaWarningDone
 	}
 	return nil
 }
@@ -143,8 +167,13 @@ func (h *Handler) SetConfig(cfg *config.Config) {
 		return
 	}
 	h.mu.Lock()
+	oldCfg := h.cfg
 	h.cfg = cfg
 	h.mu.Unlock()
+
+	if h.shouldDispatchQuotaWarningsAfterConfigChange(oldCfg, cfg) {
+		go h.dispatchQuotaWarningsForCurrentCodexAuths(context.Background())
+	}
 }
 
 // SetAuthManager updates the auth manager reference used by management endpoints.
