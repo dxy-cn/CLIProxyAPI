@@ -39,6 +39,7 @@ const (
 	APIResponseSourceContextKey          = "API_RESPONSE_SOURCE"
 	APIResponseCapturedContextKey        = "API_RESPONSE_CAPTURED"
 	APIWebsocketTimelineSourceContextKey = "API_WEBSOCKET_TIMELINE_SOURCE"
+	requestLogPartsDirName               = "sharding"
 )
 
 type homeRequestLogClient interface {
@@ -53,26 +54,21 @@ var currentHomeRequestLogClient = func() homeRequestLogClient {
 // FileBodySource stores large log sections as ordered temp-file parts.
 type FileBodySource struct {
 	mu      sync.Mutex
+	baseDir string
+	prefix  string
 	dir     string
 	paths   []string
 	cleaned bool
 }
 
-// NewFileBodySourceInDir creates a temp-backed source under baseDir.
+// NewFileBodySourceInDir creates a lazily initialized temp-backed source under baseDir.
 func NewFileBodySourceInDir(baseDir string, prefix string) (*FileBodySource, error) {
 	prefix = sanitizeTempPrefix(prefix)
 	baseDir = strings.TrimSpace(baseDir)
 	if baseDir == "" {
 		return nil, fmt.Errorf("base directory is required")
 	}
-	if errMkdir := os.MkdirAll(baseDir, 0755); errMkdir != nil {
-		return nil, errMkdir
-	}
-	dir, errCreate := os.MkdirTemp(baseDir, "request-log-parts-"+prefix+"-*")
-	if errCreate != nil {
-		return nil, errCreate
-	}
-	return &FileBodySource{dir: dir}, nil
+	return &FileBodySource{baseDir: baseDir, prefix: prefix}, nil
 }
 
 func sanitizeTempPrefix(prefix string) string {
@@ -102,6 +98,24 @@ func sanitizeTempPrefix(prefix string) string {
 	return out
 }
 
+func (s *FileBodySource) ensureDirLocked() error {
+	if s.dir != "" {
+		return os.MkdirAll(s.dir, 0755)
+	}
+	if strings.TrimSpace(s.baseDir) == "" {
+		return fmt.Errorf("base directory is required")
+	}
+	if errMkdir := os.MkdirAll(s.baseDir, 0755); errMkdir != nil {
+		return errMkdir
+	}
+	dir, errCreate := os.MkdirTemp(s.baseDir, "request-log-parts-"+s.prefix+"-*")
+	if errCreate != nil {
+		return errCreate
+	}
+	s.dir = dir
+	return nil
+}
+
 // CreatePart creates one ordered detail log part.
 func (s *FileBodySource) CreatePart(prefix string) (*os.File, error) {
 	if s == nil {
@@ -113,7 +127,7 @@ func (s *FileBodySource) CreatePart(prefix string) (*os.File, error) {
 		return nil, fmt.Errorf("file body source has been cleaned")
 	}
 	prefix = sanitizeTempPrefix(prefix)
-	if errMkdir := os.MkdirAll(s.dir, 0755); errMkdir != nil {
+	if errMkdir := s.ensureDirLocked(); errMkdir != nil {
 		return nil, errMkdir
 	}
 	file, errCreate := os.CreateTemp(s.dir, prefix+"-*.tmp")
@@ -156,7 +170,7 @@ func (s *FileBodySource) AppendBytes(data []byte) error {
 	if s.cleaned {
 		return fmt.Errorf("file body source has been cleaned")
 	}
-	if errMkdir := os.MkdirAll(s.dir, 0755); errMkdir != nil {
+	if errMkdir := s.ensureDirLocked(); errMkdir != nil {
 		return errMkdir
 	}
 
@@ -535,7 +549,7 @@ func (l *FileRequestLogger) NewFileBodySource(prefix string) (*FileBodySource, e
 	if errEnsure := l.ensureLogsDir(); errEnsure != nil {
 		return nil, errEnsure
 	}
-	return NewFileBodySourceInDir(l.logsDir, prefix)
+	return NewFileBodySourceInDir(filepath.Join(l.logsDir, requestLogPartsDirName), prefix)
 }
 
 // LogRequest logs a complete non-streaming request/response cycle to a file.

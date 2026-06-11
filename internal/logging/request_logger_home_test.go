@@ -75,6 +75,40 @@ func TestFileBodySource_RecreatesPartDirAfterManualCleanup(t *testing.T) {
 	assertFileBodySourceCleaned(t, partPaths)
 }
 
+func TestFileRequestLogger_NewFileBodySourceCreatesPartDirOnFirstWrite(t *testing.T) {
+	logsDir := t.TempDir()
+	logger := NewFileRequestLogger(true, logsDir, "", 0)
+
+	source, errSource := logger.NewFileBodySource("api-request")
+	if errSource != nil {
+		t.Fatalf("logger.NewFileBodySource: %v", errSource)
+	}
+	partsDir := filepath.Join(logsDir, requestLogPartsDirName)
+	if _, errStat := os.Stat(partsDir); !os.IsNotExist(errStat) {
+		t.Fatalf("expected request log parts dir to be absent before first write, stat err=%v", errStat)
+	}
+	if source.HasPayload() {
+		t.Fatal("new file body source has payload before first write")
+	}
+	if errAppend := source.AppendBytes([]byte("payload")); errAppend != nil {
+		t.Fatalf("AppendBytes: %v", errAppend)
+	}
+	partPaths := source.Paths()
+	if len(partPaths) != 1 {
+		t.Fatalf("part paths = %d, want 1", len(partPaths))
+	}
+	if !strings.HasPrefix(partPaths[0], partsDir+string(os.PathSeparator)) {
+		t.Fatalf("part path %s is not under request log parts dir %s", partPaths[0], partsDir)
+	}
+	if info, errStat := os.Stat(partsDir); errStat != nil || !info.IsDir() {
+		t.Fatalf("expected request log parts dir after first write, info=%v err=%v", info, errStat)
+	}
+	if errCleanup := source.Cleanup(); errCleanup != nil {
+		t.Fatalf("Cleanup: %v", errCleanup)
+	}
+	assertFileBodySourceCleaned(t, partPaths)
+}
+
 func TestFileRequestLogger_HomeEnabled_ForwardsWhenRequestLogEnabled(t *testing.T) {
 	original := currentHomeRequestLogClient
 	defer func() {
@@ -165,9 +199,10 @@ func TestFileRequestLogger_LogRequestWithSourcesWritesLocalLogAndCleansParts(t *
 		t.Fatalf("AppendPart response: %v", errAppend)
 	}
 	partPaths := timelineSource.Paths()
+	partsDir := filepath.Join(logsDir, requestLogPartsDirName)
 	for _, path := range partPaths {
-		if !strings.HasPrefix(path, logsDir+string(os.PathSeparator)) {
-			t.Fatalf("part path %s is not under logs dir %s", path, logsDir)
+		if !strings.HasPrefix(path, partsDir+string(os.PathSeparator)) {
+			t.Fatalf("part path %s is not under request log parts dir %s", path, partsDir)
 		}
 	}
 
@@ -247,9 +282,10 @@ func TestFileRequestLogger_HomeEnabled_ForwardsSourceLogAndCleansParts(t *testin
 		t.Fatalf("AppendPart request: %v", errAppend)
 	}
 	partPaths := timelineSource.Paths()
+	partsDir := filepath.Join(logsDir, requestLogPartsDirName)
 	for _, path := range partPaths {
-		if !strings.HasPrefix(path, logsDir+string(os.PathSeparator)) {
-			t.Fatalf("part path %s is not under logs dir %s", path, logsDir)
+		if !strings.HasPrefix(path, partsDir+string(os.PathSeparator)) {
+			t.Fatalf("part path %s is not under request log parts dir %s", path, partsDir)
 		}
 	}
 

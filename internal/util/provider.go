@@ -192,10 +192,23 @@ func MaskAuthorizationHeader(value string) string {
 	return parts[0] + " " + HideAPIKey(parts[1])
 }
 
+// MaskXAPIKeyHeader masks X-Api-Key while keeping enough characters to identify the key.
+func MaskXAPIKeyHeader(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if strings.HasPrefix(trimmed, "sk-") && len(trimmed) > len("sk-")+3+6 {
+		return "sk-" + trimmed[len("sk-"):len("sk-")+3] + "..." + trimmed[len(trimmed)-6:]
+	}
+	if len(trimmed) > 3+6 {
+		return trimmed[:3] + "..." + trimmed[len(trimmed)-6:]
+	}
+	return HideAPIKey(value)
+}
+
 // MaskSensitiveHeaderValue masks sensitive header values while preserving expected formats.
 //
 // Behavior by header key (case-insensitive):
 //   - "Authorization": Preserve the auth type prefix (e.g., "Bearer ") and mask only the credential part.
+//   - "X-Api-Key": Preserve "sk-" and show the first 3 key characters plus the last 6 characters.
 //   - Headers containing "api-key": Mask the entire value using HideAPIKey.
 //   - Others: Return the original value unchanged.
 //
@@ -210,6 +223,8 @@ func MaskSensitiveHeaderValue(key, value string) string {
 	switch {
 	case strings.Contains(lowerKey, "authorization"):
 		return MaskAuthorizationHeader(value)
+	case lowerKey == "x-api-key":
+		return MaskXAPIKeyHeader(value)
 	case strings.Contains(lowerKey, "api-key"),
 		strings.Contains(lowerKey, "apikey"),
 		strings.Contains(lowerKey, "token"),
