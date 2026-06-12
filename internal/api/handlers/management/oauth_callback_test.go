@@ -17,15 +17,15 @@ func TestPostOAuthCallbackCreatesMissingAuthDir(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	authDir := filepath.Join(t.TempDir(), "missing-auth")
-	state := "test-antigravity-state"
-	RegisterOAuthSession(state, "antigravity")
+	state := "test-codex-state"
+	RegisterOAuthSession(state, "codex")
 	defer CompleteOAuthSession(state)
 
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
 	router := gin.New()
 	router.POST("/v0/management/oauth-callback", h.PostOAuthCallback)
 
-	body := `{"provider":"antigravity","redirect_url":"http://localhost:59788/oauth-callback?state=test-antigravity-state&code=test-code"}`
+	body := `{"provider":"codex","redirect_url":"http://localhost:1455/auth/callback?state=test-codex-state&code=test-code"}`
 	req := httptest.NewRequest(http.MethodPost, "/v0/management/oauth-callback", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -36,7 +36,7 @@ func TestPostOAuthCallbackCreatesMissingAuthDir(t *testing.T) {
 		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, w.Code, w.Body.String())
 	}
 
-	callbackPath := filepath.Join(authDir, ".oauth-antigravity-"+state+".oauth")
+	callbackPath := filepath.Join(authDir, ".oauth-codex-"+state+".oauth")
 	data, errRead := os.ReadFile(callbackPath)
 	if errRead != nil {
 		t.Fatalf("expected callback file to be written: %v", errRead)
@@ -52,7 +52,7 @@ func TestPostOAuthCallbackCreatesMissingAuthDir(t *testing.T) {
 }
 
 func TestWriteOAuthCallbackFileForPendingSessionCreatesMissingAuthDirForCallbackProviders(t *testing.T) {
-	providers := []string{"anthropic", "codex", "gemini", "antigravity", "xai"}
+	providers := []string{"anthropic", "codex"}
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {
 			authDir := filepath.Join(t.TempDir(), "missing-auth")
@@ -76,6 +76,16 @@ func TestWriteOAuthCallbackFileForPendingSessionCreatesMissingAuthDirForCallback
 			}
 			if payload.State != state || payload.Code != "code-"+provider || payload.Error != "" {
 				t.Fatalf("unexpected callback payload: %+v", payload)
+			}
+		})
+	}
+}
+
+func TestNormalizeOAuthProviderRejectsUnsupportedCredentialFlows(t *testing.T) {
+	for _, provider := range []string{"kimi", "qwen", "gemini", "google", "antigravity", "xai", "grok"} {
+		t.Run(provider, func(t *testing.T) {
+			if got, err := NormalizeOAuthProvider(provider); err == nil {
+				t.Fatalf("NormalizeOAuthProvider(%q) = %q, nil; want unsupported provider error", provider, got)
 			}
 		})
 	}

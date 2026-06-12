@@ -14,8 +14,6 @@ func newAuthManager() *sdkAuth.Manager {
 	manager := sdkAuth.NewManager(store,
 		sdkAuth.NewCodexAuthenticator(),
 		sdkAuth.NewClaudeAuthenticator(),
-		sdkAuth.NewKimiAuthenticator(),
-		sdkAuth.NewXAIAuthenticator(),
 	)
 	return manager
 }

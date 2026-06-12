@@ -133,16 +133,13 @@ go build -o cli-proxy-api ./cmd/server
 
 ## 登录和凭证导入
 
-服务可以为多个 provider 创建 OAuth auth 文件：
+服务可以为 Codex 和 Claude 创建 OAuth auth 文件：
 
 ```bash
 go run ./cmd/server --config config.yaml --login
 go run ./cmd/server --config config.yaml --codex-login
 go run ./cmd/server --config config.yaml --codex-device-login
 go run ./cmd/server --config config.yaml --claude-login
-go run ./cmd/server --config config.yaml --antigravity-login
-go run ./cmd/server --config config.yaml --kimi-login
-go run ./cmd/server --config config.yaml --xai-login
 ```
 
 常用登录参数：

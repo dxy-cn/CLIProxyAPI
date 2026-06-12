@@ -16,7 +16,11 @@ func TestServerStartupDoesNotLoadGeminiOrAntigravity(t *testing.T) {
 		"StartAntigravityVersionUpdater",
 		"DoLogin",
 		"DoAntigravityLogin",
+		"DoKimiLogin",
+		"DoXAILogin",
 		"antigravity-login",
+		"kimi-login",
+		"xai-login",
 		"Project ID (Gemini only",
 	} {
 		if strings.Contains(string(source), forbidden) {

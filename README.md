@@ -133,16 +133,13 @@ go build -o cli-proxy-api ./cmd/server
 
 ## Login and Credential Import
 
-The server can create OAuth-backed auth files for several providers:
+The server can create OAuth-backed auth files for Codex and Claude:
 
 ```bash
 go run ./cmd/server --config config.yaml --login
 go run ./cmd/server --config config.yaml --codex-login
 go run ./cmd/server --config config.yaml --codex-device-login
 go run ./cmd/server --config config.yaml --claude-login
-go run ./cmd/server --config config.yaml --antigravity-login
-go run ./cmd/server --config config.yaml --kimi-login
-go run ./cmd/server --config config.yaml --xai-login
 ```
 
 Useful login flags:
