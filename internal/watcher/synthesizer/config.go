@@ -10,7 +10,6 @@ import (
 )
 
 // ConfigSynthesizer generates Auth entries from configuration API keys.
-// It handles Claude, Codex, OpenAI-compat, and Vertex-compat providers.
 type ConfigSynthesizer struct{}
 
 // NewConfigSynthesizer creates a new ConfigSynthesizer instance.
@@ -29,10 +28,6 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeClaudeKeys(ctx)...)
 	// Codex API Keys
 	out = append(out, s.synthesizeCodexKeys(ctx)...)
-	// OpenAI-compat
-	out = append(out, s.synthesizeOpenAICompat(ctx)...)
-	// Vertex-compat
-	out = append(out, s.synthesizeVertexCompat(ctx)...)
 
 	return out, nil
 }
@@ -202,162 +197,6 @@ func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreau
 		if len(a.Metadata) == 0 {
 			a.Metadata = nil
 		}
-		out = append(out, a)
-	}
-	return out
-}
-
-// synthesizeOpenAICompat creates Auth entries for OpenAI-compatible providers.
-func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*coreauth.Auth {
-	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
-	out := make([]*coreauth.Auth, 0)
-	for i := range cfg.OpenAICompatibility {
-		compat := &cfg.OpenAICompatibility[i]
-		if compat.Disabled {
-			continue
-		}
-		prefix := strings.TrimSpace(compat.Prefix)
-		providerName := strings.ToLower(strings.TrimSpace(compat.Name))
-		if providerName == "" {
-			providerName = "openai-compatibility"
-		}
-		base := strings.TrimSpace(compat.BaseURL)
-		disableCooling := compat.DisableCooling
-
-		// Handle new APIKeyEntries format (preferred)
-		createdEntries := 0
-		for j := range compat.APIKeyEntries {
-			entry := &compat.APIKeyEntries[j]
-			key := strings.TrimSpace(entry.APIKey)
-			proxyURL := strings.TrimSpace(entry.ProxyURL)
-			idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
-			id, token := idGen.Next(idKind, key, base, proxyURL)
-			attrs := map[string]string{
-				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
-				"base_url":     base,
-				"compat_name":  compat.Name,
-				"provider_key": providerName,
-			}
-			metadata := map[string]any{}
-			if disableCooling {
-				metadata["disable_cooling"] = true
-			}
-			if compat.Priority != 0 {
-				attrs["priority"] = strconv.Itoa(compat.Priority)
-			}
-			if key != "" {
-				attrs["api_key"] = key
-			}
-			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
-				attrs["models_hash"] = hash
-			}
-			addConfigHeadersToAttrs(compat.Headers, attrs)
-			a := &coreauth.Auth{
-				ID:         id,
-				Provider:   providerName,
-				Label:      compat.Name,
-				Prefix:     prefix,
-				Status:     coreauth.StatusActive,
-				ProxyURL:   proxyURL,
-				Attributes: attrs,
-				Metadata:   metadata,
-				CreatedAt:  now,
-				UpdatedAt:  now,
-			}
-			if len(a.Metadata) == 0 {
-				a.Metadata = nil
-			}
-			out = append(out, a)
-			createdEntries++
-		}
-		// Fallback: create entry without API key if no APIKeyEntries
-		if createdEntries == 0 {
-			idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
-			id, token := idGen.Next(idKind, base)
-			attrs := map[string]string{
-				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
-				"base_url":     base,
-				"compat_name":  compat.Name,
-				"provider_key": providerName,
-			}
-			metadata := map[string]any{}
-			if disableCooling {
-				metadata["disable_cooling"] = true
-			}
-			if compat.Priority != 0 {
-				attrs["priority"] = strconv.Itoa(compat.Priority)
-			}
-			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
-				attrs["models_hash"] = hash
-			}
-			addConfigHeadersToAttrs(compat.Headers, attrs)
-			a := &coreauth.Auth{
-				ID:         id,
-				Provider:   providerName,
-				Label:      compat.Name,
-				Prefix:     prefix,
-				Status:     coreauth.StatusActive,
-				Attributes: attrs,
-				Metadata:   metadata,
-				CreatedAt:  now,
-				UpdatedAt:  now,
-			}
-			if len(a.Metadata) == 0 {
-				a.Metadata = nil
-			}
-			out = append(out, a)
-		}
-	}
-	return out
-}
-
-// synthesizeVertexCompat creates Auth entries for Vertex-compatible providers.
-func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*coreauth.Auth {
-	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
-	out := make([]*coreauth.Auth, 0, len(cfg.VertexCompatAPIKey))
-	for i := range cfg.VertexCompatAPIKey {
-		compat := &cfg.VertexCompatAPIKey[i]
-		providerName := "vertex"
-		base := strings.TrimSpace(compat.BaseURL)
-
-		key := strings.TrimSpace(compat.APIKey)
-		prefix := strings.TrimSpace(compat.Prefix)
-		proxyURL := strings.TrimSpace(compat.ProxyURL)
-		idKind := "vertex:apikey"
-		id, token := idGen.Next(idKind, key, base, proxyURL)
-		attrs := map[string]string{
-			"source":       fmt.Sprintf("config:vertex-apikey[%s]", token),
-			"base_url":     base,
-			"provider_key": providerName,
-		}
-		if compat.Priority != 0 {
-			attrs["priority"] = strconv.Itoa(compat.Priority)
-		}
-		if key != "" {
-			attrs["api_key"] = key
-		}
-		if hash := diff.ComputeVertexCompatModelsHash(compat.Models); hash != "" {
-			attrs["models_hash"] = hash
-		}
-		addConfigHeadersToAttrs(compat.Headers, attrs)
-		a := &coreauth.Auth{
-			ID:         id,
-			Provider:   providerName,
-			Label:      "vertex-apikey",
-			Prefix:     prefix,
-			Status:     coreauth.StatusActive,
-			ProxyURL:   proxyURL,
-			Attributes: attrs,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		ApplyAuthExcludedModelsMeta(a, cfg, compat.ExcludedModels, "apikey")
 		out = append(out, a)
 	}
 	return out

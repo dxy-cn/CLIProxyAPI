@@ -207,163 +207,7 @@ func TestConfigSynthesizer_CodexKeys_SkipsEmptyAndHeaders(t *testing.T) {
 	}
 }
 
-func TestConfigSynthesizer_OpenAICompat(t *testing.T) {
-	tests := []struct {
-		name    string
-		compat  []config.OpenAICompatibility
-		wantLen int
-	}{
-		{
-			name: "with APIKeyEntries",
-			compat: []config.OpenAICompatibility{
-				{
-					Name:           "CustomProvider",
-					BaseURL:        "https://custom.api.com",
-					DisableCooling: true,
-					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
-						{APIKey: "key-1"},
-						{APIKey: "key-2"},
-					},
-				},
-			},
-			wantLen: 2,
-		},
-		{
-			name: "empty APIKeyEntries included (legacy)",
-			compat: []config.OpenAICompatibility{
-				{
-					Name:    "EmptyKeys",
-					BaseURL: "https://empty.api.com",
-					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
-						{APIKey: ""},
-						{APIKey: "   "},
-					},
-				},
-			},
-			wantLen: 2,
-		},
-		{
-			name: "without APIKeyEntries (fallback)",
-			compat: []config.OpenAICompatibility{
-				{
-					Name:    "NoKeyProvider",
-					BaseURL: "https://no-key.api.com",
-				},
-			},
-			wantLen: 1,
-		},
-		{
-			name: "empty name defaults",
-			compat: []config.OpenAICompatibility{
-				{
-					Name:    "",
-					BaseURL: "https://default.api.com",
-				},
-			},
-			wantLen: 1,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			synth := NewConfigSynthesizer()
-			ctx := &SynthesisContext{
-				Config: &config.Config{
-					OpenAICompatibility: tt.compat,
-				},
-				Now:         time.Now(),
-				IDGenerator: NewStableIDGenerator(),
-			}
-
-			auths, err := synth.Synthesize(ctx)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if len(auths) != tt.wantLen {
-				t.Fatalf("expected %d auths, got %d", tt.wantLen, len(auths))
-			}
-			if tt.name == "with APIKeyEntries" {
-				for i := range auths {
-					if v, ok := auths[i].Metadata["disable_cooling"].(bool); !ok || !v {
-						t.Fatalf("expected auth[%d].disable_cooling=true, got %v", i, auths[i].Metadata["disable_cooling"])
-					}
-				}
-			}
-		})
-	}
-}
-
-func TestConfigSynthesizer_VertexCompat(t *testing.T) {
-	synth := NewConfigSynthesizer()
-	ctx := &SynthesisContext{
-		Config: &config.Config{
-			VertexCompatAPIKey: []config.VertexCompatKey{
-				{
-					APIKey:  "vertex-key-123",
-					BaseURL: "https://vertex.googleapis.com",
-					Prefix:  "vertex-prod",
-				},
-			},
-		},
-		Now:         time.Now(),
-		IDGenerator: NewStableIDGenerator(),
-	}
-
-	auths, err := synth.Synthesize(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(auths) != 1 {
-		t.Fatalf("expected 1 auth, got %d", len(auths))
-	}
-
-	if auths[0].Provider != "vertex" {
-		t.Errorf("expected provider vertex, got %s", auths[0].Provider)
-	}
-	if auths[0].Label != "vertex-apikey" {
-		t.Errorf("expected label vertex-apikey, got %s", auths[0].Label)
-	}
-	if auths[0].Prefix != "vertex-prod" {
-		t.Errorf("expected prefix vertex-prod, got %s", auths[0].Prefix)
-	}
-}
-
-func TestConfigSynthesizer_VertexCompat_SkipsEmptyAndHeaders(t *testing.T) {
-	synth := NewConfigSynthesizer()
-	ctx := &SynthesisContext{
-		Config: &config.Config{
-			VertexCompatAPIKey: []config.VertexCompatKey{
-				{APIKey: "", BaseURL: "https://vertex.api"},   // empty key creates auth without api_key attr
-				{APIKey: "  ", BaseURL: "https://vertex.api"}, // whitespace key creates auth without api_key attr
-				{APIKey: "valid-key", BaseURL: "https://vertex.api", Headers: map[string]string{"X-Vertex": "test"}},
-			},
-		},
-		Now:         time.Now(),
-		IDGenerator: NewStableIDGenerator(),
-	}
-
-	auths, err := synth.Synthesize(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Vertex compat doesn't skip empty keys - it creates auths without api_key attribute
-	if len(auths) != 3 {
-		t.Fatalf("expected 3 auths, got %d", len(auths))
-	}
-	// First two should not have api_key attribute
-	if _, ok := auths[0].Attributes["api_key"]; ok {
-		t.Error("expected first auth to not have api_key attribute")
-	}
-	if _, ok := auths[1].Attributes["api_key"]; ok {
-		t.Error("expected second auth to not have api_key attribute")
-	}
-	// Third should have headers
-	if auths[2].Attributes["header:X-Vertex"] != "test" {
-		t.Errorf("expected header:X-Vertex=test, got %s", auths[2].Attributes["header:X-Vertex"])
-	}
-}
-
-func TestConfigSynthesizer_OpenAICompat_WithModelsHash(t *testing.T) {
+func TestConfigSynthesizer_DoesNotSynthesizeRemovedProviderConfigs(t *testing.T) {
 	synth := NewConfigSynthesizer()
 	ctx := &SynthesisContext{
 		Config: &config.Config{
@@ -371,82 +215,15 @@ func TestConfigSynthesizer_OpenAICompat_WithModelsHash(t *testing.T) {
 				{
 					Name:    "TestProvider",
 					BaseURL: "https://test.api.com",
-					Models: []config.OpenAICompatibilityModel{
-						{Name: "model-a"},
-						{Name: "model-b"},
-					},
 					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
-						{APIKey: "key-with-models"},
+						{APIKey: "openai-compat-key"},
 					},
 				},
 			},
-		},
-		Now:         time.Now(),
-		IDGenerator: NewStableIDGenerator(),
-	}
-
-	auths, err := synth.Synthesize(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(auths) != 1 {
-		t.Fatalf("expected 1 auth, got %d", len(auths))
-	}
-	if _, ok := auths[0].Attributes["models_hash"]; !ok {
-		t.Error("expected models_hash in attributes")
-	}
-	if auths[0].Attributes["api_key"] != "key-with-models" {
-		t.Errorf("expected api_key key-with-models, got %s", auths[0].Attributes["api_key"])
-	}
-}
-
-func TestConfigSynthesizer_OpenAICompat_FallbackWithModels(t *testing.T) {
-	synth := NewConfigSynthesizer()
-	ctx := &SynthesisContext{
-		Config: &config.Config{
-			OpenAICompatibility: []config.OpenAICompatibility{
-				{
-					Name:    "NoKeyWithModels",
-					BaseURL: "https://nokey.api.com",
-					Models: []config.OpenAICompatibilityModel{
-						{Name: "model-x"},
-					},
-					Headers: map[string]string{"X-API": "header-value"},
-					// No APIKeyEntries - should use fallback path
-				},
-			},
-		},
-		Now:         time.Now(),
-		IDGenerator: NewStableIDGenerator(),
-	}
-
-	auths, err := synth.Synthesize(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(auths) != 1 {
-		t.Fatalf("expected 1 auth, got %d", len(auths))
-	}
-	if _, ok := auths[0].Attributes["models_hash"]; !ok {
-		t.Error("expected models_hash in fallback path")
-	}
-	if auths[0].Attributes["header:X-API"] != "header-value" {
-		t.Errorf("expected header:X-API=header-value, got %s", auths[0].Attributes["header:X-API"])
-	}
-}
-
-func TestConfigSynthesizer_VertexCompat_WithModels(t *testing.T) {
-	synth := NewConfigSynthesizer()
-	ctx := &SynthesisContext{
-		Config: &config.Config{
 			VertexCompatAPIKey: []config.VertexCompatKey{
 				{
 					APIKey:  "vertex-key",
 					BaseURL: "https://vertex.api",
-					Models: []config.VertexCompatModel{
-						{Name: "gemini-pro", Alias: "pro"},
-						{Name: "gemini-ultra", Alias: "ultra"},
-					},
 				},
 			},
 		},
@@ -458,11 +235,8 @@ func TestConfigSynthesizer_VertexCompat_WithModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(auths) != 1 {
-		t.Fatalf("expected 1 auth, got %d", len(auths))
-	}
-	if _, ok := auths[0].Attributes["models_hash"]; !ok {
-		t.Error("expected models_hash in vertex auth with models")
+	if len(auths) != 0 {
+		t.Fatalf("expected removed provider configs to synthesize 0 auths, got %d", len(auths))
 	}
 }
 
@@ -523,8 +297,8 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(auths) != 4 {
-		t.Fatalf("expected 4 auths, got %d", len(auths))
+	if len(auths) != 2 {
+		t.Fatalf("expected 2 auths, got %d", len(auths))
 	}
 
 	providers := make(map[string]bool)
@@ -532,7 +306,7 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 		providers[a.Provider] = true
 	}
 
-	expected := []string{"claude", "codex", "compat", "vertex"}
+	expected := []string{"claude", "codex"}
 	for _, p := range expected {
 		if !providers[p] {
 			t.Errorf("expected provider %s not found", p)

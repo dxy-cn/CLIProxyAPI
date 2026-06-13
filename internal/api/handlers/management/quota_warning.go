@@ -495,11 +495,19 @@ func quotaWarningWindowPeriod(window map[string]any) string {
 }
 
 func quotaWarningResetKey(window map[string]any, fallback string) string {
-	if reset := firstStringish(window, "reset_at", "resetAt"); reset != "" {
-		return reset
+	if resetRaw := firstValue(window, "reset_at", "resetAt"); resetRaw != nil {
+		if reset, ok := numericValue(resetRaw); ok {
+			if reset >= quotaWarningUnixMilliseconds {
+				reset = reset / 1000
+			}
+			return fmt.Sprintf("reset-bucket:%d", int64(reset)/quotaWarningFiveHourSeconds)
+		}
+		if reset := strings.TrimSpace(fmt.Sprint(resetRaw)); reset != "" {
+			return reset
+		}
 	}
 	if resetAfter, ok := numericValue(firstValue(window, "reset_after_seconds", "resetAfterSeconds")); ok {
-		resetBucket := time.Now().Add(time.Duration(resetAfter)*time.Second).Unix() / 300
+		resetBucket := time.Now().Add(time.Duration(resetAfter*float64(time.Second))).Unix() / quotaWarningFiveHourSeconds
 		return fmt.Sprintf("reset-bucket:%d", resetBucket)
 	}
 	if seconds, ok := numericValue(firstValue(window, "limit_window_seconds", "limitWindowSeconds")); ok {

@@ -73,6 +73,49 @@ func TestMaybeSendCodexQuotaWarningSendsOnceBelowThreshold(t *testing.T) {
 	}
 }
 
+func TestMaybeSendCodexQuotaWarningDedupesWithinFiveHourResetBucket(t *testing.T) {
+	h := &Handler{
+		cfg: &config.Config{
+			QuotaWarning: config.QuotaWarning{
+				WebhookURL: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test",
+				Threshold:  20,
+			},
+		},
+		quotaWarningSent: make(map[string]struct{}),
+	}
+
+	var sent []string
+	h.quotaWarningSender = func(_ context.Context, _ string, content string) error {
+		sent = append(sent, content)
+		return nil
+	}
+
+	auth := &coreauth.Auth{
+		ID:       "auth-1",
+		Index:    "codex-1",
+		Provider: "codex",
+	}
+	resetAt := int64(quotaWarningFiveHourSeconds * 100000)
+	payload := gin.H{"rate_limit": gin.H{"primary_window": gin.H{
+		"used_percent":         85,
+		"limit_window_seconds": quotaWarningFiveHourSeconds,
+		"reset_at":             resetAt,
+	}}}
+
+	h.maybeSendCodexQuotaWarning(context.Background(), auth, payload)
+	payload["rate_limit"].(gin.H)["primary_window"].(gin.H)["reset_at"] = resetAt + 600
+	h.maybeSendCodexQuotaWarning(context.Background(), auth, payload)
+	if len(sent) != 1 {
+		t.Fatalf("same five-hour reset bucket should send once, got %d", len(sent))
+	}
+
+	payload["rate_limit"].(gin.H)["primary_window"].(gin.H)["reset_at"] = resetAt + quotaWarningFiveHourSeconds
+	h.maybeSendCodexQuotaWarning(context.Background(), auth, payload)
+	if len(sent) != 2 {
+		t.Fatalf("next five-hour reset bucket should send again, got %d", len(sent))
+	}
+}
+
 func TestMaybeSendCodexQuotaWarningOnlyChecksFiveHourLimit(t *testing.T) {
 	h := &Handler{
 		cfg: &config.Config{

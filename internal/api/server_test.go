@@ -315,48 +315,34 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 	})
 }
 
-func TestAmpProviderModelRoutes(t *testing.T) {
+func TestRemovedAmpProviderModelRoutes(t *testing.T) {
 	testCases := []struct {
-		name         string
-		path         string
-		wantStatus   int
-		wantContains string
+		name string
+		path string
 	}{
 		{
-			name:         "openai root models",
-			path:         "/api/provider/openai/models",
-			wantStatus:   http.StatusOK,
-			wantContains: `"object":"list"`,
+			name: "openai root models",
+			path: "/api/provider/openai/models",
 		},
 		{
-			name:         "groq root models",
-			path:         "/api/provider/groq/models",
-			wantStatus:   http.StatusOK,
-			wantContains: `"object":"list"`,
+			name: "groq root models",
+			path: "/api/provider/groq/models",
 		},
 		{
-			name:         "openai models",
-			path:         "/api/provider/openai/v1/models",
-			wantStatus:   http.StatusOK,
-			wantContains: `"object":"list"`,
+			name: "openai models",
+			path: "/api/provider/openai/v1/models",
 		},
 		{
-			name:         "anthropic models",
-			path:         "/api/provider/anthropic/v1/models",
-			wantStatus:   http.StatusOK,
-			wantContains: `"data"`,
+			name: "anthropic models",
+			path: "/api/provider/anthropic/v1/models",
 		},
 		{
-			name:         "google models v1",
-			path:         "/api/provider/google/v1/models",
-			wantStatus:   http.StatusOK,
-			wantContains: `"models"`,
+			name: "google models v1",
+			path: "/api/provider/google/v1/models",
 		},
 		{
-			name:         "google models v1beta",
-			path:         "/api/provider/google/v1beta/models",
-			wantStatus:   http.StatusOK,
-			wantContains: `"models"`,
+			name: "google models v1beta",
+			path: "/api/provider/google/v1beta/models",
 		},
 	}
 
@@ -371,11 +357,8 @@ func TestAmpProviderModelRoutes(t *testing.T) {
 			rr := httptest.NewRecorder()
 			server.engine.ServeHTTP(rr, req)
 
-			if rr.Code != tc.wantStatus {
-				t.Fatalf("unexpected status code for %s: got %d want %d; body=%s", tc.path, rr.Code, tc.wantStatus, rr.Body.String())
-			}
-			if body := rr.Body.String(); !strings.Contains(body, tc.wantContains) {
-				t.Fatalf("response body for %s missing %q: %s", tc.path, tc.wantContains, body)
+			if rr.Code != http.StatusNotFound {
+				t.Fatalf("unexpected status code for %s: got %d want %d; body=%s", tc.path, rr.Code, http.StatusNotFound, rr.Body.String())
 			}
 		})
 	}

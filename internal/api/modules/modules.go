@@ -74,7 +74,7 @@ type RouteModuleV2 interface {
 //	    Config:         cfg,
 //	    AuthMiddleware: authMiddleware,
 //	}
-//	if err := modules.RegisterModule(ctx, ampModule); err != nil {
+//	if err := modules.RegisterModule(ctx, customModule); err != nil {
 //	    log.Errorf("Failed to register module: %v", err)
 //	}
 func RegisterModule(ctx Context, mod interface{}) error {
