@@ -406,6 +406,7 @@ func (s *Server) setupRoutes() {
 
 	s.engine.GET("/management.html", s.serveManagementControlPanel)
 	s.engine.GET("/user/monitor", s.serveManagementControlPanel)
+	s.engine.GET("/user/codex-helper", s.serveManagementControlPanel)
 	openaiHandlers := openai.NewOpenAIAPIHandler(s.handlers)
 	geminiHandlers := gemini.NewGeminiAPIHandler(s.handlers)
 	geminiCLIHandlers := gemini.NewGeminiCLIAPIHandler(s.handlers)

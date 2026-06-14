@@ -130,7 +130,7 @@ func TestUserMonitorRouteServesControlPanelAsset(t *testing.T) {
 		t.Fatalf("failed to write management asset: %v", err)
 	}
 
-	for _, path := range []string{"/management.html", "/user/monitor"} {
+	for _, path := range []string{"/management.html", "/user/monitor", "/user/codex-helper"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rr := httptest.NewRecorder()
 		server.engine.ServeHTTP(rr, req)
