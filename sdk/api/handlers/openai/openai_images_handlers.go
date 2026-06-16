@@ -1414,11 +1414,11 @@ func collectImagesFromResponsesStream(ctx context.Context, data <-chan []byte, e
 				return nil, false, &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: fmt.Errorf("invalid SSE data JSON")}
 			}
 
-			if gjson.GetBytes(payload, "type").String() != "response.completed" {
+			if !isImagesResponsesTerminalEvent(gjson.GetBytes(payload, "type").String()) {
 				continue
 			}
 
-			results, createdAt, usageRaw, firstMeta, err := extractImagesFromResponsesCompleted(payload)
+			results, createdAt, usageRaw, firstMeta, err := extractImagesFromResponsesTerminal(payload)
 			if err != nil {
 				return nil, false, &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err}
 			}
@@ -1465,8 +1465,17 @@ func collectImagesFromResponsesStream(ctx context.Context, data <-chan []byte, e
 	}
 }
 
-func extractImagesFromResponsesCompleted(payload []byte) (results []imageCallResult, createdAt int64, usageRaw []byte, firstMeta imageCallResult, err error) {
-	if gjson.GetBytes(payload, "type").String() != "response.completed" {
+func isImagesResponsesTerminalEvent(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case "response.completed", "response.incomplete", "response.failed", "response.cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func extractImagesFromResponsesTerminal(payload []byte) (results []imageCallResult, createdAt int64, usageRaw []byte, firstMeta imageCallResult, err error) {
+	if !isImagesResponsesTerminalEvent(gjson.GetBytes(payload, "type").String()) {
 		return nil, 0, nil, imageCallResult{}, fmt.Errorf("unexpected event type")
 	}
 
@@ -1504,7 +1513,54 @@ func extractImagesFromResponsesCompleted(payload []byte) (results []imageCallRes
 		usageRaw = []byte(usage.Raw)
 	}
 
+	if len(results) == 0 {
+		if errNoImage := imageResponsesTerminalError(payload); errNoImage != nil {
+			return nil, createdAt, usageRaw, firstMeta, errNoImage
+		}
+	}
+
 	return results, createdAt, usageRaw, firstMeta, nil
+}
+
+func imageResponsesTerminalError(payload []byte) error {
+	response := gjson.GetBytes(payload, "response")
+	if message := strings.TrimSpace(response.Get("error.message").String()); message != "" {
+		return fmt.Errorf("image generation failed: %s", message)
+	}
+	if code := strings.TrimSpace(response.Get("error.code").String()); code != "" {
+		return fmt.Errorf("image generation failed: %s", code)
+	}
+
+	var statuses []string
+	output := response.Get("output")
+	if output.IsArray() {
+		for _, item := range output.Array() {
+			if item.Get("type").String() != "image_generation_call" {
+				continue
+			}
+			if message := strings.TrimSpace(item.Get("error.message").String()); message != "" {
+				return fmt.Errorf("image generation failed: %s", message)
+			}
+			if message := strings.TrimSpace(item.Get("error").String()); message != "" {
+				return fmt.Errorf("image generation failed: %s", message)
+			}
+			status := strings.TrimSpace(item.Get("status").String())
+			if status != "" && status != "completed" && status != "succeeded" {
+				statuses = append(statuses, status)
+			}
+		}
+	}
+	if reason := strings.TrimSpace(response.Get("incomplete_details.reason").String()); reason != "" {
+		return fmt.Errorf("image generation did not complete: %s", reason)
+	}
+	eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+	if eventType != "" && eventType != "response.completed" {
+		return fmt.Errorf("image generation did not complete: %s", strings.TrimPrefix(eventType, "response."))
+	}
+	if len(statuses) > 0 {
+		return fmt.Errorf("image generation did not return image output: %s", strings.Join(statuses, ", "))
+	}
+	return nil
 }
 
 func buildImagesAPIResponse(results []imageCallResult, createdAt int64, usageRaw []byte, firstMeta imageCallResult, responseFormat string) ([]byte, error) {
@@ -1695,8 +1751,8 @@ func (h *OpenAIAPIHandler) forwardImagesStream(ctx context.Context, c *gin.Conte
 					data, _ = sjson.SetBytes(data, "b64_json", b64)
 				}
 				writeEvent(eventName, data)
-			case "response.completed":
-				results, _, usageRaw, _, err := extractImagesFromResponsesCompleted(payload)
+			case "response.completed", "response.incomplete", "response.failed", "response.cancelled":
+				results, _, usageRaw, _, err := extractImagesFromResponsesTerminal(payload)
 				if err != nil {
 					emitError(&interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: err})
 					return true

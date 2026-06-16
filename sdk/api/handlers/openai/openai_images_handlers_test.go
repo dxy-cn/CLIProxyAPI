@@ -111,6 +111,52 @@ func TestImagesGenerationsDefaultGPTImage2UsesResponsesBaseModel(t *testing.T) {
 	}
 }
 
+func TestCollectImagesFromResponsesStreamReportsImageCallFailure(t *testing.T) {
+	data := make(chan []byte, 1)
+	errs := make(chan *interfaces.ErrorMessage)
+	data <- []byte(`data: {"type":"response.completed","response":{"created_at":1704067200,"output":[{"type":"image_generation_call","status":"failed","error":{"message":"safety filter blocked the image"}}]}}` + "\n\n")
+	close(data)
+	close(errs)
+
+	out, errMsg := collectImagesFromResponsesStream(context.Background(), data, errs, "b64_json")
+
+	if out != nil {
+		t.Fatalf("output = %s, want nil", out)
+	}
+	if errMsg == nil || errMsg.Error == nil {
+		t.Fatal("expected error message")
+	}
+	if errMsg.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", errMsg.StatusCode, http.StatusBadGateway)
+	}
+	if got := errMsg.Error.Error(); !strings.Contains(got, "safety filter blocked the image") {
+		t.Fatalf("error = %q, want upstream image failure detail", got)
+	}
+}
+
+func TestCollectImagesFromResponsesStreamReportsIncompleteReason(t *testing.T) {
+	data := make(chan []byte, 1)
+	errs := make(chan *interfaces.ErrorMessage)
+	data <- []byte(`data: {"type":"response.incomplete","response":{"created_at":1704067200,"status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[]}}` + "\n\n")
+	close(data)
+	close(errs)
+
+	out, errMsg := collectImagesFromResponsesStream(context.Background(), data, errs, "b64_json")
+
+	if out != nil {
+		t.Fatalf("output = %s, want nil", out)
+	}
+	if errMsg == nil || errMsg.Error == nil {
+		t.Fatal("expected error message")
+	}
+	if errMsg.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", errMsg.StatusCode, http.StatusBadGateway)
+	}
+	if got := errMsg.Error.Error(); !strings.Contains(got, "content_filter") {
+		t.Fatalf("error = %q, want incomplete reason", got)
+	}
+}
+
 func TestForwardImagesStreamEmitsErrorWhenPendingExceedsCap(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

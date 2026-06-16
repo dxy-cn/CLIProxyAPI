@@ -3,6 +3,7 @@ package responses
 import (
 	"bytes"
 	"context"
+	"strings"
 
 	"github.com/tidwall/gjson"
 )
@@ -22,13 +23,21 @@ func ConvertCodexResponseToOpenAIResponses(_ context.Context, _ string, _, _, ra
 }
 
 // ConvertCodexResponseToOpenAIResponsesNonStream builds a single Responses JSON
-// from a non-streaming OpenAI Chat Completions response.
+// from a terminal Codex Responses event.
 func ConvertCodexResponseToOpenAIResponsesNonStream(_ context.Context, _ string, _, _, rawJSON []byte, _ *any) []byte {
 	rootResult := gjson.ParseBytes(rawJSON)
-	// Verify this is a response.completed event
-	if rootResult.Get("type").String() != "response.completed" {
+	if !isCodexResponsesTerminalEvent(rootResult.Get("type").String()) {
 		return []byte{}
 	}
 	responseResult := rootResult.Get("response")
 	return []byte(responseResult.Raw)
+}
+
+func isCodexResponsesTerminalEvent(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case "response.completed", "response.incomplete", "response.failed", "response.cancelled":
+		return true
+	default:
+		return false
+	}
 }
