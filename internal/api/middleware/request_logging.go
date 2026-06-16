@@ -169,6 +169,8 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 		// Restore the body for the actual request processing
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		body = decodeCapturedRequestBodyForLog(bodyBytes, c.Request.Header.Get("Content-Encoding"))
+	} else {
+		body = skippedRequestBodyLogMarker(c.Request)
 	}
 
 	return &RequestInfo{
@@ -179,6 +181,13 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 		RequestID: logging.GetGinRequestID(c),
 		Timestamp: time.Now(),
 	}, nil
+}
+
+func skippedRequestBodyLogMarker(req *http.Request) []byte {
+	if req == nil || req.Body == nil || req.ContentLength <= maxCapturedRequestBodyBytes {
+		return nil
+	}
+	return []byte(fmt.Sprintf("[request body not captured: content length %d bytes exceeds capture limit %d bytes]", req.ContentLength, maxCapturedRequestBodyBytes))
 }
 
 func decodeCapturedRequestBodyForLog(raw []byte, encoding string) []byte {

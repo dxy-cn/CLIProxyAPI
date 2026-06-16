@@ -37,23 +37,7 @@ func TestBuildCodexWebsocketRequestBodyPreservesPreviousResponseID(t *testing.T)
 	}
 }
 
-func TestCodexWebsocketRequestWithoutPreviousResponseID(t *testing.T) {
-	body := []byte(`{"model":"gpt-5-codex","previous_response_id":"resp-1","input":[{"type":"message","id":"msg-1"}]}`)
-
-	updated, ok := codexWebsocketRequestWithoutPreviousResponseID(body)
-
-	if !ok {
-		t.Fatalf("expected previous_response_id removal to apply")
-	}
-	if gjson.GetBytes(updated, "previous_response_id").Exists() {
-		t.Fatalf("previous_response_id should be removed: %s", string(updated))
-	}
-	if gjson.GetBytes(updated, "input.0.id").String() != "msg-1" {
-		t.Fatalf("input item id mismatch after removal")
-	}
-}
-
-func TestCodexWebsocketsExecutorExecuteStreamRetriesPreviousResponseNotFoundWithoutPreviousResponseID(t *testing.T) {
+func TestCodexWebsocketsExecutorExecuteStreamPropagatesPreviousResponseNotFound(t *testing.T) {
 	t.Parallel()
 
 	var (
@@ -89,20 +73,13 @@ func TestCodexWebsocketsExecutorExecuteStreamRetriesPreviousResponseNotFoundWith
 			attempt := len(requests)
 			mu.Unlock()
 
-			if attempt == 1 {
-				errPayload := `{"type":"error","status":400,"error":{"message":"Previous response with id 'resp-1' not found.","type":"invalid_request_error","code":"previous_response_not_found","param":"previous_response_id"}}`
-				if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(errPayload)); errWrite != nil {
-					t.Errorf("WriteMessage(error) error = %v", errWrite)
-				}
-				continue
+			if attempt > 1 {
+				t.Errorf("unexpected retry payload: %s", string(payload))
+				return
 			}
-
-			if gjson.GetBytes(payload, "previous_response_id").Exists() {
-				t.Errorf("retry payload should not include previous_response_id: %s", string(payload))
-			}
-			donePayload := `{"type":"response.completed","response":{"id":"resp-2","object":"response","created_at":1,"status":"completed","model":"gpt-5-codex","output":[],"usage":{"input_tokens":1,"output_tokens":0,"total_tokens":1}}}`
-			if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(donePayload)); errWrite != nil {
-				t.Errorf("WriteMessage(completed) error = %v", errWrite)
+			errPayload := `{"type":"error","status":400,"error":{"message":"Previous response with id 'resp-1' not found.","type":"invalid_request_error","code":"previous_response_not_found","param":"previous_response_id"}}`
+			if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(errPayload)); errWrite != nil {
+				t.Errorf("WriteMessage(error) error = %v", errWrite)
 			}
 			return
 		}
@@ -131,22 +108,26 @@ func TestCodexWebsocketsExecutorExecuteStreamRetriesPreviousResponseNotFoundWith
 		t.Fatalf("ExecuteStream() error = %v", err)
 	}
 
+	var streamErr error
 	for chunk := range result.Chunks {
 		if chunk.Err != nil {
-			t.Fatalf("stream chunk error = %v", chunk.Err)
+			streamErr = chunk.Err
 		}
+	}
+	if streamErr == nil {
+		t.Fatalf("expected previous_response_not_found stream error")
+	}
+	if !isCodexPreviousResponseNotFoundError(streamErr) {
+		t.Fatalf("stream error = %v, want previous_response_not_found", streamErr)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(requests) != 2 {
-		t.Fatalf("expected 2 upstream websocket requests, got %d", len(requests))
+	if len(requests) != 1 {
+		t.Fatalf("expected 1 upstream websocket request, got %d", len(requests))
 	}
 	if got := gjson.GetBytes(requests[0], "previous_response_id").String(); got != "resp-1" {
 		t.Fatalf("first request previous_response_id = %q, want %q", got, "resp-1")
-	}
-	if gjson.GetBytes(requests[1], "previous_response_id").Exists() {
-		t.Fatalf("retry request must not include previous_response_id: %s", string(requests[1]))
 	}
 }
 

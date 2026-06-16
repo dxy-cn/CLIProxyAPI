@@ -18,20 +18,27 @@ var ErrRequestBodyTooLarge = errors.New("request body too large")
 var ErrResponseBodyTooLarge = errors.New("response body too large")
 
 func ReadLimitedRawData(c *gin.Context) ([]byte, error) {
+	return ReadLimitedRawDataWithLimit(c, MaxRequestBodyBytes)
+}
+
+func ReadLimitedRawDataWithLimit(c *gin.Context, maxBytes int64) ([]byte, error) {
 	if c == nil || c.Request == nil {
 		return nil, fmt.Errorf("request is nil")
 	}
-	if c.Request.ContentLength > MaxRequestBodyBytes {
-		return nil, fmt.Errorf("%w: limit is %d bytes", ErrRequestBodyTooLarge, MaxRequestBodyBytes)
+	if maxBytes <= 0 {
+		maxBytes = MaxRequestBodyBytes
+	}
+	if c.Request.ContentLength > maxBytes {
+		return nil, fmt.Errorf("%w: limit is %d bytes", ErrRequestBodyTooLarge, maxBytes)
 	}
 	if c.Request.Body != nil && c.Writer != nil {
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, MaxRequestBodyBytes)
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
 	}
 	data, err := c.GetRawData()
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
-			return nil, fmt.Errorf("%w: limit is %d bytes", ErrRequestBodyTooLarge, MaxRequestBodyBytes)
+			return nil, fmt.Errorf("%w: limit is %d bytes", ErrRequestBodyTooLarge, maxBytes)
 		}
 		return nil, err
 	}

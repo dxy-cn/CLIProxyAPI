@@ -410,7 +410,7 @@ func (h *OpenAIResponsesAPIHandler) OpenAIResponsesModels(c *gin.Context) {
 // Parameters:
 //   - c: The Gin context containing the HTTP request and response
 func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
-	rawJSON, ok := readOpenAIRawJSON(c)
+	rawJSON, ok := readOpenAIResponsesRawJSON(c)
 	if !ok {
 		return
 	}
@@ -426,7 +426,7 @@ func (h *OpenAIResponsesAPIHandler) Responses(c *gin.Context) {
 }
 
 func (h *OpenAIResponsesAPIHandler) Compact(c *gin.Context) {
-	rawJSON, ok := readOpenAIRawJSON(c)
+	rawJSON, ok := readOpenAIResponsesRawJSON(c)
 	if !ok {
 		return
 	}

@@ -317,7 +317,6 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		return resp, errSend
 	}
 
-	retriedWithoutPreviousResponseID := false
 	for {
 		if ctx != nil && ctx.Err() != nil {
 			return resp, ctx.Err()
@@ -346,19 +345,6 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		helps.AppendAPIWebsocketResponse(ctx, e.cfg, payload)
 
 		if wsErr, ok := parseCodexWebsocketError(payload); ok {
-			if !retriedWithoutPreviousResponseID && isCodexPreviousResponseNotFoundError(wsErr) {
-				retryBody, okRetry := codexWebsocketRequestWithoutPreviousResponseID(body)
-				if okRetry {
-					retriedWithoutPreviousResponseID = true
-					body = retryBody
-					wsReqBody = buildCodexWebsocketRequestBody(body)
-					helps.RecordAPIWebsocketRequest(ctx, e.cfg, buildRequestLog(wsReqBody))
-					if errSend := sendRequest(wsReqBody); errSend != nil {
-						return resp, errSend
-					}
-					continue
-				}
-			}
 			if sess != nil {
 				e.invalidateUpstreamConn(sess, conn, "upstream_error", wsErr)
 			}
@@ -537,8 +523,6 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	go func() {
 		terminateReason := "completed"
 		var terminateErr error
-		retriedWithoutPreviousResponseID := false
-
 		defer close(out)
 		defer func() {
 			if sess != nil {
@@ -602,24 +586,6 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 			helps.AppendAPIWebsocketResponse(ctx, e.cfg, payload)
 
 			if wsErr, ok := parseCodexWebsocketError(payload); ok {
-				if !retriedWithoutPreviousResponseID && isCodexPreviousResponseNotFoundError(wsErr) {
-					retryBody, okRetry := codexWebsocketRequestWithoutPreviousResponseID(body)
-					if okRetry {
-						retriedWithoutPreviousResponseID = true
-						body = retryBody
-						wsReqBody = buildCodexWebsocketRequestBody(body)
-						helps.RecordAPIWebsocketRequest(ctx, e.cfg, buildRequestLog(wsReqBody))
-						if errSend := sendRequest(wsReqBody); errSend == nil {
-							continue
-						} else {
-							terminateReason = "send_retry"
-							terminateErr = errSend
-							reporter.PublishFailure(ctx)
-							_ = send(cliproxyexecutor.StreamChunk{Err: errSend})
-							return
-						}
-					}
-				}
 				terminateReason = "upstream_error"
 				terminateErr = wsErr
 				helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", wsErr)
@@ -682,23 +648,6 @@ func writeCodexWebsocketMessage(sess *codexWebsocketSession, conn *websocket.Con
 		return fmt.Errorf("codex websockets executor: websocket conn is nil")
 	}
 	return conn.WriteMessage(websocket.TextMessage, payload)
-}
-
-func codexWebsocketRequestUsesPreviousResponseID(body []byte) bool {
-	return strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String()) != ""
-}
-
-func codexWebsocketRequestWithoutPreviousResponseID(body []byte) ([]byte, bool) {
-	if !codexWebsocketRequestUsesPreviousResponseID(body) {
-		return nil, false
-	}
-	updated, errDelete := sjson.DeleteBytes(body, "previous_response_id")
-	if errDelete == nil {
-		return updated, true
-	}
-	fallback := bytes.Clone(body)
-	fallback, _ = sjson.DeleteBytes(fallback, "previous_response_id")
-	return fallback, true
 }
 
 func isCodexPreviousResponseNotFoundError(err error) bool {

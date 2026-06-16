@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
@@ -66,6 +68,52 @@ func TestWriteErrorResponse_AddonHeadersEnabled(t *testing.T) {
 	}
 	if got := recorder.Header().Values("X-Request-Id"); !reflect.DeepEqual(got, []string{"new-1", "new-2"}) {
 		t.Fatalf("X-Request-Id = %#v, want %#v", got, []string{"new-1", "new-2"})
+	}
+}
+
+func TestWriteErrorResponse_AppendsRequestIDToErrorMessage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	logging.SetGinRequestID(c, "d035c7a6ad3bb5e2506425b3c2332317")
+
+	handler := NewBaseAPIHandlers(nil, nil)
+	handler.WriteErrorResponse(c, &interfaces.ErrorMessage{
+		StatusCode: http.StatusInternalServerError,
+		Error:      errors.New("unknown provider for model gpt-5.3-codex"),
+	})
+
+	var body ErrorResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	want := "unknown provider for model gpt-5.3-codex (requestId: d035c7a6ad3bb5e2506425b3c2332317)"
+	if body.Error.Message != want {
+		t.Fatalf("message = %q, want %q", body.Error.Message, want)
+	}
+}
+
+func TestWriteErrorResponse_AppendsRequestIDToJSONErrorMessage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	logging.SetGinRequestID(c, "req-json-1")
+
+	handler := NewBaseAPIHandlers(nil, nil)
+	handler.WriteErrorResponse(c, &interfaces.ErrorMessage{
+		StatusCode: http.StatusBadGateway,
+		Error:      errors.New(`{"error":{"message":"upstream failed","type":"server_error","code":"internal_server_error"}}`),
+	})
+
+	var body ErrorResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	want := "upstream failed (requestId: req-json-1)"
+	if body.Error.Message != want {
+		t.Fatalf("message = %q, want %q", body.Error.Message, want)
 	}
 }
 

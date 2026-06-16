@@ -134,6 +134,10 @@ func WithDisallowFreeAuth(ctx context.Context) context.Context {
 // BuildErrorResponseBody builds an OpenAI-compatible JSON error response body.
 // If errText is already valid JSON, it is returned as-is to preserve upstream error payloads.
 func BuildErrorResponseBody(status int, errText string) []byte {
+	return buildErrorResponseBody(status, errText, "")
+}
+
+func buildErrorResponseBody(status int, errText string, requestID string) []byte {
 	if status <= 0 {
 		status = http.StatusInternalServerError
 	}
@@ -143,8 +147,12 @@ func BuildErrorResponseBody(status int, errText string) []byte {
 
 	trimmed := strings.TrimSpace(errText)
 	if trimmed != "" && json.Valid([]byte(trimmed)) {
+		if withRequestID, ok := appendRequestIDToJSONError([]byte(trimmed), requestID); ok {
+			return withRequestID
+		}
 		return []byte(trimmed)
 	}
+	errText = appendRequestIDToErrorMessage(errText, requestID)
 
 	errType := "invalid_request_error"
 	var code string
@@ -179,6 +187,46 @@ func BuildErrorResponseBody(status int, errText string) []byte {
 		return []byte(fmt.Sprintf(`{"error":{"message":%q,"type":"server_error","code":"internal_server_error"}}`, errText))
 	}
 	return payload
+}
+
+func appendRequestIDToJSONError(body []byte, requestID string) ([]byte, bool) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" || len(body) == 0 {
+		return nil, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, false
+	}
+	errorPayload, ok := payload["error"].(map[string]any)
+	if !ok || errorPayload == nil {
+		return nil, false
+	}
+	message, ok := errorPayload["message"].(string)
+	if !ok {
+		return nil, false
+	}
+	errorPayload["message"] = appendRequestIDToErrorMessage(message, requestID)
+	updated, err := json.Marshal(payload)
+	if err != nil {
+		return nil, false
+	}
+	return updated, true
+}
+
+func appendRequestIDToErrorMessage(message string, requestID string) string {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return message
+	}
+	trimmed := strings.TrimSpace(message)
+	if trimmed == "" {
+		return message
+	}
+	if strings.Contains(trimmed, "requestId:") || strings.Contains(trimmed, "request id:") {
+		return message
+	}
+	return fmt.Sprintf("%s (requestId: %s)", message, requestID)
 }
 
 // StreamingKeepAliveInterval returns the SSE keep-alive interval for this server.
@@ -1298,7 +1346,7 @@ func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.Erro
 		}
 	}
 
-	body := BuildErrorResponseBody(status, errText)
+	body := buildErrorResponseBody(status, errText, errorResponseRequestID(c))
 	// Append first to preserve upstream response logs, then drop duplicate payloads if already recorded.
 	var previous []byte
 	if existing, exists := c.Get("API_RESPONSE"); exists {
@@ -1321,6 +1369,19 @@ func (h *BaseAPIHandler) WriteErrorResponse(c *gin.Context, msg *interfaces.Erro
 	}
 	c.Status(status)
 	_, _ = c.Writer.Write(body)
+}
+
+func errorResponseRequestID(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	if requestID := strings.TrimSpace(logging.GetGinRequestID(c)); requestID != "" {
+		return requestID
+	}
+	if c.Request == nil {
+		return ""
+	}
+	return strings.TrimSpace(logging.GetRequestID(c.Request.Context()))
 }
 
 func (h *BaseAPIHandler) LoggingAPIResponseError(ctx context.Context, err *interfaces.ErrorMessage) {

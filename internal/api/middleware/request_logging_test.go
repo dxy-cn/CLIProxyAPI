@@ -260,3 +260,37 @@ func TestCaptureRequestInfoDecodesZstdRequestBodyForLog(t *testing.T) {
 		t.Fatal("request body was not restored with the original compressed bytes")
 	}
 }
+
+func TestCaptureRequestInfoMarksSkippedLargeRequestBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	payload := []byte(`{"model":"test-model"}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(payload))
+	req.ContentLength = maxCapturedRequestBodyBytes + 1
+	c.Request = req
+
+	info, errCapture := captureRequestInfo(c, false)
+	if errCapture != nil {
+		t.Fatalf("captureRequestInfo: %v", errCapture)
+	}
+	body := string(info.Body)
+	for _, want := range []string{
+		"request body not captured",
+		"content length 1048577 bytes",
+		"capture limit 1048576 bytes",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("logged request body marker = %q, want it to contain %q", body, want)
+		}
+	}
+
+	restoredBody, errRead := io.ReadAll(c.Request.Body)
+	if errRead != nil {
+		t.Fatalf("read request body: %v", errRead)
+	}
+	if !bytes.Equal(restoredBody, payload) {
+		t.Fatal("request body should not be consumed when large body capture is skipped")
+	}
+}
