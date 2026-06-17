@@ -7,7 +7,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 )
 
-const maxOpenAIResponsesRequestBodyBytes int64 = 64 * 1024 * 1024
+const (
+	maxOpenAIResponsesRequestBodyBytes int64 = 64 * 1024 * 1024
+	maxOpenAIImagesRequestBodyBytes    int64 = 64 * 1024 * 1024
+)
 
 func readOpenAIRawJSON(c *gin.Context) ([]byte, bool) {
 	return readOpenAIRawJSONWithLimit(c, handlers.MaxRequestBodyBytes)
@@ -15,6 +18,10 @@ func readOpenAIRawJSON(c *gin.Context) ([]byte, bool) {
 
 func readOpenAIResponsesRawJSON(c *gin.Context) ([]byte, bool) {
 	return readOpenAIRawJSONWithLimit(c, maxOpenAIResponsesRequestBodyBytes)
+}
+
+func readOpenAIImagesRawJSON(c *gin.Context) ([]byte, bool) {
+	return readOpenAIRawJSONWithLimit(c, maxOpenAIImagesRequestBodyBytes)
 }
 
 func readOpenAIRawJSONWithLimit(c *gin.Context, maxBytes int64) ([]byte, bool) {

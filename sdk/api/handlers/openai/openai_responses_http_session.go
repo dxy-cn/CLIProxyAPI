@@ -33,6 +33,7 @@ type responsesHTTPSessionStore struct {
 
 type responsesHTTPSessionState struct {
 	lastSeen         time.Time
+	authID           string
 	lastRequest      []byte
 	lastResponseBody []byte
 }
@@ -49,10 +50,10 @@ func newResponsesHTTPSessionStore(ttl time.Duration) *responsesHTTPSessionStore 
 	}
 }
 
-func (s *responsesHTTPSessionStore) get(sessionKey string) ([]byte, []byte, bool) {
+func (s *responsesHTTPSessionStore) get(sessionKey string) ([]byte, []byte, string, bool) {
 	sessionKey = strings.TrimSpace(sessionKey)
 	if sessionKey == "" || s == nil {
-		return nil, nil, false
+		return nil, nil, "", false
 	}
 
 	now := time.Now()
@@ -62,21 +63,22 @@ func (s *responsesHTTPSessionStore) get(sessionKey string) ([]byte, []byte, bool
 	s.maybeCleanupLocked(now)
 	session, ok := s.sessions[sessionKey]
 	if !ok || session == nil {
-		return nil, nil, false
+		return nil, nil, "", false
 	}
 	if s.ttl > 0 && now.Sub(session.lastSeen) > s.ttl {
 		delete(s.sessions, sessionKey)
-		return nil, nil, false
+		return nil, nil, "", false
 	}
 	session.lastSeen = now
-	return bytes.Clone(session.lastRequest), bytes.Clone(session.lastResponseBody), true
+	return bytes.Clone(session.lastRequest), bytes.Clone(session.lastResponseBody), strings.TrimSpace(session.authID), true
 }
 
-func (s *responsesHTTPSessionStore) put(sessionKey string, lastRequest []byte, lastResponseBody []byte) {
+func (s *responsesHTTPSessionStore) put(sessionKey string, lastRequest []byte, lastResponseBody []byte, authID string) {
 	sessionKey = strings.TrimSpace(sessionKey)
 	if sessionKey == "" || s == nil || len(lastRequest) == 0 {
 		return
 	}
+	authID = strings.TrimSpace(authID)
 
 	now := time.Now()
 	s.mu.Lock()
@@ -89,6 +91,7 @@ func (s *responsesHTTPSessionStore) put(sessionKey string, lastRequest []byte, l
 	}
 	s.sessions[sessionKey] = &responsesHTTPSessionState{
 		lastSeen:         now,
+		authID:           authID,
 		lastRequest:      bytes.Clone(lastRequest),
 		lastResponseBody: bytes.Clone(lastResponseBody),
 	}

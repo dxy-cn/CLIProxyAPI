@@ -14,6 +14,8 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
@@ -386,6 +388,32 @@ func (h *OpenAIResponsesAPIHandler) HandlerType() string {
 	return OpenaiResponse
 }
 
+func responsesContextWithSessionAuth(ctx context.Context, pinnedAuthID string) (context.Context, func() string) {
+	pinnedAuthID = strings.TrimSpace(pinnedAuthID)
+	if pinnedAuthID != "" {
+		return handlers.WithPinnedAuthID(ctx, pinnedAuthID), func() string {
+			return pinnedAuthID
+		}
+	}
+
+	var mu sync.Mutex
+	selectedAuthID := ""
+	ctx = handlers.WithSelectedAuthIDCallback(ctx, func(authID string) {
+		authID = strings.TrimSpace(authID)
+		if authID == "" {
+			return
+		}
+		mu.Lock()
+		selectedAuthID = authID
+		mu.Unlock()
+	})
+	return ctx, func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return selectedAuthID
+	}
+}
+
 // Models returns the OpenAIResponses-compatible model metadata supported by this handler.
 func (h *OpenAIResponsesAPIHandler) Models() []map[string]any {
 	// Get dynamic models from the global registry
@@ -476,13 +504,15 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 	sessionKey := responsesHTTPSessionKey(c.Request)
 	var lastRequest []byte
 	var lastResponseBody []byte
+	var lastAuthID string
 	if responsesRequestUsesPreviousResponseID(rawJSON) && sessionKey != "" {
-		lastRequest, lastResponseBody, _ = defaultResponsesHTTPSessionStore.get(sessionKey)
+		lastRequest, lastResponseBody, lastAuthID, _ = defaultResponsesHTTPSessionStore.get(sessionKey)
 	}
 
-	executeRequest := func(requestJSON []byte) ([]byte, http.Header, *interfaces.ErrorMessage) {
+	executeRequest := func(requestJSON []byte, pinnedAuthID string) ([]byte, http.Header, string, *interfaces.ErrorMessage) {
 		modelName := gjson.GetBytes(requestJSON, "model").String()
 		cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+		cliCtx, selectedAuthID := responsesContextWithSessionAuth(cliCtx, pinnedAuthID)
 		stopKeepAlive := h.StartNonStreamingKeepAlive(c, cliCtx)
 		resp, upstreamHeaders, errMsg := h.ExecuteWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
 		stopKeepAlive()
@@ -491,10 +521,14 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 		} else {
 			cliCancel()
 		}
-		return resp, upstreamHeaders, errMsg
+		return resp, upstreamHeaders, selectedAuthID(), errMsg
 	}
 
-	resp, upstreamHeaders, errMsg := executeRequest(rawJSON)
+	pinnedAuthID := ""
+	if responsesRequestUsesPreviousResponseID(rawJSON) {
+		pinnedAuthID = lastAuthID
+	}
+	resp, upstreamHeaders, selectedAuthID, errMsg := executeRequest(rawJSON, pinnedAuthID)
 	requestForStorage := rawJSON
 	if errMsg != nil && isResponsesPreviousResponseNotFoundError(errMsg) {
 		fallbackRequest, fallbackErr := normalizeResponsesHTTPRequestWithSession(rawJSON, lastRequest, lastResponseBody)
@@ -503,7 +537,11 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 			return
 		}
 		if !bytes.Equal(fallbackRequest, rawJSON) {
-			resp, upstreamHeaders, errMsg = executeRequest(fallbackRequest)
+			fallbackAuthID := pinnedAuthID
+			if fallbackAuthID == "" {
+				fallbackAuthID = selectedAuthID
+			}
+			resp, upstreamHeaders, selectedAuthID, errMsg = executeRequest(fallbackRequest, fallbackAuthID)
 			if errMsg == nil {
 				requestForStorage = fallbackRequest
 			}
@@ -515,7 +553,7 @@ func (h *OpenAIResponsesAPIHandler) handleNonStreamingResponse(c *gin.Context, r
 	}
 
 	if effectiveRequest, storeErr := normalizeResponsesHTTPRequestWithSession(requestForStorage, lastRequest, lastResponseBody); storeErr == nil {
-		defaultResponsesHTTPSessionStore.put(sessionKey, effectiveRequest, responsesOutputFromBody(resp))
+		defaultResponsesHTTPSessionStore.put(sessionKey, effectiveRequest, responsesOutputFromBody(resp), selectedAuthID)
 	}
 	handlers.WriteUpstreamHeaders(c.Writer.Header(), upstreamHeaders)
 	_, _ = c.Writer.Write(resp)
@@ -544,15 +582,17 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 	sessionKey := responsesHTTPSessionKey(c.Request)
 	var lastRequest []byte
 	var lastResponseBody []byte
+	var lastAuthID string
 	if responsesRequestUsesPreviousResponseID(rawJSON) && sessionKey != "" {
-		lastRequest, lastResponseBody, _ = defaultResponsesHTTPSessionStore.get(sessionKey)
+		lastRequest, lastResponseBody, lastAuthID, _ = defaultResponsesHTTPSessionStore.get(sessionKey)
 	}
 
-	executeRequest := func(requestJSON []byte) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage, func(error)) {
+	executeRequest := func(requestJSON []byte, pinnedAuthID string) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage, func(error), func() string) {
 		modelName := gjson.GetBytes(requestJSON, "model").String()
 		cliCtx, cliCancel := h.GetContextWithCancel(h, c, context.Background())
+		cliCtx, selectedAuthID := responsesContextWithSessionAuth(cliCtx, pinnedAuthID)
 		dataChan, upstreamHeaders, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
-		return dataChan, upstreamHeaders, errChan, func(err error) { cliCancel(err) }
+		return dataChan, upstreamHeaders, errChan, func(err error) { cliCancel(err) }, selectedAuthID
 	}
 
 	setSSEHeaders := func() {
@@ -564,8 +604,12 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 	framer := &responsesSSEFramer{}
 
 	requestJSON := rawJSON
+	pinnedAuthID := ""
+	if responsesRequestUsesPreviousResponseID(rawJSON) {
+		pinnedAuthID = lastAuthID
+	}
 	for attempt := 0; attempt < 2; attempt++ {
-		dataChan, upstreamHeaders, errChan, cancel := executeRequest(requestJSON)
+		dataChan, upstreamHeaders, errChan, cancel, selectedAuthID := executeRequest(requestJSON, pinnedAuthID)
 
 		// Peek at the first chunk
 		select {
@@ -588,7 +632,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 				}
 				if completed {
 					if effectiveRequest, storeErr := normalizeResponsesHTTPRequestWithSession(requestJSON, lastRequest, lastResponseBody); storeErr == nil {
-						defaultResponsesHTTPSessionStore.put(sessionKey, effectiveRequest, completedOutput)
+						defaultResponsesHTTPSessionStore.put(sessionKey, effectiveRequest, completedOutput, selectedAuthID())
 					}
 				}
 				return
@@ -601,6 +645,9 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 					return
 				}
 				if !bytes.Equal(fallbackRequest, rawJSON) {
+					if pinnedAuthID == "" {
+						pinnedAuthID = selectedAuthID()
+					}
 					requestJSON = fallbackRequest
 					continue
 				}
@@ -654,7 +701,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 			}
 			if completed {
 				if effectiveRequest, storeErr := normalizeResponsesHTTPRequestWithSession(requestJSON, lastRequest, lastResponseBody); storeErr == nil {
-					defaultResponsesHTTPSessionStore.put(sessionKey, effectiveRequest, completedOutput)
+					defaultResponsesHTTPSessionStore.put(sessionKey, effectiveRequest, completedOutput, selectedAuthID())
 				}
 			}
 			return

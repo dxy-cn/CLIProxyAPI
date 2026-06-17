@@ -43,21 +43,34 @@ func responsesHTTPSessionStoreLenForTest(store *responsesHTTPSessionStore) int {
 }
 
 type responsesHTTPFallbackExecutor struct {
-	mu              sync.Mutex
-	executeCalls    int
-	executePayloads [][]byte
-	streamCalls     int
-	streamPayloads  [][]byte
+	mu                             sync.Mutex
+	executeCalls                   int
+	executePayloads                [][]byte
+	executeAuthIDs                 []string
+	streamCalls                    int
+	streamPayloads                 [][]byte
+	streamAuthIDs                  []string
+	timeoutPreviousResponseAuthIDs map[string]bool
 }
 
 func (e *responsesHTTPFallbackExecutor) Identifier() string { return "test-provider" }
 
-func (e *responsesHTTPFallbackExecutor) Execute(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, _ coreexecutor.Options) (coreexecutor.Response, error) {
+func (e *responsesHTTPFallbackExecutor) Execute(_ context.Context, auth *coreauth.Auth, req coreexecutor.Request, _ coreexecutor.Options) (coreexecutor.Response, error) {
+	authID := ""
+	if auth != nil {
+		authID = auth.ID
+	}
+
 	e.mu.Lock()
 	e.executeCalls++
 	e.executePayloads = append(e.executePayloads, bytes.Clone(req.Payload))
+	e.executeAuthIDs = append(e.executeAuthIDs, authID)
+	shouldTimeout := responsesRequestUsesPreviousResponseID(req.Payload) && e.timeoutPreviousResponseAuthIDs[authID]
 	e.mu.Unlock()
 
+	if shouldTimeout {
+		return coreexecutor.Response{}, errors.New("read tcp 172.21.0.3:54800->172.64.155.209:443: i/o timeout")
+	}
 	if responsesRequestUsesPreviousResponseID(req.Payload) {
 		return coreexecutor.Response{}, websocketStatusErr{
 			code: http.StatusBadRequest,
@@ -76,12 +89,22 @@ func (e *responsesHTTPFallbackExecutor) Execute(_ context.Context, _ *coreauth.A
 	}, nil
 }
 
-func (e *responsesHTTPFallbackExecutor) ExecuteStream(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+func (e *responsesHTTPFallbackExecutor) ExecuteStream(_ context.Context, auth *coreauth.Auth, req coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	authID := ""
+	if auth != nil {
+		authID = auth.ID
+	}
+
 	e.mu.Lock()
 	e.streamCalls++
 	e.streamPayloads = append(e.streamPayloads, bytes.Clone(req.Payload))
+	e.streamAuthIDs = append(e.streamAuthIDs, authID)
+	shouldTimeout := responsesRequestUsesPreviousResponseID(req.Payload) && e.timeoutPreviousResponseAuthIDs[authID]
 	e.mu.Unlock()
 
+	if shouldTimeout {
+		return nil, errors.New("read tcp 172.21.0.3:54800->172.64.155.209:443: i/o timeout")
+	}
 	if responsesRequestUsesPreviousResponseID(req.Payload) {
 		return nil, websocketStatusErr{
 			code: http.StatusBadRequest,
@@ -121,18 +144,27 @@ func (e *responsesHTTPFallbackExecutor) HttpRequest(context.Context, *coreauth.A
 }
 
 func newResponsesHTTPTestHandler(t *testing.T, executor *responsesHTTPFallbackExecutor) (*OpenAIResponsesAPIHandler, *coreauth.Manager) {
+	return newResponsesHTTPTestHandlerWithAuthIDs(t, executor, "auth-http")
+}
+
+func newResponsesHTTPTestHandlerWithAuthIDs(t *testing.T, executor *responsesHTTPFallbackExecutor, authIDs ...string) (*OpenAIResponsesAPIHandler, *coreauth.Manager) {
 	t.Helper()
 
 	manager := coreauth.NewManager(nil, nil, nil)
 	manager.RegisterExecutor(executor)
-	auth := &coreauth.Auth{ID: "auth-http", Provider: executor.Identifier(), Status: coreauth.StatusActive}
-	if _, err := manager.Register(context.Background(), auth); err != nil {
-		t.Fatalf("Register auth: %v", err)
+	if len(authIDs) == 0 {
+		authIDs = []string{"auth-http"}
 	}
-	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "test-model"}})
-	t.Cleanup(func() {
-		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
-	})
+	for _, authID := range authIDs {
+		auth := &coreauth.Auth{ID: authID, Provider: executor.Identifier(), Status: coreauth.StatusActive}
+		if _, err := manager.Register(context.Background(), auth); err != nil {
+			t.Fatalf("Register auth %s: %v", authID, err)
+		}
+		registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "test-model"}})
+		t.Cleanup(func() {
+			registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+		})
+	}
 
 	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
 	return NewOpenAIResponsesAPIHandler(base), manager
@@ -264,6 +296,59 @@ func TestResponsesHTTPRetriesWithMergedTranscriptWhenPreviousResponseIsMissing(t
 	}
 }
 
+func TestResponsesHTTPPinsSessionAuthAfterCredentialTimeout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	resetResponsesHTTPSessionStoreForTest(t)
+
+	executor := &responsesHTTPFallbackExecutor{}
+	h, _ := newResponsesHTTPTestHandlerWithAuthIDs(t, executor, "auth-http-a", "auth-http-b")
+	router := gin.New()
+	router.POST("/v1/responses", h.Responses)
+
+	sessionID := "session-http-timeout-pin"
+	firstReq := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"test-model","input":[{"type":"message","id":"msg-1"}]}`))
+	firstReq.Header.Set("Content-Type", "application/json")
+	firstReq.Header.Set("X-Codex-Turn-Metadata", fmt.Sprintf(`{"session_id":%q}`, sessionID))
+	firstResp := httptest.NewRecorder()
+	router.ServeHTTP(firstResp, firstReq)
+
+	if firstResp.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want %d; body=%s", firstResp.Code, http.StatusOK, firstResp.Body.String())
+	}
+
+	executor.mu.Lock()
+	if len(executor.executeAuthIDs) == 0 {
+		executor.mu.Unlock()
+		t.Fatal("expected first request to select an auth")
+	}
+	firstAuthID := executor.executeAuthIDs[0]
+	beforeCalls := len(executor.executeAuthIDs)
+	executor.timeoutPreviousResponseAuthIDs = map[string]bool{firstAuthID: true}
+	executor.mu.Unlock()
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"test-model","previous_response_id":"resp-upstream-1","input":[{"type":"message","id":"msg-2"}]}`))
+	secondReq.Header.Set("Content-Type", "application/json")
+	secondReq.Header.Set("X-Codex-Turn-Metadata", fmt.Sprintf(`{"session_id":%q}`, sessionID))
+	secondResp := httptest.NewRecorder()
+	router.ServeHTTP(secondResp, secondReq)
+
+	if secondResp.Code == http.StatusOK {
+		t.Fatalf("second request unexpectedly succeeded by switching auth; body=%s", secondResp.Body.String())
+	}
+
+	executor.mu.Lock()
+	secondAuthIDs := append([]string(nil), executor.executeAuthIDs[beforeCalls:]...)
+	executor.mu.Unlock()
+	if len(secondAuthIDs) == 0 {
+		t.Fatal("expected second request to attempt upstream execution")
+	}
+	for _, authID := range secondAuthIDs {
+		if authID != firstAuthID {
+			t.Fatalf("second request used auth %s after session was pinned to %s; sequence=%v", authID, firstAuthID, secondAuthIDs)
+		}
+	}
+}
+
 func TestResponsesHTTPStreamRetriesWithMergedTranscriptWhenPreviousResponseIsMissing(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	resetResponsesHTTPSessionStoreForTest(t)
@@ -329,11 +414,69 @@ func TestResponsesHTTPStreamRetriesWithMergedTranscriptWhenPreviousResponseIsMis
 	}
 }
 
+func TestResponsesHTTPStreamPinsSessionAuthAfterCredentialTimeout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	resetResponsesHTTPSessionStoreForTest(t)
+
+	executor := &responsesHTTPFallbackExecutor{}
+	h, _ := newResponsesHTTPTestHandlerWithAuthIDs(t, executor, "auth-http-stream-a", "auth-http-stream-b")
+	router := gin.New()
+	router.POST("/v1/responses", h.Responses)
+
+	sessionID := "session-http-stream-timeout-pin"
+	firstReq := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"test-model","stream":true,"input":[{"type":"message","id":"msg-1"}]}`))
+	firstReq.Header.Set("Content-Type", "application/json")
+	firstReq.Header.Set("X-Codex-Turn-Metadata", fmt.Sprintf(`{"session_id":%q}`, sessionID))
+	firstResp := httptest.NewRecorder()
+	router.ServeHTTP(firstResp, firstReq)
+
+	if firstResp.Code != http.StatusOK {
+		t.Fatalf("first stream status = %d, want %d; body=%s", firstResp.Code, http.StatusOK, firstResp.Body.String())
+	}
+	if !strings.Contains(firstResp.Body.String(), `"type":"response.completed"`) {
+		t.Fatalf("first stream missing completed event: %s", firstResp.Body.String())
+	}
+
+	executor.mu.Lock()
+	if len(executor.streamAuthIDs) == 0 {
+		executor.mu.Unlock()
+		t.Fatal("expected first stream request to select an auth")
+	}
+	firstAuthID := executor.streamAuthIDs[0]
+	beforeCalls := len(executor.streamAuthIDs)
+	executor.timeoutPreviousResponseAuthIDs = map[string]bool{firstAuthID: true}
+	executor.mu.Unlock()
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"test-model","stream":true,"previous_response_id":"resp-upstream-1","input":[{"type":"message","id":"msg-2"}]}`))
+	secondReq.Header.Set("Content-Type", "application/json")
+	secondReq.Header.Set("X-Codex-Turn-Metadata", fmt.Sprintf(`{"session_id":%q}`, sessionID))
+	secondResp := httptest.NewRecorder()
+	router.ServeHTTP(secondResp, secondReq)
+
+	if strings.Contains(secondResp.Body.String(), `"type":"response.completed"`) {
+		t.Fatalf("second stream unexpectedly completed by switching auth; body=%s", secondResp.Body.String())
+	}
+
+	executor.mu.Lock()
+	secondAuthIDs := append([]string(nil), executor.streamAuthIDs[beforeCalls:]...)
+	executor.mu.Unlock()
+	if len(secondAuthIDs) == 0 {
+		t.Fatal("expected second stream request to attempt upstream execution")
+	}
+	for _, authID := range secondAuthIDs {
+		if authID != firstAuthID {
+			t.Fatalf("second stream used auth %s after session was pinned to %s; sequence=%v", authID, firstAuthID, secondAuthIDs)
+		}
+	}
+}
+
 func TestResponsesHTTPSessionStoreSkipsOversizedPayloads(t *testing.T) {
 	store := newResponsesHTTPSessionStore(responsesHTTPSessionTTL)
-	store.put("session-1", []byte(`{"model":"test-model"}`), []byte(`[]`))
-	if _, _, ok := store.get("session-1"); !ok {
+	store.put("session-1", []byte(`{"model":"test-model"}`), []byte(`[]`), "auth-1")
+	if _, _, authID, ok := store.get("session-1"); !ok {
 		t.Fatal("expected small session payload to be cached")
+	} else if authID != "auth-1" {
+		t.Fatalf("cached auth id = %q, want %q", authID, "auth-1")
 	}
 
 	const maxSessionBytes = 10 * 1024 * 1024
@@ -341,13 +484,13 @@ func TestResponsesHTTPSessionStoreSkipsOversizedPayloads(t *testing.T) {
 		t.Fatalf("responses http session max bytes = %d, want %d", responsesHTTPSessionMaxBytes, maxSessionBytes)
 	}
 
-	store.put("session-1", bytes.Repeat([]byte("x"), maxSessionBytes), nil)
-	if _, _, ok := store.get("session-1"); !ok {
+	store.put("session-1", bytes.Repeat([]byte("x"), maxSessionBytes), nil, "auth-1")
+	if _, _, _, ok := store.get("session-1"); !ok {
 		t.Fatal("expected 10 MiB session payload to be cached")
 	}
 
-	store.put("session-1", bytes.Repeat([]byte("x"), maxSessionBytes+1), nil)
-	if _, _, ok := store.get("session-1"); ok {
+	store.put("session-1", bytes.Repeat([]byte("x"), maxSessionBytes+1), nil, "auth-1")
+	if _, _, _, ok := store.get("session-1"); ok {
 		t.Fatal("expected oversized session payload to evict cached session")
 	}
 }
@@ -359,6 +502,7 @@ func prefillResponsesHTTPSessionStoreForBenchmark(size int) *responsesHTTPSessio
 	for i := 0; i < size; i++ {
 		store.sessions[fmt.Sprintf("session-%d", i)] = &responsesHTTPSessionState{
 			lastSeen:         now,
+			authID:           "auth-1",
 			lastRequest:      []byte(`{"model":"test-model","input":[{"type":"message","id":"msg-1"}]}`),
 			lastResponseBody: []byte(`[{"type":"message","id":"assistant-1"}]`),
 		}
@@ -386,7 +530,7 @@ func BenchmarkResponsesHTTPSessionStorePutPrefilled(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				store.put("session-0", []byte(`{"model":"test-model"}`), []byte(`[]`))
+				store.put("session-0", []byte(`{"model":"test-model"}`), []byte(`[]`), "auth-1")
 			}
 		})
 	}

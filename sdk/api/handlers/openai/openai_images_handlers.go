@@ -465,8 +465,8 @@ func multipartFileToDataURL(fileHeader *multipart.FileHeader) (string, error) {
 	if fileHeader == nil {
 		return "", fmt.Errorf("upload file is nil")
 	}
-	if fileHeader.Size > handlers.MaxRequestBodyBytes {
-		return "", fmt.Errorf("upload file too large: limit is %d bytes", handlers.MaxRequestBodyBytes)
+	if fileHeader.Size > maxOpenAIImagesRequestBodyBytes {
+		return "", fmt.Errorf("upload file too large: limit is %d bytes", maxOpenAIImagesRequestBodyBytes)
 	}
 	f, err := fileHeader.Open()
 	if err != nil {
@@ -478,12 +478,12 @@ func multipartFileToDataURL(fileHeader *multipart.FileHeader) (string, error) {
 		}
 	}()
 
-	data, err := io.ReadAll(io.LimitReader(f, handlers.MaxRequestBodyBytes+1))
+	data, err := io.ReadAll(io.LimitReader(f, maxOpenAIImagesRequestBodyBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("read upload file failed: %w", err)
 	}
-	if int64(len(data)) > handlers.MaxRequestBodyBytes {
-		return "", fmt.Errorf("upload file too large: limit is %d bytes", handlers.MaxRequestBodyBytes)
+	if int64(len(data)) > maxOpenAIImagesRequestBodyBytes {
+		return "", fmt.Errorf("upload file too large: limit is %d bytes", maxOpenAIImagesRequestBodyBytes)
 	}
 
 	mediaType := strings.TrimSpace(fileHeader.Header.Get("Content-Type"))
@@ -607,7 +607,7 @@ func parseBoolField(raw string, fallback bool) bool {
 }
 
 func (h *OpenAIAPIHandler) ImagesGenerations(c *gin.Context) {
-	rawJSON, ok := readOpenAIRawJSON(c)
+	rawJSON, ok := readOpenAIImagesRawJSON(c)
 	if !ok {
 		return
 	}
@@ -868,7 +868,7 @@ func (h *OpenAIAPIHandler) imagesEditsFromMultipart(c *gin.Context) {
 }
 
 func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
-	rawJSON, ok := readOpenAIRawJSON(c)
+	rawJSON, ok := readOpenAIImagesRawJSON(c)
 	if !ok {
 		return
 	}
