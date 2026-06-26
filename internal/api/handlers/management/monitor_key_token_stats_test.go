@@ -40,10 +40,14 @@ func TestGetMonitorKeyTokenStats_AggregatesByAPIKey(t *testing.T) {
 		TotalTokens int64            `json:"total_tokens"`
 		Account     map[string]int64 `json:"account_totals"`
 		Items       []struct {
-			APIKey            string           `json:"api_key"`
-			AuthIndex         string           `json:"auth_index"`
-			Requests          int64            `json:"requests"`
-			TotalTokens       int64            `json:"total_tokens"`
+			APIKey      string `json:"api_key"`
+			AuthIndex   string `json:"auth_index"`
+			Requests    int64  `json:"requests"`
+			TotalTokens int64  `json:"total_tokens"`
+			TokenTrend  []struct {
+				Slot        string `json:"slot"`
+				TotalTokens int64  `json:"total_tokens"`
+			} `json:"token_trend"`
 			AccountTokens     int64            `json:"account_tokens"`
 			AccountTokenShare float64          `json:"account_token_share"`
 			TotalTokenShare   float64          `json:"total_token_share"`
@@ -88,6 +92,15 @@ func TestGetMonitorKeyTokenStats_AggregatesByAPIKey(t *testing.T) {
 	if first.AuthTokens["auth-1"] != 30 || first.AuthTokens["auth-2"] != 30 {
 		t.Fatalf("unexpected first auth token breakdown: %+v", first.AuthTokens)
 	}
+	if len(first.TokenTrend) != 7 {
+		t.Fatalf("unexpected first token trend len: got %d want 7: %+v", len(first.TokenTrend), first.TokenTrend)
+	}
+	wantTrend := []int64{0, 0, 30, 0, 30, 0, 0}
+	for i, want := range wantTrend {
+		if first.TokenTrend[i].TotalTokens != want {
+			t.Fatalf("unexpected first token trend at %d: got %d want %d: %+v", i, first.TokenTrend[i].TotalTokens, want, first.TokenTrend)
+		}
+	}
 	if first.SourceTokens["burn-source"] != 60 {
 		t.Fatalf("unexpected first source token breakdown: %+v", first.SourceTokens)
 	}
@@ -96,6 +109,26 @@ func TestGetMonitorKeyTokenStats_AggregatesByAPIKey(t *testing.T) {
 		first.ModelTokens["model-a"].OutputTokens != 40 ||
 		first.ModelTokens["model-a"].TotalTokens != 60 {
 		t.Fatalf("unexpected first model token breakdown: %+v", first.ModelTokens)
+	}
+}
+
+func TestBuildMonitorKeyTokenTrendSlotsKeepsCurrentPartialSlotInQueryRange(t *testing.T) {
+	end := time.Date(2026, 4, 21, 12, 34, 56, 0, time.Local)
+	start := end.Add(-2 * time.Hour)
+
+	slots, slotIndex, cutoff, queryEnd, slotDuration := buildMonitorKeyTokenTrendSlots(&start, &end)
+
+	if !queryEnd.Equal(end) {
+		t.Fatalf("query end = %s, want raw end %s", queryEnd, end)
+	}
+	if got := monitorKeyTokenTrendSlotKey(end, slotDuration); got != slots[len(slots)-1] {
+		t.Fatalf("last slot = %q, want current partial slot %q", slots[len(slots)-1], got)
+	}
+	if _, ok := slotIndex[monitorKeyTokenTrendSlotKey(end, slotDuration)]; !ok {
+		t.Fatalf("slot index missing current partial slot: %+v", slotIndex)
+	}
+	if cutoff.After(start) {
+		t.Fatalf("query cutoff = %s, should not be after raw start %s", cutoff, start)
 	}
 }
 

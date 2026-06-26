@@ -139,6 +139,7 @@ type monitorQueryableStore interface {
 	QueryMonitorHealthBlocks(ctx context.Context, windowStartUnix, windowEndUnix int64, blockSeconds int) ([]MonitorHealthBlock, error)
 	QueryMonitorKeyStatsBlocks(ctx context.Context, windowStartUnix, windowEndUnix int64, blockSeconds int) ([]MonitorKeyStatsRow, error)
 	QueryMonitorKeyTokenStats(ctx context.Context, filter MonitorQueryFilter) ([]MonitorKeyTokenStatsRow, error)
+	QueryMonitorKeyTokenTrend(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorKeyTokenTrendRow, error)
 }
 
 // MonitorRequestDetail represents a single request detail row for the request-details endpoint.
@@ -260,6 +261,13 @@ type MonitorKeyTokenStatsRow struct {
 	OutputTokens int64
 	CachedTokens int64
 	TotalTokens  int64
+}
+
+// MonitorKeyTokenTrendRow represents per-client-key token usage for one time slot.
+type MonitorKeyTokenTrendRow struct {
+	APIKey      string
+	SlotIndex   int
+	TotalTokens int64
 }
 
 // MonitorGroupKey returns the stable grouping key used by request log aggregates.
@@ -458,6 +466,18 @@ func (p *DatabasePlugin) QueryMonitorKeyTokenStats(ctx context.Context, filter M
 	return queryable.QueryMonitorKeyTokenStats(ctx, normalizeMonitorFilter(filter))
 }
 
+// QueryMonitorKeyTokenTrend queries per-client-key token trend slots directly from persistence layer.
+func (p *DatabasePlugin) QueryMonitorKeyTokenTrend(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorKeyTokenTrendRow, error) {
+	queryable, err := p.monitorQueryableStore()
+	if err != nil {
+		return nil, err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return queryable.QueryMonitorKeyTokenTrend(ctx, normalizeMonitorFilter(filter), cutoffUnix, nowUnix, slotSeconds)
+}
+
 func (s *mirrorUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter MonitorQueryFilter, page, pageSize, recentLimit int) (MonitorRequestLogsResult, error) {
 	if s == nil || s.local == nil {
 		return MonitorRequestLogsResult{}, fmt.Errorf("usage store: mirror store not initialized")
@@ -561,6 +581,13 @@ func (s *mirrorUsageStore) QueryMonitorKeyTokenStats(ctx context.Context, filter
 		return nil, fmt.Errorf("usage store: mirror store not initialized")
 	}
 	return s.local.QueryMonitorKeyTokenStats(ctx, filter)
+}
+
+func (s *mirrorUsageStore) QueryMonitorKeyTokenTrend(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorKeyTokenTrendRow, error) {
+	if s == nil || s.local == nil {
+		return nil, fmt.Errorf("usage store: mirror store not initialized")
+	}
+	return s.local.QueryMonitorKeyTokenTrend(ctx, filter, cutoffUnix, nowUnix, slotSeconds)
 }
 
 func (s *sqliteUsageStore) QueryMonitorRequestLogs(ctx context.Context, filter MonitorQueryFilter, page, pageSize, recentLimit int) (MonitorRequestLogsResult, error) {
@@ -2295,6 +2322,55 @@ func (s *sqliteUsageStore) QueryMonitorKeyTokenStats(ctx context.Context, filter
 	}
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("usage store: iterate monitor key token stats: %w", err)
+	}
+	return items, nil
+}
+
+func (s *sqliteUsageStore) QueryMonitorKeyTokenTrend(ctx context.Context, filter MonitorQueryFilter, cutoffUnix, nowUnix int64, slotSeconds int) ([]MonitorKeyTokenTrendRow, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("usage store: sqlite store not initialized")
+	}
+	if slotSeconds <= 0 {
+		slotSeconds = 3600
+	}
+
+	whereClause, args := buildSQLiteMonitorWhere(filter, false)
+	effectiveTotalExpr := effectiveTotalTokensSQL()
+	query := fmt.Sprintf(`
+		SELECT COALESCE(NULLIF(api_key, ''), 'unknown'),
+			(requested_at - ?) / ? AS slot_idx,
+			COALESCE(SUM(CASE WHEN failed=0 THEN %s ELSE 0 END), 0)
+		FROM usage_records
+		WHERE %s AND failed=0 AND requested_at >= ? AND requested_at <= ?
+		GROUP BY
+			COALESCE(NULLIF(api_key, ''), 'unknown'),
+			slot_idx
+		ORDER BY
+			COALESCE(NULLIF(api_key, ''), 'unknown') ASC,
+			slot_idx ASC
+	`, effectiveTotalExpr, whereClause)
+
+	queryArgs := make([]any, 0, len(args)+4)
+	queryArgs = append(queryArgs, cutoffUnix, slotSeconds)
+	queryArgs = append(queryArgs, args...)
+	queryArgs = append(queryArgs, cutoffUnix, nowUnix)
+
+	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("usage store: query monitor key token trend: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]MonitorKeyTokenTrendRow, 0)
+	for rows.Next() {
+		var item MonitorKeyTokenTrendRow
+		if err = rows.Scan(&item.APIKey, &item.SlotIndex, &item.TotalTokens); err != nil {
+			return nil, fmt.Errorf("usage store: scan monitor key token trend row: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("usage store: iterate monitor key token trend: %w", err)
 	}
 	return items, nil
 }

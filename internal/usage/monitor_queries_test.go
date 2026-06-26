@@ -241,6 +241,39 @@ func TestSQLiteUsageStoreQueryMonitorKeyTokenStats_UsesEffectiveTotalTokens(t *t
 	}
 }
 
+func TestSQLiteUsageStoreQueryMonitorKeyTokenTrendBucketsByAPIKey(t *testing.T) {
+	ctx := context.Background()
+	store := newTestSQLiteUsageStore(t)
+	defer store.Close()
+
+	base := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)
+	start := base.Add(-3 * time.Hour)
+	insertUsageRecords(t, store,
+		UsageRecord{APIKey: "api-a", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-3 * time.Hour), TotalTokens: 10},
+		UsageRecord{APIKey: "api-a", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-2 * time.Hour), Failed: true, TotalTokens: 20},
+		UsageRecord{APIKey: "api-a", Model: "model-a", Source: "source-a", RequestedAt: base.Add(-1 * time.Hour), InputTokens: 12, OutputTokens: 3, TotalTokens: 0},
+		UsageRecord{APIKey: "api-b", Model: "model-b", Source: "source-b", RequestedAt: base.Add(-1 * time.Hour), TotalTokens: 40},
+	)
+
+	rows, err := store.QueryMonitorKeyTokenTrend(ctx, MonitorQueryFilter{}, start.Unix(), base.Unix(), int(time.Hour/time.Second))
+	if err != nil {
+		t.Fatalf("QueryMonitorKeyTokenTrend failed: %v", err)
+	}
+
+	if len(rows) != 3 {
+		t.Fatalf("unexpected row count: got %d want 3: %+v", len(rows), rows)
+	}
+	if rows[0].APIKey != "api-a" || rows[0].SlotIndex != 0 || rows[0].TotalTokens != 10 {
+		t.Fatalf("unexpected first trend row: %+v", rows[0])
+	}
+	if rows[1].APIKey != "api-a" || rows[1].SlotIndex != 2 || rows[1].TotalTokens != 15 {
+		t.Fatalf("unexpected second trend row: %+v", rows[1])
+	}
+	if rows[2].APIKey != "api-b" || rows[2].SlotIndex != 2 || rows[2].TotalTokens != 40 {
+		t.Fatalf("unexpected third trend row: %+v", rows[2])
+	}
+}
+
 func TestSQLiteUsageStoreQueryMonitorChannelStats(t *testing.T) {
 	ctx := context.Background()
 	store := newTestSQLiteUsageStore(t)

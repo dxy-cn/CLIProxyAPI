@@ -224,8 +224,9 @@ func (h *Handler) tryBindAPIKeyRecordPatch(c *gin.Context) (apikeys.Record, bool
 	c.Request.Body = io.NopCloser(bytes.NewReader(data))
 	var body struct {
 		apikeys.Record
-		Index *int    `json:"index"`
-		Value *string `json:"value"`
+		Index       *int    `json:"index"`
+		Value       *string `json:"value"`
+		BindingOnly bool    `json:"binding_only"`
 	}
 	if err := json.Unmarshal(data, &body); err != nil {
 		return apikeys.Record{}, false
@@ -243,7 +244,29 @@ func (h *Handler) tryBindAPIKeyRecordPatch(c *gin.Context) (apikeys.Record, bool
 			}
 		}
 	}
+	if body.BindingOnly {
+		return h.mergeBindingOnlyAPIKeyRecord(c.Request.Context(), record)
+	}
 	return apikeys.NormalizeRecord(record), record.APIKey != "" || record.ID != 0
+}
+
+func (h *Handler) mergeBindingOnlyAPIKeyRecord(ctx context.Context, patch apikeys.Record) (apikeys.Record, bool) {
+	patch = apikeys.NormalizeRecord(patch)
+	if patch.APIKey == "" && patch.ID == 0 {
+		return apikeys.Record{}, false
+	}
+	records, err := h.currentAPIKeyRecords(ctx)
+	if err != nil {
+		return apikeys.Record{}, false
+	}
+	for _, record := range records {
+		record = apikeys.NormalizeRecord(record)
+		if (patch.ID != 0 && record.ID == patch.ID) || (patch.APIKey != "" && record.APIKey == patch.APIKey) {
+			record.AuthIdentity = patch.AuthIdentity
+			return apikeys.NormalizeRecord(record), true
+		}
+	}
+	return apikeys.Record{}, false
 }
 
 func (h *Handler) apiKeyRecordDeleteTarget(c *gin.Context) (apikeys.Record, bool) {

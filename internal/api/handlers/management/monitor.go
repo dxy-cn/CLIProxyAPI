@@ -1222,12 +1222,18 @@ type monitorKeyTokenStatsItem struct {
 	AuthNote          string                            `json:"auth_note,omitempty"`
 	Requests          int64                             `json:"requests"`
 	TotalTokens       int64                             `json:"total_tokens"`
+	TokenTrend        []monitorKeyTokenTrendPoint       `json:"token_trend"`
 	AccountTokens     int64                             `json:"account_tokens"`
 	AccountTokenShare float64                           `json:"account_token_share"`
 	TotalTokenShare   float64                           `json:"total_token_share"`
 	AuthTokens        map[string]int64                  `json:"auth_tokens"`
 	SourceTokens      map[string]int64                  `json:"source_tokens"`
 	ModelTokens       map[string]monitorModelTokenStats `json:"model_tokens"`
+}
+
+type monitorKeyTokenTrendPoint struct {
+	Slot        string `json:"slot"`
+	TotalTokens int64  `json:"total_tokens"`
 }
 
 type monitorModelTokenStats struct {
@@ -1571,6 +1577,27 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 
 	accountTotals := make(map[string]int64)
 	keyTotals := make(map[string]*monitorKeyTokenAcc)
+	trendSlots, trendSlotIndex, trendCutoff, trendQueryEnd, trendSlotDuration := buildMonitorKeyTokenTrendSlots(start, end)
+	tokenTrend := make(map[string][]int64)
+	ensureTrend := func(apiKey string) []int64 {
+		apiKey = strings.TrimSpace(apiKey)
+		if apiKey == "" {
+			apiKey = "unknown"
+		}
+		series, ok := tokenTrend[apiKey]
+		if !ok {
+			series = make([]int64, len(trendSlots))
+			tokenTrend[apiKey] = series
+		}
+		return series
+	}
+	addTrend := func(apiKey string, slotIndex int, totalTokens int64) {
+		if slotIndex < 0 || slotIndex >= len(trendSlots) || totalTokens <= 0 {
+			return
+		}
+		series := ensureTrend(apiKey)
+		series[slotIndex] += totalTokens
+	}
 	addRow := func(apiKey, source, authIndex, model string, requests, inputTokens, outputTokens, cachedTokens, totalTokens int64) {
 		apiKey = strings.TrimSpace(apiKey)
 		if apiKey == "" {
@@ -1615,7 +1642,14 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 
 	if dbPlugin != nil {
 		rows, queryErr := dbPlugin.QueryMonitorKeyTokenStats(c.Request.Context(), toUsageMonitorFilter(filter))
-		if queryErr == nil {
+		trendRows, trendErr := dbPlugin.QueryMonitorKeyTokenTrend(
+			c.Request.Context(),
+			toUsageMonitorFilter(filter),
+			trendCutoff.Unix(),
+			trendQueryEnd.Unix(),
+			int(trendSlotDuration/time.Second),
+		)
+		if queryErr == nil && trendErr == nil {
 			for _, row := range rows {
 				addRow(
 					row.APIKey,
@@ -1629,7 +1663,10 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 					row.TotalTokens,
 				)
 			}
-			c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, monitorTimeRange{Start: start, End: end}, responseContext))
+			for _, row := range trendRows {
+				addTrend(row.APIKey, row.SlotIndex, row.TotalTokens)
+			}
+			c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, trendSlots, tokenTrend, monitorTimeRange{Start: start, End: end}, responseContext))
 			return
 		}
 	}
@@ -1651,26 +1688,33 @@ func (h *Handler) GetMonitorKeyTokenStats(c *gin.Context) {
 			cachedTokens = record.CachedTokens
 		}
 		addRow(record.APIKey, record.Source, record.AuthIndex, record.Model, 1, inputTokens, outputTokens, cachedTokens, tokens)
+		if idx, ok := trendSlotIndex[monitorKeyTokenTrendSlotKey(record.Timestamp, trendSlotDuration)]; ok {
+			addTrend(record.APIKey, idx, tokens)
+		}
 	})
 
-	c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, monitorTimeRange{Start: start, End: end}, responseContext))
+	c.JSON(http.StatusOK, buildMonitorKeyTokenStatsResponse(keyTotals, accountTotals, trendSlots, tokenTrend, monitorTimeRange{Start: start, End: end}, responseContext))
 }
 
 func buildMonitorKeyTokenStatsResponse(
 	keyTotals map[string]*monitorKeyTokenAcc,
 	accountTotals map[string]int64,
+	trendSlots []string,
+	tokenTrend map[string][]int64,
 	timeRange monitorTimeRange,
 	responseContext monitorKeyTokenStatsContext,
 ) gin.H {
 	for _, apiKey := range responseContext.ScopedAPIKeys {
-		if _, ok := keyTotals[apiKey]; ok {
-			continue
+		if _, ok := keyTotals[apiKey]; !ok {
+			keyTotals[apiKey] = &monitorKeyTokenAcc{
+				APIKey:       apiKey,
+				AuthTokens:   make(map[string]int64),
+				SourceTokens: make(map[string]int64),
+				ModelTokens:  make(map[string]monitorModelTokenStats),
+			}
 		}
-		keyTotals[apiKey] = &monitorKeyTokenAcc{
-			APIKey:       apiKey,
-			AuthTokens:   make(map[string]int64),
-			SourceTokens: make(map[string]int64),
-			ModelTokens:  make(map[string]monitorModelTokenStats),
+		if _, ok := tokenTrend[apiKey]; !ok {
+			tokenTrend[apiKey] = make([]int64, len(trendSlots))
 		}
 	}
 
@@ -1700,6 +1744,18 @@ func buildMonitorKeyTokenStatsResponse(
 		if responseContext.CurrentAPIKey != "" {
 			responseAPIKey = util.HideAPIKey(responseAPIKey)
 		}
+		trendValues := tokenTrend[acc.APIKey]
+		trend := make([]monitorKeyTokenTrendPoint, 0, len(trendSlots))
+		for i, slot := range trendSlots {
+			var value int64
+			if i < len(trendValues) {
+				value = trendValues[i]
+			}
+			trend = append(trend, monitorKeyTokenTrendPoint{
+				Slot:        slot,
+				TotalTokens: value,
+			})
+		}
 		items = append(items, monitorKeyTokenStatsItem{
 			APIKey:            responseAPIKey,
 			APIKeyName:        apiKeyName,
@@ -1709,6 +1765,7 @@ func buildMonitorKeyTokenStatsResponse(
 			AuthNote:          responseContext.AuthNote,
 			Requests:          acc.Requests,
 			TotalTokens:       acc.TotalTokens,
+			TokenTrend:        trend,
 			AccountTokens:     accountTokens,
 			AccountTokenShare: calcRate(acc.AuthTokens[authIndex], accountTokens),
 			TotalTokenShare:   calcRate(acc.TotalTokens, totalTokens),
@@ -1750,6 +1807,51 @@ func buildMonitorKeyTokenStatsResponse(
 		}
 	}
 	return response
+}
+
+func buildMonitorKeyTokenTrendSlots(start, end *time.Time) ([]string, map[string]int, time.Time, time.Time, time.Duration) {
+	anchor := time.Now()
+	if end != nil {
+		anchor = *end
+	}
+	cutoff := anchor.Add(-23 * time.Hour)
+	if start != nil {
+		cutoff = *start
+	}
+
+	slotDuration := time.Hour
+	if anchor.Sub(cutoff) > 48*time.Hour {
+		slotDuration = 24 * time.Hour
+	}
+
+	alignedCutoff := cutoff.Local().Truncate(slotDuration)
+	alignedAnchor := anchor.Local().Truncate(slotDuration)
+	if slotDuration >= 24*time.Hour {
+		cutoffLocal := cutoff.Local()
+		anchorLocal := anchor.Local()
+		alignedCutoff = time.Date(cutoffLocal.Year(), cutoffLocal.Month(), cutoffLocal.Day(), 0, 0, 0, 0, cutoffLocal.Location())
+		alignedAnchor = time.Date(anchorLocal.Year(), anchorLocal.Month(), anchorLocal.Day(), 0, 0, 0, 0, anchorLocal.Location())
+	}
+	if alignedAnchor.Before(alignedCutoff) {
+		alignedAnchor = alignedCutoff
+	}
+
+	slots := make([]string, 0, 24)
+	slotIndex := make(map[string]int, 24)
+	for current := alignedCutoff; !current.After(alignedAnchor); current = current.Add(slotDuration) {
+		key := monitorKeyTokenTrendSlotKey(current, slotDuration)
+		slotIndex[key] = len(slots)
+		slots = append(slots, key)
+	}
+	return slots, slotIndex, alignedCutoff, anchor, slotDuration
+}
+
+func monitorKeyTokenTrendSlotKey(ts time.Time, slotDuration time.Duration) string {
+	local := ts.Local()
+	if slotDuration >= 24*time.Hour {
+		return local.Format("2006-01-02")
+	}
+	return local.Truncate(slotDuration).Format("2006-01-02T15:04:05-07:00")
 }
 
 func (h *Handler) buildMonitorKeyTokenStatsContext(

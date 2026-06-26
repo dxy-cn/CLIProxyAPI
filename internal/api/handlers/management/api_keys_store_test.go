@@ -250,6 +250,98 @@ func TestPatchAPIKeysUsesStoreSingleRecord(t *testing.T) {
 	}
 }
 
+func TestPatchAPIKeysBindingOnlyPreservesStoreMetadata(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	cfg := &config.Config{}
+	store := &fakeAPIKeyStore{records: []apikeys.Record{
+		{ID: 1, APIKey: "sk-java", Name: "Java owner", AuthIdentity: "codex:chatgpt:acct-java", Tags: []string{"Java"}},
+		{ID: 2, APIKey: "sk-go", Name: "Go owner", AuthIdentity: "codex:chatgpt:old-go", Tags: []string{"Go", "Ai"}},
+	}}
+	h := NewHandler(cfg, "", nil)
+	h.apiKeyStore = store
+
+	body := `{"api-key":"sk-go","auth_identity":"codex:chatgpt:acct-go","binding_only":true}`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/api-keys", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.PatchAPIKeys(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PatchAPIKeys status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if store.upsertCalls != 1 {
+		t.Fatalf("PatchAPIKeys upsert calls = %d, want 1", store.upsertCalls)
+	}
+	if len(store.records) != 2 {
+		t.Fatalf("store records len = %d, want 2", len(store.records))
+	}
+	if got := store.records[0].AuthIdentity; got != "codex:chatgpt:acct-java" {
+		t.Fatalf("unrelated record auth identity changed to %q", got)
+	}
+	if got := store.records[1].Name; got != "Go owner" {
+		t.Fatalf("stored name = %q, want Go owner", got)
+	}
+	if !reflect.DeepEqual(store.records[1].Tags, []string{"Go", "Ai"}) {
+		t.Fatalf("stored tags = %#v", store.records[1].Tags)
+	}
+	if got := store.records[1].AuthIdentity; got != "codex:chatgpt:acct-go" {
+		t.Fatalf("stored auth identity = %q", got)
+	}
+	if got := cfg.APIKeyAuthIdentityBindings["sk-go"]; got != "codex:chatgpt:acct-go" {
+		t.Fatalf("auth identity binding = %q", got)
+	}
+	if got := cfg.APIKeyAuthIdentityBindings["sk-java"]; got != "codex:chatgpt:acct-java" {
+		t.Fatalf("unrelated auth identity binding = %q", got)
+	}
+}
+
+func TestPatchAPIKeysBindingOnlyClearsBindingPreservesStoreMetadata(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	cfg := &config.Config{}
+	store := &fakeAPIKeyStore{records: []apikeys.Record{
+		{ID: 1, APIKey: "sk-go", Name: "Go owner", AuthIdentity: "codex:chatgpt:old-go", Tags: []string{"Go", "Ai"}},
+		{ID: 2, APIKey: "sk-java", Name: "Java owner", AuthIdentity: "codex:chatgpt:acct-java", Tags: []string{"Java"}},
+	}}
+	h := NewHandler(cfg, "", nil)
+	h.apiKeyStore = store
+
+	body := `{"api-key":"sk-go","auth_identity":"","binding_only":true}`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/api-keys", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.PatchAPIKeys(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PatchAPIKeys status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if store.upsertCalls != 1 {
+		t.Fatalf("PatchAPIKeys upsert calls = %d, want 1", store.upsertCalls)
+	}
+	if got := store.records[0].Name; got != "Go owner" {
+		t.Fatalf("stored name = %q, want Go owner", got)
+	}
+	if !reflect.DeepEqual(store.records[0].Tags, []string{"Go", "Ai"}) {
+		t.Fatalf("stored tags = %#v", store.records[0].Tags)
+	}
+	if got := store.records[0].AuthIdentity; got != "" {
+		t.Fatalf("stored auth identity = %q, want empty", got)
+	}
+	if _, ok := cfg.APIKeyAuthIdentityBindings["sk-go"]; ok {
+		t.Fatalf("cleared auth identity binding still exists: %#v", cfg.APIKeyAuthIdentityBindings)
+	}
+	if got := cfg.APIKeyAuthIdentityBindings["sk-java"]; got != "codex:chatgpt:acct-java" {
+		t.Fatalf("unrelated auth identity binding = %q", got)
+	}
+}
+
 func TestDeleteAPIKeysUsesStoreSingleRecord(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 	gin.SetMode(gin.TestMode)
