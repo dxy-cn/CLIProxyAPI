@@ -164,7 +164,7 @@ func (h *Handler) PatchAPIKeys(c *gin.Context) {
 		h.applyStoredAPIKeys(c, saved)
 		return
 	}
-	if record, ok := h.tryBindAPIKeyRecordPatch(c); ok {
+	if record, bindingOnly, ok := h.tryBindAPIKeyRecordPatchWithOptions(c); ok {
 		records := h.configAPIKeyRecords()
 		records = upsertAPIKeyRecord(records, record)
 		apikeys.ApplyToConfig(h.cfg, records)
@@ -174,6 +174,12 @@ func (h *Handler) PatchAPIKeys(c *gin.Context) {
 		if err := h.persistConfigOnly(); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", err)})
 			return
+		}
+		if bindingOnly && strings.TrimSpace(h.configFilePath) != "" {
+			if err := config.SaveConfigPreserveCommentsUpdateAPIKeyAuthIdentity(h.configFilePath, record.APIKey, record.AuthIdentity); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save api key binding: %v", err)})
+				return
+			}
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "api-keys": apikeys.NormalizeRecords(records)})
 		return
@@ -217,9 +223,14 @@ func (h *Handler) bindAPIKeyRecordPatch(c *gin.Context) (apikeys.Record, bool) {
 }
 
 func (h *Handler) tryBindAPIKeyRecordPatch(c *gin.Context) (apikeys.Record, bool) {
+	record, _, ok := h.tryBindAPIKeyRecordPatchWithOptions(c)
+	return record, ok
+}
+
+func (h *Handler) tryBindAPIKeyRecordPatchWithOptions(c *gin.Context) (apikeys.Record, bool, bool) {
 	data, err := c.GetRawData()
 	if err != nil || len(strings.TrimSpace(string(data))) == 0 {
-		return apikeys.Record{}, false
+		return apikeys.Record{}, false, false
 	}
 	c.Request.Body = io.NopCloser(bytes.NewReader(data))
 	var body struct {
@@ -229,7 +240,7 @@ func (h *Handler) tryBindAPIKeyRecordPatch(c *gin.Context) (apikeys.Record, bool
 		BindingOnly bool    `json:"binding_only"`
 	}
 	if err := json.Unmarshal(data, &body); err != nil {
-		return apikeys.Record{}, false
+		return apikeys.Record{}, false, false
 	}
 	record := apikeys.NormalizeRecord(body.Record)
 	if record.APIKey == "" && body.Value != nil {
@@ -245,9 +256,10 @@ func (h *Handler) tryBindAPIKeyRecordPatch(c *gin.Context) (apikeys.Record, bool
 		}
 	}
 	if body.BindingOnly {
-		return h.mergeBindingOnlyAPIKeyRecord(c.Request.Context(), record)
+		record, ok := h.mergeBindingOnlyAPIKeyRecord(c.Request.Context(), record)
+		return record, true, ok
 	}
-	return apikeys.NormalizeRecord(record), record.APIKey != "" || record.ID != 0
+	return apikeys.NormalizeRecord(record), false, record.APIKey != "" || record.ID != 0
 }
 
 func (h *Handler) mergeBindingOnlyAPIKeyRecord(ctx context.Context, patch apikeys.Record) (apikeys.Record, bool) {

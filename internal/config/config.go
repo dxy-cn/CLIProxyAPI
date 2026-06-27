@@ -1200,6 +1200,52 @@ func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []stri
 	return err
 }
 
+// SaveConfigPreserveCommentsUpdateAPIKeyAuthIdentity updates only the auth_identity
+// field for a matching API key entry while leaving any other per-key metadata intact.
+func SaveConfigPreserveCommentsUpdateAPIKeyAuthIdentity(configFile, apiKey, authIdentity string) error {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return fmt.Errorf("api key is required")
+	}
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return err
+	}
+	var root yaml.Node
+	if err = yaml.Unmarshal(data, &root); err != nil {
+		return err
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 || root.Content[0] == nil {
+		return fmt.Errorf("invalid yaml document structure")
+	}
+	doc := root.Content[0]
+	if doc.Kind != yaml.MappingNode {
+		return fmt.Errorf("expected root mapping node")
+	}
+	if !updateAPIKeyAuthIdentityNode(doc, apiKey, strings.TrimSpace(authIdentity)) {
+		return fmt.Errorf("api key not found")
+	}
+
+	f, err := os.Create(configFile)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err = enc.Encode(&root); err != nil {
+		_ = enc.Close()
+		return err
+	}
+	if err = enc.Close(); err != nil {
+		return err
+	}
+	data = NormalizeCommentIndentation(buf.Bytes())
+	_, err = f.Write(data)
+	return err
+}
+
 // NormalizeCommentIndentation removes indentation from standalone YAML comment lines to keep them left aligned.
 func NormalizeCommentIndentation(data []byte) []byte {
 	lines := bytes.Split(data, []byte("\n"))
@@ -1393,6 +1439,106 @@ func setMappingScalarPreserve(node *yaml.Node, key, value string) {
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
 	)
+}
+
+func updateAPIKeyAuthIdentityNode(root *yaml.Node, apiKey, authIdentity string) bool {
+	for _, seq := range apiKeyEntrySequences(root) {
+		if updateAPIKeyAuthIdentityInSequence(seq, apiKey, authIdentity) {
+			return true
+		}
+	}
+	return false
+}
+
+func apiKeyEntrySequences(root *yaml.Node) []*yaml.Node {
+	if root == nil || root.Kind != yaml.MappingNode {
+		return nil
+	}
+	var sequences []*yaml.Node
+	auth := mappingValueNode(root, "auth")
+	providers := mappingValueNode(auth, "providers")
+	configAPIKey := mappingValueNode(providers, "config-api-key")
+	for _, key := range []string{"api-key-entries", "api-keys"} {
+		if seq := mappingValueNode(configAPIKey, key); seq != nil && seq.Kind == yaml.SequenceNode {
+			sequences = append(sequences, seq)
+		}
+	}
+	if seq := mappingValueNode(root, "api-keys"); seq != nil && seq.Kind == yaml.SequenceNode {
+		sequences = append(sequences, seq)
+	}
+	return sequences
+}
+
+func updateAPIKeyAuthIdentityInSequence(seq *yaml.Node, apiKey, authIdentity string) bool {
+	if seq == nil || seq.Kind != yaml.SequenceNode {
+		return false
+	}
+	for i, item := range seq.Content {
+		if item == nil {
+			continue
+		}
+		switch item.Kind {
+		case yaml.ScalarNode:
+			if strings.TrimSpace(item.Value) != apiKey {
+				continue
+			}
+			if authIdentity == "" {
+				return true
+			}
+			seq.Content[i] = &yaml.Node{
+				Kind: yaml.MappingNode,
+				Tag:  "!!map",
+				Content: []*yaml.Node{
+					{Kind: yaml.ScalarNode, Tag: "!!str", Value: "api-key"},
+					{Kind: yaml.ScalarNode, Tag: "!!str", Value: apiKey},
+					{Kind: yaml.ScalarNode, Tag: "!!str", Value: "auth_identity"},
+					{Kind: yaml.ScalarNode, Tag: "!!str", Value: authIdentity},
+				},
+			}
+			return true
+		case yaml.MappingNode:
+			if strings.TrimSpace(mappingScalar(item, "api-key", "apiKey", "key", "Key")) != apiKey {
+				continue
+			}
+			removeAPIKeyAuthIndexFields(item)
+			if authIdentity == "" {
+				removeAPIKeyAuthIdentityFields(item)
+				return true
+			}
+			setMappingScalarPreserve(item, apiKeyAuthIdentityFieldName(item), authIdentity)
+			return true
+		}
+	}
+	return false
+}
+
+func apiKeyAuthIdentityFieldName(node *yaml.Node) string {
+	for _, key := range []string{"auth_identity", "auth-identity", "authIdentity"} {
+		if findMapKeyIndex(node, key) >= 0 {
+			return key
+		}
+	}
+	return "auth_identity"
+}
+
+func removeAPIKeyAuthIdentityFields(node *yaml.Node) {
+	for _, key := range []string{"auth_identity", "auth-identity", "authIdentity"} {
+		removeMapKey(node, key)
+	}
+}
+
+func removeAPIKeyAuthIndexFields(node *yaml.Node) {
+	for _, key := range []string{"auth_index", "auth-index", "authIndex"} {
+		removeMapKey(node, key)
+	}
+}
+
+func mappingValueNode(node *yaml.Node, key string) *yaml.Node {
+	idx := findMapKeyIndex(node, key)
+	if idx < 0 || idx+1 >= len(node.Content) {
+		return nil
+	}
+	return node.Content[idx+1]
 }
 
 // findMapKeyIndex returns the index of key node in dst mapping (index of key, not value).

@@ -336,6 +336,11 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 						fileData["websockets"] = websockets
 					}
 				}
+				if av := gjson.GetBytes(data, "auto_balance"); av.Exists() {
+					if autoBalance, errParse := strconv.ParseBool(strings.TrimSpace(av.String())); errParse == nil {
+						fileData["auto_balance"] = autoBalance
+					}
+				}
 				if pv := gjson.GetBytes(data, "priority"); pv.Exists() {
 					switch pv.Type {
 					case gjson.Number:
@@ -405,6 +410,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	}
 	if websockets, ok := authFileWebsockets(auth); ok {
 		entry["websockets"] = websockets
+	}
+	if authFileAutoBalance(auth) {
+		entry["auto_balance"] = true
 	}
 	entry["success"] = auth.Success
 	entry["failed"] = auth.Failed
@@ -1448,6 +1456,9 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	if _, ok := touchedRoots["websockets"]; ok {
 		syncAuthFileWebsocketsAttribute(auth)
 	}
+	if _, ok := touchedRoots["auto_balance"]; ok {
+		syncAuthFileAutoBalanceAttribute(auth)
+	}
 	if _, ok := touchedRoots["disabled"]; ok {
 		syncAuthFileDisabledState(auth)
 	}
@@ -1544,6 +1555,21 @@ func syncAuthFileWebsocketsAttribute(auth *coreauth.Auth) {
 	auth.Attributes["websockets"] = strconv.FormatBool(websockets)
 }
 
+func syncAuthFileAutoBalanceAttribute(auth *coreauth.Auth) {
+	if auth == nil {
+		return
+	}
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	autoBalance, ok := authFileBoolValue(auth.Metadata["auto_balance"])
+	if !ok {
+		delete(auth.Attributes, "auto_balance")
+		return
+	}
+	auth.Attributes["auto_balance"] = strconv.FormatBool(autoBalance)
+}
+
 func authProjectID(auth *coreauth.Auth) string {
 	if auth == nil {
 		return ""
@@ -1581,6 +1607,23 @@ func authFileWebsockets(auth *coreauth.Auth) (bool, bool) {
 		}
 	}
 	return false, false
+}
+
+func authFileAutoBalance(auth *coreauth.Auth) bool {
+	if auth == nil {
+		return false
+	}
+	if auth.Attributes != nil {
+		if value, ok := authFileBoolValue(auth.Attributes["auto_balance"]); ok {
+			return value
+		}
+	}
+	if auth.Metadata != nil {
+		if value, ok := authFileBoolValue(auth.Metadata["auto_balance"]); ok {
+			return value
+		}
+	}
+	return false
 }
 
 func authFileBoolValue(value any) (bool, bool) {

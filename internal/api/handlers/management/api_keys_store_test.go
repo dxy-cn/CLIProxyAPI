@@ -342,6 +342,70 @@ func TestPatchAPIKeysBindingOnlyClearsBindingPreservesStoreMetadata(t *testing.T
 	}
 }
 
+func TestPatchAPIKeysBindingOnlyUpdatesConfigFileObjectPreservingMetadata(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	configYAML := strings.TrimSpace(`
+routing:
+  strategy: account-bind
+api-keys:
+  - api-key: sk-go
+    name: Go owner
+    label: Go label
+    note: keep note
+    auth_identity: codex:chatgpt:old-go
+  - api-key: sk-java
+    name: Java owner
+    auth_identity: codex:chatgpt:acct-java
+`) + "\n"
+	if err := os.WriteFile(configPath, []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+	cfg, err := config.LoadConfigOptional(configPath, false)
+	if err != nil {
+		t.Fatalf("LoadConfigOptional() error = %v", err)
+	}
+	h := NewHandler(cfg, configPath, nil)
+
+	body := `{"api-key":"sk-go","auth_identity":"codex:chatgpt:acct-go","binding_only":true}`
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/api-keys", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.PatchAPIKeys(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PatchAPIKeys status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := cfg.APIKeyAuthIdentityBindings["sk-go"]; got != "codex:chatgpt:acct-go" {
+		t.Fatalf("auth identity binding = %q", got)
+	}
+	saved, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read saved config: %v", err)
+	}
+	savedYAML := string(saved)
+	for _, snippet := range []string{
+		"name: Go owner",
+		"label: Go label",
+		"note: keep note",
+		"auth_identity: codex:chatgpt:acct-go",
+		"name: Java owner",
+		"auth_identity: codex:chatgpt:acct-java",
+	} {
+		if !strings.Contains(savedYAML, snippet) {
+			t.Fatalf("saved config missing %q:\n%s", snippet, savedYAML)
+		}
+	}
+	if strings.Contains(savedYAML, "codex:chatgpt:old-go") {
+		t.Fatalf("saved config still contains old binding:\n%s", savedYAML)
+	}
+}
+
 func TestDeleteAPIKeysUsesStoreSingleRecord(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 	gin.SetMode(gin.TestMode)

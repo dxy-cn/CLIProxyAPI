@@ -65,6 +65,10 @@ type Handler struct {
 	quotaWarningStop    chan struct{}
 	quotaWarningDone    chan struct{}
 	quotaWarningOnce    sync.Once
+	apiKeyBalanceMu     sync.Mutex
+	apiKeyBalanceStop   chan struct{}
+	apiKeyBalanceDone   chan struct{}
+	apiKeyBalanceOnce   sync.Once
 }
 
 // NewHandler creates a new management handler instance.
@@ -87,12 +91,15 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		quotaWarningSender:  sendWeComQuotaWarning,
 		quotaWarningStop:    make(chan struct{}),
 		quotaWarningDone:    make(chan struct{}),
+		apiKeyBalanceStop:   make(chan struct{}),
+		apiKeyBalanceDone:   make(chan struct{}),
 	}
 	if store, ok := h.tokenStore.(apikeys.Store); ok {
 		h.apiKeyStore = store
 	}
 	h.startAttemptCleanup()
 	h.startQuotaWarningScanner(context.Background(), quotaWarningScanInterval)
+	h.startAPIKeyBalanceScanner(context.Background(), apiKeyBalanceInterval)
 	return h
 }
 
@@ -129,11 +136,19 @@ func (h *Handler) Close() error {
 			close(h.quotaWarningStop)
 		}
 	})
+	h.apiKeyBalanceOnce.Do(func() {
+		if h.apiKeyBalanceStop != nil {
+			close(h.apiKeyBalanceStop)
+		}
+	})
 	if h.attemptCleanupDone != nil {
 		<-h.attemptCleanupDone
 	}
 	if h.quotaWarningDone != nil {
 		<-h.quotaWarningDone
+	}
+	if h.apiKeyBalanceDone != nil {
+		<-h.apiKeyBalanceDone
 	}
 	return nil
 }
