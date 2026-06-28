@@ -99,7 +99,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 	}
 	h.startAttemptCleanup()
 	h.startQuotaWarningScanner(context.Background(), quotaWarningScanInterval)
-	h.startAPIKeyBalanceScanner(context.Background(), apiKeyBalanceInterval)
+	h.startAPIKeyBalanceScanner(context.Background(), apiKeyBalanceScanInterval)
 	return h
 }
 

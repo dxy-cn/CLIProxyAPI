@@ -13,6 +13,15 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
+func TestAPIKeyBalanceScannerUsesThreeHourIntervalAndFiveHourWindow(t *testing.T) {
+	if apiKeyBalanceScanInterval != 3*time.Hour {
+		t.Fatalf("apiKeyBalanceScanInterval = %s, want 3h", apiKeyBalanceScanInterval)
+	}
+	if apiKeyBalanceWindow != 5*time.Hour {
+		t.Fatalf("apiKeyBalanceWindow = %s, want 5h", apiKeyBalanceWindow)
+	}
+}
+
 func TestRebalanceAPIKeyBindingsMovesOnlyKeysBoundToAutoBalanceCredentials(t *testing.T) {
 	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
 	manager := coreauth.NewManager(nil, nil, nil)
@@ -68,6 +77,74 @@ func TestRebalanceAPIKeyBindingsMovesOnlyKeysBoundToAutoBalanceCredentials(t *te
 	}
 	if got := cfg.APIKeyAuthIdentityBindings["sk-manual"]; got != manual.StableIdentity() {
 		t.Fatalf("manual credential binding changed to %q", got)
+	}
+}
+
+func TestRebalanceAPIKeyBindingsBalancesKeyCountsWhenTokenDemandIsEqual(t *testing.T) {
+	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	manager := coreauth.NewManager(nil, nil, nil)
+	autoA := registerBalanceTestCodexAuth(t, manager, "a.json", "acct-a", true)
+	autoB := registerBalanceTestCodexAuth(t, manager, "b.json", "acct-b", true)
+
+	cfg := &config.Config{
+		SDKConfig: config.SDKConfig{
+			APIKeys: config.FlexAPIKeyList{"sk-1", "sk-2", "sk-3", "sk-4"},
+			APIKeyAuthIdentityBindings: map[string]string{
+				"sk-1": autoA.StableIdentity(),
+				"sk-2": autoA.StableIdentity(),
+				"sk-3": autoA.StableIdentity(),
+				"sk-4": autoA.StableIdentity(),
+			},
+		},
+		Routing: config.RoutingConfig{Strategy: "account-bind"},
+	}
+
+	h := &Handler{cfg: cfg, authManager: manager, usageStats: usage.NewRequestStatistics()}
+	result, err := h.rebalanceAPIKeyBindingsAt(context.Background(), now)
+	if err != nil {
+		t.Fatalf("rebalanceAPIKeyBindingsAt() error = %v", err)
+	}
+
+	if result.Status != "ok" {
+		t.Fatalf("status = %q, want ok (reason=%q)", result.Status, result.Reason)
+	}
+	if result.Changed != 2 {
+		t.Fatalf("changed = %d, want 2; assignments=%+v", result.Changed, result.Assignments)
+	}
+	counts := map[string]int{}
+	for _, identity := range cfg.APIKeyAuthIdentityBindings {
+		counts[identity]++
+	}
+	if counts[autoA.StableIdentity()] != 2 || counts[autoB.StableIdentity()] != 2 {
+		t.Fatalf("binding counts = %+v, want two keys per auto-balance credential", counts)
+	}
+}
+
+func TestPlanAPIKeyBalancePrioritizesFiveHourTokenDemandBeforeKeyCount(t *testing.T) {
+	credentials := []apiKeyBalanceCredential{
+		{Identity: "codex:chatgpt:a"},
+		{Identity: "codex:chatgpt:b"},
+	}
+	participants := []apiKeyBalanceParticipant{
+		{APIKey: "sk-heavy", AuthIdentity: "codex:chatgpt:a", TotalTokens: 100},
+		{APIKey: "sk-small-1", AuthIdentity: "codex:chatgpt:a", TotalTokens: 1},
+		{APIKey: "sk-small-2", AuthIdentity: "codex:chatgpt:a", TotalTokens: 1},
+		{APIKey: "sk-small-3", AuthIdentity: "codex:chatgpt:a", TotalTokens: 1},
+	}
+
+	plans := planAPIKeyBalance(participants, credentials)
+	tokens := map[string]int64{}
+	counts := map[string]int{}
+	for _, plan := range plans {
+		tokens[plan.ToIdentity] += plan.TotalTokens
+		counts[plan.ToIdentity]++
+	}
+
+	if tokens["codex:chatgpt:a"] != 100 || tokens["codex:chatgpt:b"] != 3 {
+		t.Fatalf("tokens = %+v, want heavy key isolated before balancing key counts", tokens)
+	}
+	if counts["codex:chatgpt:a"] != 1 || counts["codex:chatgpt:b"] != 3 {
+		t.Fatalf("counts = %+v, want token balance to take precedence over key count balance", counts)
 	}
 }
 

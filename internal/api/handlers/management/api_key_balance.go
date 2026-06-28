@@ -3,6 +3,7 @@ package management
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -17,7 +18,11 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const apiKeyBalanceInterval = 5 * time.Hour
+const (
+	apiKeyBalanceWindow       = 5 * time.Hour
+	apiKeyBalanceScanInterval = 3 * time.Hour
+	apiKeyBalanceScoreEpsilon = 0.000001
+)
 
 type apiKeyRebalanceResult struct {
 	Status      string                      `json:"status"`
@@ -54,8 +59,16 @@ type apiKeyBalancePlan struct {
 }
 
 type apiKeyBalanceBucket struct {
-	Identity string
-	Tokens   int64
+	Identity     string
+	Tokens       int64
+	Count        int
+	TargetTokens float64
+}
+
+type apiKeyBalanceScore struct {
+	TokenDeviation float64
+	CountSpread    int
+	Moves          int
 }
 
 // RebalanceAPIKeys immediately redistributes API key auth_identity bindings across
@@ -278,6 +291,12 @@ func planAPIKeyBalance(participants []apiKeyBalanceParticipant, credentials []ap
 		return nil
 	}
 
+	targets := apiKeyBalanceTokenTargets(participants, buckets)
+	for i := range buckets {
+		buckets[i].TargetTokens = targets[buckets[i].Identity]
+	}
+	currentScore := scoreCurrentAPIKeyBalance(participants, buckets)
+
 	keys := append([]apiKeyBalanceParticipant(nil), participants...)
 	sort.Slice(keys, func(i, j int) bool {
 		if keys[i].TotalTokens == keys[j].TotalTokens {
@@ -289,31 +308,167 @@ func planAPIKeyBalance(participants []apiKeyBalanceParticipant, credentials []ap
 	plans := make([]apiKeyBalancePlan, 0, len(keys))
 	for _, key := range keys {
 		fromIdentity := strings.TrimSpace(key.AuthIdentity)
-		if key.TotalTokens <= 0 {
-			plans = append(plans, apiKeyBalancePlan{
-				APIKey:       key.APIKey,
-				FromIdentity: fromIdentity,
-				ToIdentity:   fromIdentity,
-				TotalTokens:  key.TotalTokens,
-			})
-			continue
-		}
-		sort.SliceStable(buckets, func(i, j int) bool {
-			if buckets[i].Tokens == buckets[j].Tokens {
-				return buckets[i].Identity < buckets[j].Identity
-			}
-			return buckets[i].Tokens < buckets[j].Tokens
-		})
-		target := &buckets[0]
+		target := &buckets[selectAPIKeyBalanceBucket(key, buckets)]
 		plans = append(plans, apiKeyBalancePlan{
 			APIKey:       key.APIKey,
 			FromIdentity: fromIdentity,
 			ToIdentity:   target.Identity,
 			TotalTokens:  key.TotalTokens,
 		})
-		target.Tokens += key.TotalTokens
+		if key.TotalTokens > 0 {
+			target.Tokens += key.TotalTokens
+		}
+		target.Count++
+	}
+	if !apiKeyBalanceScoreImproves(scorePlannedAPIKeyBalance(plans, buckets), currentScore) {
+		return nil
 	}
 	return plans
+}
+
+func apiKeyBalanceTokenTargets(participants []apiKeyBalanceParticipant, buckets []apiKeyBalanceBucket) map[string]float64 {
+	targets := make(map[string]float64, len(buckets))
+	if len(buckets) == 0 {
+		return targets
+	}
+	var total int64
+	for _, participant := range participants {
+		if participant.TotalTokens > 0 {
+			total += participant.TotalTokens
+		}
+	}
+	target := float64(total) / float64(len(buckets))
+	for _, bucket := range buckets {
+		targets[bucket.Identity] = target
+	}
+	return targets
+}
+
+func selectAPIKeyBalanceBucket(key apiKeyBalanceParticipant, buckets []apiKeyBalanceBucket) int {
+	best := 0
+	for i := 1; i < len(buckets); i++ {
+		if apiKeyBalanceBucketCandidateLess(key, buckets[i], buckets[best]) {
+			best = i
+		}
+	}
+	return best
+}
+
+func apiKeyBalanceBucketCandidateLess(key apiKeyBalanceParticipant, candidate apiKeyBalanceBucket, best apiKeyBalanceBucket) bool {
+	candidateDeficit := candidate.TargetTokens - float64(candidate.Tokens)
+	bestDeficit := best.TargetTokens - float64(best.Tokens)
+	if key.TotalTokens > 0 {
+		if math.Abs(candidateDeficit-bestDeficit) > apiKeyBalanceScoreEpsilon {
+			return candidateDeficit > bestDeficit
+		}
+		if candidate.Count != best.Count {
+			return candidate.Count < best.Count
+		}
+	} else {
+		if candidate.Count != best.Count {
+			return candidate.Count < best.Count
+		}
+		if math.Abs(candidateDeficit-bestDeficit) > apiKeyBalanceScoreEpsilon {
+			return candidateDeficit > bestDeficit
+		}
+	}
+
+	fromIdentity := strings.TrimSpace(key.AuthIdentity)
+	if candidate.Identity == fromIdentity && best.Identity != fromIdentity {
+		return true
+	}
+	if candidate.Identity != fromIdentity && best.Identity == fromIdentity {
+		return false
+	}
+	return candidate.Identity < best.Identity
+}
+
+func scoreCurrentAPIKeyBalance(participants []apiKeyBalanceParticipant, buckets []apiKeyBalanceBucket) apiKeyBalanceScore {
+	byIdentity := make(map[string]apiKeyBalanceBucket, len(buckets))
+	for _, bucket := range buckets {
+		byIdentity[bucket.Identity] = apiKeyBalanceBucket{
+			Identity:     bucket.Identity,
+			TargetTokens: bucket.TargetTokens,
+		}
+	}
+	for _, participant := range participants {
+		identity := strings.TrimSpace(participant.AuthIdentity)
+		bucket, ok := byIdentity[identity]
+		if !ok {
+			continue
+		}
+		if participant.TotalTokens > 0 {
+			bucket.Tokens += participant.TotalTokens
+		}
+		bucket.Count++
+		byIdentity[identity] = bucket
+	}
+	return scoreAPIKeyBalanceBuckets(byIdentity, 0)
+}
+
+func scorePlannedAPIKeyBalance(plans []apiKeyBalancePlan, buckets []apiKeyBalanceBucket) apiKeyBalanceScore {
+	byIdentity := make(map[string]apiKeyBalanceBucket, len(buckets))
+	for _, bucket := range buckets {
+		byIdentity[bucket.Identity] = apiKeyBalanceBucket{
+			Identity:     bucket.Identity,
+			TargetTokens: bucket.TargetTokens,
+		}
+	}
+	moves := 0
+	for _, plan := range plans {
+		identity := strings.TrimSpace(plan.ToIdentity)
+		bucket, ok := byIdentity[identity]
+		if !ok {
+			continue
+		}
+		if plan.TotalTokens > 0 {
+			bucket.Tokens += plan.TotalTokens
+		}
+		bucket.Count++
+		byIdentity[identity] = bucket
+		if strings.TrimSpace(plan.FromIdentity) != identity {
+			moves++
+		}
+	}
+	return scoreAPIKeyBalanceBuckets(byIdentity, moves)
+}
+
+func scoreAPIKeyBalanceBuckets(buckets map[string]apiKeyBalanceBucket, moves int) apiKeyBalanceScore {
+	score := apiKeyBalanceScore{Moves: moves}
+	first := true
+	minCount, maxCount := 0, 0
+	for _, bucket := range buckets {
+		score.TokenDeviation += math.Abs(float64(bucket.Tokens) - bucket.TargetTokens)
+		if first {
+			minCount = bucket.Count
+			maxCount = bucket.Count
+			first = false
+			continue
+		}
+		if bucket.Count < minCount {
+			minCount = bucket.Count
+		}
+		if bucket.Count > maxCount {
+			maxCount = bucket.Count
+		}
+	}
+	if !first {
+		score.CountSpread = maxCount - minCount
+	}
+	return score
+}
+
+func apiKeyBalanceScoreImproves(candidate apiKeyBalanceScore, current apiKeyBalanceScore) bool {
+	if candidate.TokenDeviation < current.TokenDeviation-apiKeyBalanceScoreEpsilon {
+		return true
+	}
+	if candidate.TokenDeviation > current.TokenDeviation+apiKeyBalanceScoreEpsilon {
+		return false
+	}
+	if candidate.CountSpread != current.CountSpread {
+		return candidate.CountSpread < current.CountSpread
+	}
+	return candidate.Moves < current.Moves
 }
 
 func (h *Handler) apiKeyTokenTotals(ctx context.Context, apiKeys []string, now time.Time) map[string]int64 {
@@ -331,7 +486,7 @@ func (h *Handler) apiKeyTokenTotals(ctx context.Context, apiKeys []string, now t
 		return totals
 	}
 
-	start := now.Add(-apiKeyBalanceInterval)
+	start := now.Add(-apiKeyBalanceWindow)
 	if dbPlugin := usage.GetDatabasePlugin(); dbPlugin != nil {
 		rows, err := dbPlugin.QueryMonitorKeyTokenStats(ctx, usage.MonitorQueryFilter{
 			APIKeys: apiKeys,

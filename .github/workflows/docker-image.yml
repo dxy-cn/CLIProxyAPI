@@ -2,6 +2,9 @@ name: docker-image
 
 on:
   push:
+    branches:
+      - 'feature*'
+      - 'feature*/**'
     tags:
       - v*
   workflow_dispatch:
@@ -125,6 +128,16 @@ jobs:
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION=$(git describe --tags --always --dirty | sed 's|^fork/||' | sed 's|^v||')
             PRIMARY_TAG="${{ github.event.inputs.tag }}"
+          elif [ "${GITHUB_REF_TYPE}" = "branch" ]; then
+            VERSION=$(git rev-parse --short HEAD)
+            case "${GITHUB_REF_NAME}" in
+              feature*)
+                PRIMARY_TAG=$(printf '%s' "${GITHUB_REF_NAME}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g; s/^[.-]+//; s/[.-]+$//; s/-+/-/g' | cut -c1-128)
+                ;;
+              *)
+                PRIMARY_TAG="latest"
+                ;;
+            esac
           else
             VERSION=$(git rev-parse --short HEAD)
             PRIMARY_TAG="latest"
@@ -158,6 +171,7 @@ jobs:
             type=semver,pattern={{version}},value=${{ steps.version.outputs.VERSION }},enable=${{ github.ref_type == 'tag' }}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.VERSION }},enable=${{ github.ref_type == 'tag' }}
             type=semver,pattern={{major}},value=${{ steps.version.outputs.VERSION }},enable=${{ github.ref_type == 'tag' }}
+            type=raw,value=${{ steps.version.outputs.PRIMARY_TAG }},enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feature') }}
             type=raw,value=latest,enable=${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag') }}
             type=sha,prefix=sha-,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
             type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' }}
