@@ -13,9 +13,9 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
-func TestAPIKeyBalanceScannerUsesThreeHourIntervalAndFiveHourWindow(t *testing.T) {
-	if apiKeyBalanceScanInterval != 3*time.Hour {
-		t.Fatalf("apiKeyBalanceScanInterval = %s, want 3h", apiKeyBalanceScanInterval)
+func TestAPIKeyBalanceScannerUsesOneHourIntervalAndFiveHourWindow(t *testing.T) {
+	if apiKeyBalanceScanInterval != time.Hour {
+		t.Fatalf("apiKeyBalanceScanInterval = %s, want 1h", apiKeyBalanceScanInterval)
 	}
 	if apiKeyBalanceWindow != 5*time.Hour {
 		t.Fatalf("apiKeyBalanceWindow = %s, want 5h", apiKeyBalanceWindow)
