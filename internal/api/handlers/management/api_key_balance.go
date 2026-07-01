@@ -20,7 +20,7 @@ import (
 
 const (
 	apiKeyBalanceWindow       = 5 * time.Hour
-	apiKeyBalanceScanInterval = 1 * time.Hour
+	apiKeyBalanceScanInterval = 5 * time.Hour
 	apiKeyBalanceScoreEpsilon = 0.000001
 )
 
