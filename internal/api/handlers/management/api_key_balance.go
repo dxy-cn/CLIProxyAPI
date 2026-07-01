@@ -20,7 +20,7 @@ import (
 
 const (
 	apiKeyBalanceWindow       = 5 * time.Hour
-	apiKeyBalanceScanInterval = 5 * time.Hour
+	apiKeyBalanceScanInterval = 3 * time.Hour
 	apiKeyBalanceScoreEpsilon = 0.000001
 )
 
@@ -40,6 +40,8 @@ type apiKeyRebalanceAssignment struct {
 	TotalTokens      int64  `json:"total_tokens"`
 	Changed          bool   `json:"changed"`
 }
+
+type apiKeyBalanceQuotaFetcher func(ctx context.Context, auth *coreauth.Auth) (int, gin.H, error)
 
 type apiKeyBalanceCredential struct {
 	Identity string
@@ -151,7 +153,7 @@ func (h *Handler) rebalanceAPIKeyBindingsAt(ctx context.Context, now time.Time) 
 		return result, nil
 	}
 
-	credentials := h.autoBalanceCredentials()
+	credentials := h.autoBalanceCredentials(ctx, now)
 	result.Credentials = len(credentials)
 	if len(credentials) < 2 {
 		result.Reason = "at least two auto-balance credentials required"
@@ -247,7 +249,7 @@ func (h *Handler) rebalanceAPIKeyBindingsAt(ctx context.Context, now time.Time) 
 	return result, nil
 }
 
-func (h *Handler) autoBalanceCredentials() []apiKeyBalanceCredential {
+func (h *Handler) autoBalanceCredentials(ctx context.Context, now time.Time) []apiKeyBalanceCredential {
 	if h == nil || h.authManager == nil {
 		return nil
 	}
@@ -258,6 +260,9 @@ func (h *Handler) autoBalanceCredentials() []apiKeyBalanceCredential {
 			continue
 		}
 		if !authFileAutoBalance(auth) {
+			continue
+		}
+		if h.apiKeyBalanceQuotaExhausted(ctx, auth, now) {
 			continue
 		}
 		identity := strings.TrimSpace(auth.StableIdentity())
@@ -274,6 +279,61 @@ func (h *Handler) autoBalanceCredentials() []apiKeyBalanceCredential {
 		return credentials[i].Identity < credentials[j].Identity
 	})
 	return credentials
+}
+
+func (h *Handler) apiKeyBalanceQuotaExhausted(ctx context.Context, auth *coreauth.Auth, now time.Time) bool {
+	if apiKeyBalanceRuntimeQuotaExhausted(auth, now) {
+		return true
+	}
+	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		return false
+	}
+	fetcher := h.apiKeyBalanceFetcher
+	if fetcher == nil {
+		fetcher = h.fetchCodexQuotaPayload
+	}
+	statusCode, payload, err := fetcher(ctx, auth)
+	if err != nil {
+		log.WithError(err).Debug("api key auto-balance quota fetch failed")
+		return false
+	}
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices || len(payload) == 0 {
+		return false
+	}
+	window, ok := lowestCodexQuotaWindow(payload)
+	return ok && window.Remaining <= apiKeyBalanceScoreEpsilon
+}
+
+func apiKeyBalanceRuntimeQuotaExhausted(auth *coreauth.Auth, now time.Time) bool {
+	if auth == nil {
+		return false
+	}
+	if apiKeyBalanceQuotaStateExhausted(auth.Quota, now) {
+		return true
+	}
+	for _, state := range auth.ModelStates {
+		if state != nil && apiKeyBalanceQuotaStateExhausted(state.Quota, now) {
+			return true
+		}
+	}
+	return false
+}
+
+func apiKeyBalanceQuotaStateExhausted(quota coreauth.QuotaState, now time.Time) bool {
+	if !quota.Exceeded {
+		return false
+	}
+	reason := strings.ToLower(strings.TrimSpace(quota.Reason))
+	if reason != "" && reason != "quota" {
+		return false
+	}
+	if quota.NextRecoverAt.IsZero() {
+		return true
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	return quota.NextRecoverAt.After(now)
 }
 
 func planAPIKeyBalance(participants []apiKeyBalanceParticipant, credentials []apiKeyBalanceCredential) []apiKeyBalancePlan {

@@ -7,15 +7,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
-func TestAPIKeyBalanceScannerUsesFiveHourIntervalAndWindow(t *testing.T) {
-	if apiKeyBalanceScanInterval != 5*time.Hour {
-		t.Fatalf("apiKeyBalanceScanInterval = %s, want 5h", apiKeyBalanceScanInterval)
+func TestAPIKeyBalanceScannerUsesThreeHourIntervalAndFiveHourWindow(t *testing.T) {
+	if apiKeyBalanceScanInterval != 3*time.Hour {
+		t.Fatalf("apiKeyBalanceScanInterval = %s, want 3h", apiKeyBalanceScanInterval)
 	}
 	if apiKeyBalanceWindow != 5*time.Hour {
 		t.Fatalf("apiKeyBalanceWindow = %s, want 5h", apiKeyBalanceWindow)
@@ -117,6 +118,107 @@ func TestRebalanceAPIKeyBindingsBalancesKeyCountsWhenTokenDemandIsEqual(t *testi
 	}
 	if counts[autoA.StableIdentity()] != 2 || counts[autoB.StableIdentity()] != 2 {
 		t.Fatalf("binding counts = %+v, want two keys per auto-balance credential", counts)
+	}
+}
+
+func TestRebalanceAPIKeyBindingsDoesNotAssignToQuotaExhaustedCredential(t *testing.T) {
+	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	manager := coreauth.NewManager(nil, nil, nil)
+	autoA := registerBalanceTestCodexAuth(t, manager, "a.json", "acct-a", true)
+	autoB := registerBalanceTestCodexAuth(t, manager, "b.json", "acct-b", true)
+	autoB.Quota = coreauth.QuotaState{
+		Exceeded:      true,
+		Reason:        "quota",
+		NextRecoverAt: now.Add(2 * time.Hour),
+	}
+	if _, err := manager.Update(context.Background(), autoB); err != nil {
+		t.Fatalf("update quota-exhausted auth: %v", err)
+	}
+
+	cfg := &config.Config{
+		SDKConfig: config.SDKConfig{
+			APIKeys: config.FlexAPIKeyList{"sk-1", "sk-2"},
+			APIKeyAuthIdentityBindings: map[string]string{
+				"sk-1": autoA.StableIdentity(),
+				"sk-2": autoA.StableIdentity(),
+			},
+		},
+		Routing: config.RoutingConfig{Strategy: "account-bind"},
+	}
+
+	h := &Handler{cfg: cfg, authManager: manager, usageStats: usage.NewRequestStatistics()}
+	result, err := h.rebalanceAPIKeyBindingsAt(context.Background(), now)
+	if err != nil {
+		t.Fatalf("rebalanceAPIKeyBindingsAt() error = %v", err)
+	}
+
+	if result.Status != "skipped" {
+		t.Fatalf("status = %q, want skipped; assignments=%+v", result.Status, result.Assignments)
+	}
+	if got := cfg.APIKeyAuthIdentityBindings["sk-1"]; got != autoA.StableIdentity() {
+		t.Fatalf("sk-1 binding = %q, want %q", got, autoA.StableIdentity())
+	}
+	if got := cfg.APIKeyAuthIdentityBindings["sk-2"]; got != autoA.StableIdentity() {
+		t.Fatalf("sk-2 binding = %q, want %q", got, autoA.StableIdentity())
+	}
+	for _, assignment := range result.Assignments {
+		if assignment.ToAuthIdentity == autoB.StableIdentity() {
+			t.Fatalf("quota-exhausted credential received assignment: %+v", assignment)
+		}
+	}
+}
+
+func TestRebalanceAPIKeyBindingsDoesNotAssignToRemoteFiveHourQuotaExhaustedCredential(t *testing.T) {
+	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	manager := coreauth.NewManager(nil, nil, nil)
+	autoA := registerBalanceTestCodexAuth(t, manager, "a.json", "acct-a", true)
+	autoB := registerBalanceTestCodexAuth(t, manager, "b.json", "acct-b", true)
+
+	cfg := &config.Config{
+		SDKConfig: config.SDKConfig{
+			APIKeys: config.FlexAPIKeyList{"sk-1", "sk-2"},
+			APIKeyAuthIdentityBindings: map[string]string{
+				"sk-1": autoA.StableIdentity(),
+				"sk-2": autoA.StableIdentity(),
+			},
+		},
+		Routing: config.RoutingConfig{Strategy: "account-bind"},
+	}
+
+	h := &Handler{
+		cfg:         cfg,
+		authManager: manager,
+		usageStats:  usage.NewRequestStatistics(),
+		apiKeyBalanceFetcher: func(_ context.Context, auth *coreauth.Auth) (int, gin.H, error) {
+			usedPercent := 10
+			if auth != nil && auth.StableIdentity() == autoB.StableIdentity() {
+				usedPercent = 100
+			}
+			return 200, gin.H{
+				"rate_limit": gin.H{
+					"allowed":       usedPercent < 100,
+					"limit_reached": usedPercent >= 100,
+					"primary_window": gin.H{
+						"used_percent":         usedPercent,
+						"limit_window_seconds": quotaWarningFiveHourSeconds,
+					},
+				},
+			}, nil
+		},
+	}
+	result, err := h.rebalanceAPIKeyBindingsAt(context.Background(), now)
+	if err != nil {
+		t.Fatalf("rebalanceAPIKeyBindingsAt() error = %v", err)
+	}
+
+	if result.Status != "skipped" {
+		t.Fatalf("status = %q, want skipped; assignments=%+v", result.Status, result.Assignments)
+	}
+	if got := cfg.APIKeyAuthIdentityBindings["sk-1"]; got != autoA.StableIdentity() {
+		t.Fatalf("sk-1 binding = %q, want %q", got, autoA.StableIdentity())
+	}
+	if got := cfg.APIKeyAuthIdentityBindings["sk-2"]; got != autoA.StableIdentity() {
+		t.Fatalf("sk-2 binding = %q, want %q", got, autoA.StableIdentity())
 	}
 }
 

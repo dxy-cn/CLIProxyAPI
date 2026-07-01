@@ -37,38 +37,39 @@ const attemptMaxIdleTime = 2 * time.Hour
 
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
-	cfg                 *config.Config
-	configFilePath      string
-	mu                  sync.Mutex
-	attemptsMu          sync.Mutex
-	failedAttempts      map[string]*attemptInfo // keyed by client IP
-	authManager         *coreauth.Manager
-	usageStats          *usage.RequestStatistics
-	tokenStore          coreauth.Store
-	localPassword       string
-	allowRemoteOverride bool
-	envSecret           string
-	logDir              string
-	postAuthHook        coreauth.PostAuthHook
-	apiKeyStore         apikeys.Store
-	configUpdateHook    func(*config.Config)
-	attemptCleanupStop  chan struct{}
-	attemptCleanupDone  chan struct{}
-	attemptCleanupOnce  sync.Once
-	quotaWarningMu      sync.Mutex
-	quotaWarningSent    map[string]struct{}
-	quotaWarningSender  quotaWarningSender
-	quotaWarningFetcher quotaWarningQuotaFetcher
-	quotaWarningVersion int64
-	quotaWarningScanMu  sync.Mutex
-	quotaWarningRunning bool
-	quotaWarningStop    chan struct{}
-	quotaWarningDone    chan struct{}
-	quotaWarningOnce    sync.Once
-	apiKeyBalanceMu     sync.Mutex
-	apiKeyBalanceStop   chan struct{}
-	apiKeyBalanceDone   chan struct{}
-	apiKeyBalanceOnce   sync.Once
+	cfg                  *config.Config
+	configFilePath       string
+	mu                   sync.Mutex
+	attemptsMu           sync.Mutex
+	failedAttempts       map[string]*attemptInfo // keyed by client IP
+	authManager          *coreauth.Manager
+	usageStats           *usage.RequestStatistics
+	tokenStore           coreauth.Store
+	localPassword        string
+	allowRemoteOverride  bool
+	envSecret            string
+	logDir               string
+	postAuthHook         coreauth.PostAuthHook
+	apiKeyStore          apikeys.Store
+	configUpdateHook     func(*config.Config)
+	attemptCleanupStop   chan struct{}
+	attemptCleanupDone   chan struct{}
+	attemptCleanupOnce   sync.Once
+	quotaWarningMu       sync.Mutex
+	quotaWarningSent     map[string]struct{}
+	quotaWarningSender   quotaWarningSender
+	quotaWarningFetcher  quotaWarningQuotaFetcher
+	quotaWarningVersion  int64
+	quotaWarningScanMu   sync.Mutex
+	quotaWarningRunning  bool
+	quotaWarningStop     chan struct{}
+	quotaWarningDone     chan struct{}
+	quotaWarningOnce     sync.Once
+	apiKeyBalanceMu      sync.Mutex
+	apiKeyBalanceFetcher apiKeyBalanceQuotaFetcher
+	apiKeyBalanceStop    chan struct{}
+	apiKeyBalanceDone    chan struct{}
+	apiKeyBalanceOnce    sync.Once
 }
 
 // NewHandler creates a new management handler instance.
