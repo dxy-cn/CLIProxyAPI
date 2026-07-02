@@ -1,7 +1,6 @@
 package management
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -355,11 +354,8 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 	}
 	oldCfg := h.cfg
 	h.cfg = newCfg
-	dispatchQuotaWarnings := h.shouldDispatchQuotaWarningsAfterConfigChange(oldCfg, newCfg)
 	h.mu.Unlock()
-	if dispatchQuotaWarnings {
-		go h.dispatchQuotaWarningsForCurrentCodexAuths(context.Background())
-	}
+	h.applyConfigRuntimeChanges(oldCfg, newCfg)
 	if updatedData, errRead := os.ReadFile(h.configFilePath); errRead == nil {
 		setConfigVersionHeaders(c, configContentHash(updatedData))
 	}

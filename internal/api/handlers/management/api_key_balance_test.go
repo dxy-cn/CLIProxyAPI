@@ -14,12 +14,61 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
-func TestAPIKeyBalanceScannerUsesThreeHourIntervalAndFiveHourWindow(t *testing.T) {
-	if apiKeyBalanceScanInterval != 3*time.Hour {
-		t.Fatalf("apiKeyBalanceScanInterval = %s, want 3h", apiKeyBalanceScanInterval)
+func TestAPIKeyBalanceScannerUsesConfiguredIntervalAndFiveHourWindow(t *testing.T) {
+	enabledCfg := &config.Config{
+		Routing: config.RoutingConfig{
+			Strategy:                     "account-bind",
+			APIKeyBalanceIntervalMinutes: apiKeyBalanceIntervalTestPtr(45),
+		},
+	}
+	if got := apiKeyBalanceScanInterval(enabledCfg); got != 45*time.Minute {
+		t.Fatalf("apiKeyBalanceScanInterval(enabled) = %s, want 45m", got)
+	}
+	disabledCfg := &config.Config{
+		Routing: config.RoutingConfig{
+			Strategy:                     "account-bind",
+			APIKeyBalanceIntervalMinutes: apiKeyBalanceIntervalTestPtr(0),
+		},
+	}
+	if got := apiKeyBalanceScanInterval(disabledCfg); got != 0 {
+		t.Fatalf("apiKeyBalanceScanInterval(disabled) = %s, want disabled", got)
+	}
+	nonAccountBindCfg := &config.Config{
+		Routing: config.RoutingConfig{
+			Strategy:                     "round-robin",
+			APIKeyBalanceIntervalMinutes: apiKeyBalanceIntervalTestPtr(45),
+		},
+	}
+	if got := apiKeyBalanceScanInterval(nonAccountBindCfg); got != 0 {
+		t.Fatalf("apiKeyBalanceScanInterval(round-robin) = %s, want disabled", got)
 	}
 	if apiKeyBalanceWindow != 5*time.Hour {
 		t.Fatalf("apiKeyBalanceWindow = %s, want 5h", apiKeyBalanceWindow)
+	}
+}
+
+func apiKeyBalanceIntervalTestPtr(value int) *int {
+	return &value
+}
+
+func TestRebalanceAPIKeyBindingsSkipsWhenBalanceDisabled(t *testing.T) {
+	h := &Handler{
+		cfg: &config.Config{
+			Routing: config.RoutingConfig{
+				Strategy:                     "account-bind",
+				APIKeyBalanceIntervalMinutes: apiKeyBalanceIntervalTestPtr(0),
+			},
+		},
+	}
+	result, err := h.rebalanceAPIKeyBindingsAt(context.Background(), time.Now())
+	if err != nil {
+		t.Fatalf("rebalanceAPIKeyBindingsAt() error = %v", err)
+	}
+	if result.Status != "skipped" {
+		t.Fatalf("status = %q, want skipped", result.Status)
+	}
+	if result.Reason != "api key balance disabled" {
+		t.Fatalf("reason = %q, want disabled", result.Reason)
 	}
 }
 

@@ -37,39 +37,40 @@ const attemptMaxIdleTime = 2 * time.Hour
 
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
-	cfg                  *config.Config
-	configFilePath       string
-	mu                   sync.Mutex
-	attemptsMu           sync.Mutex
-	failedAttempts       map[string]*attemptInfo // keyed by client IP
-	authManager          *coreauth.Manager
-	usageStats           *usage.RequestStatistics
-	tokenStore           coreauth.Store
-	localPassword        string
-	allowRemoteOverride  bool
-	envSecret            string
-	logDir               string
-	postAuthHook         coreauth.PostAuthHook
-	apiKeyStore          apikeys.Store
-	configUpdateHook     func(*config.Config)
-	attemptCleanupStop   chan struct{}
-	attemptCleanupDone   chan struct{}
-	attemptCleanupOnce   sync.Once
-	quotaWarningMu       sync.Mutex
-	quotaWarningSent     map[string]struct{}
-	quotaWarningSender   quotaWarningSender
-	quotaWarningFetcher  quotaWarningQuotaFetcher
-	quotaWarningVersion  int64
-	quotaWarningScanMu   sync.Mutex
-	quotaWarningRunning  bool
-	quotaWarningStop     chan struct{}
-	quotaWarningDone     chan struct{}
-	quotaWarningOnce     sync.Once
-	apiKeyBalanceMu      sync.Mutex
-	apiKeyBalanceFetcher apiKeyBalanceQuotaFetcher
-	apiKeyBalanceStop    chan struct{}
-	apiKeyBalanceDone    chan struct{}
-	apiKeyBalanceOnce    sync.Once
+	cfg                   *config.Config
+	configFilePath        string
+	mu                    sync.Mutex
+	attemptsMu            sync.Mutex
+	failedAttempts        map[string]*attemptInfo // keyed by client IP
+	authManager           *coreauth.Manager
+	usageStats            *usage.RequestStatistics
+	tokenStore            coreauth.Store
+	localPassword         string
+	allowRemoteOverride   bool
+	envSecret             string
+	logDir                string
+	postAuthHook          coreauth.PostAuthHook
+	apiKeyStore           apikeys.Store
+	configUpdateHook      func(*config.Config)
+	attemptCleanupStop    chan struct{}
+	attemptCleanupDone    chan struct{}
+	attemptCleanupOnce    sync.Once
+	quotaWarningMu        sync.Mutex
+	quotaWarningSent      map[string]struct{}
+	quotaWarningSender    quotaWarningSender
+	quotaWarningFetcher   quotaWarningQuotaFetcher
+	quotaWarningVersion   int64
+	quotaWarningScanMu    sync.Mutex
+	quotaWarningRunning   bool
+	quotaWarningStop      chan struct{}
+	quotaWarningDone      chan struct{}
+	quotaWarningOnce      sync.Once
+	apiKeyBalanceMu       sync.Mutex
+	apiKeyBalanceFetcher  apiKeyBalanceQuotaFetcher
+	apiKeyBalanceWorkerMu sync.Mutex
+	apiKeyBalanceStop     chan struct{}
+	apiKeyBalanceDone     chan struct{}
+	apiKeyBalanceInterval time.Duration
 }
 
 // NewHandler creates a new management handler instance.
@@ -92,15 +93,13 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		quotaWarningSender:  sendWeComQuotaWarning,
 		quotaWarningStop:    make(chan struct{}),
 		quotaWarningDone:    make(chan struct{}),
-		apiKeyBalanceStop:   make(chan struct{}),
-		apiKeyBalanceDone:   make(chan struct{}),
 	}
 	if store, ok := h.tokenStore.(apikeys.Store); ok {
 		h.apiKeyStore = store
 	}
 	h.startAttemptCleanup()
 	h.startQuotaWarningScanner(context.Background(), quotaWarningScanInterval)
-	h.startAPIKeyBalanceScanner(context.Background(), apiKeyBalanceScanInterval)
+	h.startAPIKeyBalanceScanner(context.Background(), apiKeyBalanceScanInterval(cfg))
 	return h
 }
 
@@ -137,19 +136,12 @@ func (h *Handler) Close() error {
 			close(h.quotaWarningStop)
 		}
 	})
-	h.apiKeyBalanceOnce.Do(func() {
-		if h.apiKeyBalanceStop != nil {
-			close(h.apiKeyBalanceStop)
-		}
-	})
+	h.stopAPIKeyBalanceScanner()
 	if h.attemptCleanupDone != nil {
 		<-h.attemptCleanupDone
 	}
 	if h.quotaWarningDone != nil {
 		<-h.quotaWarningDone
-	}
-	if h.apiKeyBalanceDone != nil {
-		<-h.apiKeyBalanceDone
 	}
 	return nil
 }
@@ -187,7 +179,15 @@ func (h *Handler) SetConfig(cfg *config.Config) {
 	h.cfg = cfg
 	h.mu.Unlock()
 
-	if h.shouldDispatchQuotaWarningsAfterConfigChange(oldCfg, cfg) {
+	h.applyConfigRuntimeChanges(oldCfg, cfg)
+}
+
+func (h *Handler) applyConfigRuntimeChanges(oldCfg *config.Config, newCfg *config.Config) {
+	if h == nil {
+		return
+	}
+	h.restartAPIKeyBalanceScanner(context.Background(), apiKeyBalanceScanInterval(newCfg))
+	if h.shouldDispatchQuotaWarningsAfterConfigChange(oldCfg, newCfg) {
 		go h.dispatchQuotaWarningsForCurrentCodexAuths(context.Background())
 	}
 }

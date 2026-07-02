@@ -20,10 +20,11 @@ import (
 )
 
 const (
-	DefaultPanelReleaseURL       = "https://a1.dxycdn.com/gitrepo/ai-proxy-management/dist/index.html"
-	DefaultPanelGitHubRepository = "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
-	DefaultPprofAddr             = "127.0.0.1:8316"
-	DefaultAuthDir               = "~/.cli-proxy-api"
+	DefaultPanelReleaseURL              = "https://a1.dxycdn.com/gitrepo/ai-proxy-management/dist/index.html"
+	DefaultPanelGitHubRepository        = "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
+	DefaultPprofAddr                    = "127.0.0.1:8316"
+	DefaultAuthDir                      = "~/.cli-proxy-api"
+	DefaultAPIKeyBalanceIntervalMinutes = 180
 )
 
 // Config represents the application's configuration, loaded from a YAML file.
@@ -257,6 +258,17 @@ type RoutingConfig struct {
 	// that have no explicit binding when strategy is "account-bind".
 	// The runtime resolves it to the current auth_index. Leave empty to require per-key bindings.
 	DefaultModelAccount string `yaml:"default-model-account,omitempty" json:"default-model-account,omitempty"`
+
+	// APIKeyBalanceIntervalMinutes controls how often account-bind API key assignments are rebalanced.
+	// Missing keeps the default. Values <= 0 disable API key rebalancing.
+	APIKeyBalanceIntervalMinutes *int `yaml:"api-key-balance-interval-minutes,omitempty" json:"api-key-balance-interval-minutes,omitempty"`
+}
+
+func (r RoutingConfig) APIKeyBalanceIntervalMinutesOrDefault() int {
+	if r.APIKeyBalanceIntervalMinutes == nil {
+		return DefaultAPIKeyBalanceIntervalMinutes
+	}
+	return *r.APIKeyBalanceIntervalMinutes
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.

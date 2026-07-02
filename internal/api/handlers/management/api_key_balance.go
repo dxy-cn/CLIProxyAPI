@@ -20,7 +20,6 @@ import (
 
 const (
 	apiKeyBalanceWindow       = 5 * time.Hour
-	apiKeyBalanceScanInterval = 3 * time.Hour
 	apiKeyBalanceScoreEpsilon = 0.000001
 )
 
@@ -95,23 +94,87 @@ func (h *Handler) startAPIKeyBalanceScanner(ctx context.Context, interval time.D
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	go func() {
-		if h.apiKeyBalanceDone != nil {
-			defer close(h.apiKeyBalanceDone)
-		}
+
+	h.apiKeyBalanceWorkerMu.Lock()
+	if h.apiKeyBalanceStop != nil {
+		h.apiKeyBalanceWorkerMu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	h.apiKeyBalanceStop = stop
+	h.apiKeyBalanceDone = done
+	h.apiKeyBalanceInterval = interval
+	h.apiKeyBalanceWorkerMu.Unlock()
+
+	go func(stop <-chan struct{}, done chan<- struct{}) {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-h.apiKeyBalanceStop:
+			case <-stop:
 				return
 			case <-ticker.C:
 				h.runAPIKeyBalanceScan(ctx)
 			}
 		}
-	}()
+	}(stop, done)
+}
+
+func (h *Handler) restartAPIKeyBalanceScanner(ctx context.Context, interval time.Duration) {
+	if h == nil {
+		return
+	}
+	h.apiKeyBalanceWorkerMu.Lock()
+	running := h.apiKeyBalanceStop != nil
+	currentInterval := h.apiKeyBalanceInterval
+	h.apiKeyBalanceWorkerMu.Unlock()
+	if running && currentInterval == interval {
+		return
+	}
+	h.stopAPIKeyBalanceScanner()
+	h.startAPIKeyBalanceScanner(ctx, interval)
+}
+
+func (h *Handler) stopAPIKeyBalanceScanner() {
+	if h == nil {
+		return
+	}
+	h.apiKeyBalanceWorkerMu.Lock()
+	stop := h.apiKeyBalanceStop
+	done := h.apiKeyBalanceDone
+	h.apiKeyBalanceStop = nil
+	h.apiKeyBalanceDone = nil
+	h.apiKeyBalanceInterval = 0
+	if stop != nil {
+		close(stop)
+	}
+	h.apiKeyBalanceWorkerMu.Unlock()
+	if done != nil {
+		<-done
+	}
+}
+
+func apiKeyBalanceScanInterval(cfg *config.Config) time.Duration {
+	if !apiKeyBalanceConfigEnabled(cfg) {
+		return 0
+	}
+	minutes := cfg.Routing.APIKeyBalanceIntervalMinutesOrDefault()
+	return time.Duration(minutes) * time.Minute
+}
+
+func apiKeyBalanceConfigEnabled(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	strategy, ok := coreauth.NormalizeRoutingStrategy(cfg.Routing.Strategy)
+	if !ok || strategy != coreauth.RoutingStrategyAccountBind {
+		return false
+	}
+	return cfg.Routing.APIKeyBalanceIntervalMinutesOrDefault() > 0
 }
 
 func (h *Handler) runAPIKeyBalanceScan(ctx context.Context) {
@@ -150,6 +213,10 @@ func (h *Handler) rebalanceAPIKeyBindingsAt(ctx context.Context, now time.Time) 
 
 	if strategy, ok := coreauth.NormalizeRoutingStrategy(h.cfg.Routing.Strategy); !ok || strategy != coreauth.RoutingStrategyAccountBind {
 		result.Reason = "account-bind routing required"
+		return result, nil
+	}
+	if !apiKeyBalanceConfigEnabled(h.cfg) {
+		result.Reason = "api key balance disabled"
 		return result, nil
 	}
 
