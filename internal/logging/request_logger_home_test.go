@@ -385,6 +385,63 @@ func TestFileRequestLogger_HomeEnabled_ForwardsStreamingRequestID(t *testing.T) 
 	}
 }
 
+func TestHomeStreamingLogWriter_CloseReleasesResourcesWhenHeartbeatDrops(t *testing.T) {
+	original := currentHomeRequestLogClient
+	defer func() {
+		currentHomeRequestLogClient = original
+	}()
+
+	stub := &stubHomeRequestLogClient{heartbeatOK: true}
+	currentHomeRequestLogClient = func() homeRequestLogClient {
+		return stub
+	}
+
+	logger := NewFileRequestLogger(true, t.TempDir(), "", 0)
+	logger.SetHomeEnabled(true)
+
+	writer, errLog := logger.LogStreamingRequest(
+		"/v1/responses",
+		http.MethodPost,
+		map[string][]string{"Content-Type": {"application/json"}},
+		[]byte(`{"input":"hello"}`),
+		"stream-req-heartbeat-drop",
+	)
+	if errLog != nil {
+		t.Fatalf("LogStreamingRequest error: %v", errLog)
+	}
+
+	homeWriter, ok := writer.(*homeStreamingLogWriter)
+	if !ok {
+		t.Fatalf("writer type = %T, want *homeStreamingLogWriter", writer)
+	}
+	t.Cleanup(func() {
+		if homeWriter.chunkChan != nil {
+			close(homeWriter.chunkChan)
+			<-homeWriter.doneChan
+			homeWriter.chunkChan = nil
+		}
+	})
+
+	writer.WriteChunkAsync([]byte("data: ok\n\n"))
+	stub.heartbeatOK = false
+
+	if errClose := writer.Close(); errClose != nil {
+		t.Fatalf("Close error: %v", errClose)
+	}
+
+	if homeWriter.chunkChan != nil {
+		t.Fatal("Close left chunkChan open after Home heartbeat dropped")
+	}
+	select {
+	case <-homeWriter.doneChan:
+	default:
+		t.Fatal("Close did not wait for the streaming log goroutine to stop")
+	}
+	if len(stub.pushed) != 0 {
+		t.Fatalf("home pushed records = %d, want 0 when heartbeat is down", len(stub.pushed))
+	}
+}
+
 func TestFileRequestLogger_HomeEnabled_DoesNotForwardForcedErrorLogsWhenRequestLogDisabled(t *testing.T) {
 	original := currentHomeRequestLogClient
 	defer func() {

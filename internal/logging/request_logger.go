@@ -2137,15 +2137,17 @@ func (w *homeStreamingLogWriter) Close() error {
 		return nil
 	}
 
+	if w.chunkChan != nil {
+		close(w.chunkChan)
+		if w.doneChan != nil {
+			<-w.doneChan
+		}
+		w.chunkChan = nil
+	}
+
 	client := currentHomeRequestLogClient()
 	if client == nil || !client.HeartbeatOK() {
 		return nil
-	}
-
-	if w.chunkChan != nil {
-		close(w.chunkChan)
-		<-w.doneChan
-		w.chunkChan = nil
 	}
 
 	responsePayload := w.responseBody.Bytes()
