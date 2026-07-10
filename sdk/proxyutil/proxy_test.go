@@ -76,6 +76,9 @@ func TestBuildHTTPTransportDirectBypassesProxy(t *testing.T) {
 	if transport.Proxy != nil {
 		t.Fatal("expected direct transport to disable proxy function")
 	}
+	if transport.MaxIdleConnsPerHost < 500 {
+		t.Fatalf("MaxIdleConnsPerHost = %d, want at least 500", transport.MaxIdleConnsPerHost)
+	}
 }
 
 func TestBuildHTTPTransportHTTPProxy(t *testing.T) {
