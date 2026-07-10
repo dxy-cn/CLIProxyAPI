@@ -16,7 +16,7 @@
 - Do not enable or change routing for `gpt-image-1.5` or `codex/gpt-image-1.5`.
 - Do not change XAI image models, configured OpenAI-compatible image models, ordinary Codex requests, AuthManager selection, selector, scheduler, monitoring, quota warning, account binding, or request logging.
 - Do not add a post-connection network timeout.
-- Keep the upstream `internal/runtime/executor/codex_openai_images.go` implementation byte-for-byte identical to `upstream/main`; place the target-only reachability guard in existing dispatch and handler code.
+- Keep the upstream `internal/runtime/executor/codex_openai_images.go` image behavior identical to `upstream/main`. The current local Codex executor intentionally retains an older `cacheHelper` contract, so the only permitted source adaptation in that upstream file is renaming its four cache-helper calls to an image-scoped compatibility method; place the compatibility method and upstream identity-confusion dependency closure in `codex_openai_images_compat.go` so ordinary Codex requests remain untouched.
 - Use test-first red-green cycles for every production behavior change.
 - Run `gofmt` after Go changes and the repository-required full test and server build before completion.
 
@@ -26,6 +26,7 @@
 
 **Files:**
 - Create from upstream: `internal/runtime/executor/codex_openai_images.go`
+- Create for local API compatibility: `internal/runtime/executor/codex_openai_images_compat.go`
 - Create and adapt for target-only coverage: `internal/runtime/executor/codex_openai_images_test.go`
 - Create from upstream: `internal/runtime/executor/codex_openai_images_extract_test.go`
 - Modify: `internal/runtime/executor/codex_executor.go`
@@ -147,7 +148,7 @@ go test ./internal/runtime/executor -run 'TestIsCodexGPTImage2Request|TestResolv
 
 Expected: FAIL to compile because `isCodexGPTImage2Request`, `codexOpenAIImageTestOptions`, or restored image-executor functions are undefined. The failure must be caused by the missing production executor, not a malformed test.
 
-- [ ] **Step 6: Restore the complete upstream production executor**
+- [ ] **Step 6: Restore the complete upstream production executor and add its image-scoped compatibility boundary**
 
 Restore the exact upstream blob:
 
@@ -155,13 +156,17 @@ Restore the exact upstream blob:
 git restore --source upstream/main --worktree -- internal/runtime/executor/codex_openai_images.go
 ```
 
-Verify exact identity:
+The local `cacheHelper` has a deliberately preserved five-argument contract, while the upstream image executor expects the newer seven-argument identity-confusion contract. Add `codex_openai_images_compat.go` containing the upstream identity-confusion state and transforms plus `codexOpenAIImageCacheHelper`, which implements the newer contract without changing the existing `cacheHelper` or ordinary Codex paths.
+
+Rename only the four image file calls from `e.cacheHelper(...)` to `e.codexOpenAIImageCacheHelper(...)`.
+
+Verify that this is the complete production-file deviation:
 
 ```bash
-test "$(git hash-object internal/runtime/executor/codex_openai_images.go)" = "$(git rev-parse upstream/main:internal/runtime/executor/codex_openai_images.go)"
+git diff --unified=0 upstream/main -- internal/runtime/executor/codex_openai_images.go
 ```
 
-Expected: exit code `0`.
+Expected: exactly four one-line call-site renames and no other differences.
 
 - [ ] **Step 7: Add the target-only dispatch guard and dispatch calls**
 
@@ -203,20 +208,20 @@ go test ./internal/runtime/executor -run 'TestIsCodexGPTImage2Request|TestResolv
 
 Expected: PASS.
 
-- [ ] **Step 9: Verify the upstream production blob remained exact**
+- [ ] **Step 9: Verify the upstream production behavior diff remains limited to compatibility call-site names**
 
 Run:
 
 ```bash
-test "$(git hash-object internal/runtime/executor/codex_openai_images.go)" = "$(git rev-parse upstream/main:internal/runtime/executor/codex_openai_images.go)"
+git diff --unified=0 upstream/main -- internal/runtime/executor/codex_openai_images.go
 ```
 
-Expected: exit code `0`.
+Expected: exactly four one-line `cacheHelper` to `codexOpenAIImageCacheHelper` renames.
 
 - [ ] **Step 10: Commit the executor deliverable**
 
 ```bash
-git add internal/runtime/executor/codex_openai_images.go internal/runtime/executor/codex_openai_images_test.go internal/runtime/executor/codex_openai_images_extract_test.go internal/runtime/executor/codex_executor.go internal/runtime/executor/codex_executor_imagegen_test.go
+git add internal/runtime/executor/codex_openai_images.go internal/runtime/executor/codex_openai_images_compat.go internal/runtime/executor/codex_openai_images_test.go internal/runtime/executor/codex_openai_images_extract_test.go internal/runtime/executor/codex_executor.go internal/runtime/executor/codex_executor_imagegen_test.go
 git commit -m "feat(codex): restore GPT Image 2 image executor"
 ```
 
@@ -388,16 +393,16 @@ git commit -m "fix(openai): route GPT Image 2 through image executor"
 - Consumes: all deliverables from Tasks 1 and 2.
 - Produces: fresh test, build, diff, and Git evidence for completion.
 
-- [ ] **Step 1: Verify the upstream executor blob is still exact**
+- [ ] **Step 1: Verify the upstream executor differs only at the compatibility call sites**
 
 Run:
 
 ```bash
-test "$(git hash-object internal/runtime/executor/codex_openai_images.go)" = "$(git rev-parse upstream/main:internal/runtime/executor/codex_openai_images.go)"
-echo upstream_executor_exact=yes
+git diff --unified=0 upstream/main -- internal/runtime/executor/codex_openai_images.go
+echo upstream_executor_behavior_synced=yes
 ```
 
-Expected: `upstream_executor_exact=yes`.
+Expected: four one-line cache-helper call-site renames followed by `upstream_executor_behavior_synced=yes`.
 
 - [ ] **Step 2: Run focused executor and handler packages**
 
@@ -436,7 +441,7 @@ Expected: exit code `0` and `/tmp/cli-proxy-api-build` exists.
 Run:
 
 ```bash
-gofmt -w internal/runtime/executor/codex_openai_images.go internal/runtime/executor/codex_openai_images_test.go internal/runtime/executor/codex_openai_images_extract_test.go internal/runtime/executor/codex_executor.go internal/runtime/executor/codex_executor_imagegen_test.go sdk/api/handlers/openai/openai_images_handlers.go sdk/api/handlers/openai/openai_images_handlers_test.go
+gofmt -w internal/runtime/executor/codex_openai_images.go internal/runtime/executor/codex_openai_images_compat.go internal/runtime/executor/codex_openai_images_test.go internal/runtime/executor/codex_openai_images_extract_test.go internal/runtime/executor/codex_executor.go internal/runtime/executor/codex_executor_imagegen_test.go sdk/api/handlers/openai/openai_images_handlers.go sdk/api/handlers/openai/openai_images_handlers_test.go
 git diff --check HEAD~2..HEAD
 make -C .. codex-sensitive-scan
 ```
@@ -457,6 +462,7 @@ Expected production changes are limited to:
 
 ```text
 internal/runtime/executor/codex_openai_images.go
+internal/runtime/executor/codex_openai_images_compat.go
 internal/runtime/executor/codex_executor.go
 sdk/api/handlers/openai/openai_images_handlers.go
 ```

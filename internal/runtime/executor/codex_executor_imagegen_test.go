@@ -3,7 +3,10 @@ package executor
 import (
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
 
@@ -114,5 +117,54 @@ func TestEnsureImageGenerationTool_FreeCodexAuthDoesNotInjectTool(t *testing.T) 
 	}
 	if gjson.GetBytes(result, "tools").Exists() {
 		t.Fatalf("expected no tools for free codex auth, got %s", gjson.GetBytes(result, "tools").Raw)
+	}
+}
+
+func TestIsCodexGPTImage2Request(t *testing.T) {
+	imageOptions := cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-image"),
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestPathMetadataKey: "/v1/images/generations",
+		},
+	}
+
+	tests := []struct {
+		name  string
+		model string
+		opts  cliproxyexecutor.Options
+		want  bool
+	}{
+		{name: "GPT Image 2", model: "gpt-image-2", opts: imageOptions, want: true},
+		{name: "prefixed GPT Image 2", model: "codex/gpt-image-2", opts: imageOptions, want: true},
+		{name: "GPT Image 1.5 remains isolated", model: "gpt-image-1.5", opts: imageOptions, want: false},
+		{name: "ordinary Codex request", model: "gpt-image-2", opts: cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response")}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isCodexGPTImage2Request(cliproxyexecutor.Request{Model: tt.model}, tt.opts); got != tt.want {
+				t.Fatalf("isCodexGPTImage2Request(%q) = %v, want %v", tt.model, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveGPTImage2BaseModel(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want string
+	}{
+		{name: "default", cfg: &config.Config{}, want: "gpt-5.4-mini"},
+		{name: "configured", cfg: &config.Config{SDKConfig: config.SDKConfig{GPTImage2BaseModel: "gpt-5.6-luna"}}, want: "gpt-5.6-luna"},
+		{name: "reject non GPT value", cfg: &config.Config{SDKConfig: config.SDKConfig{GPTImage2BaseModel: "claude-sonnet"}}, want: "gpt-5.4-mini"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NewCodexExecutor(tt.cfg).resolveGPTImage2BaseModel(); got != tt.want {
+				t.Fatalf("resolveGPTImage2BaseModel() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
