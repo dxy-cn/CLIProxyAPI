@@ -27,25 +27,32 @@ func (p *defaultRoundTripperProvider) RoundTripperFor(auth *coreauth.Auth) http.
 		return nil
 	}
 	proxyStr := strings.TrimSpace(auth.ProxyURL)
-	if proxyStr == "" {
-		return nil
+	cacheKey := proxyStr
+	if cacheKey == "" {
+		cacheKey = "__inherit__"
 	}
 	p.mu.RLock()
-	rt := p.cache[proxyStr]
+	rt := p.cache[cacheKey]
 	p.mu.RUnlock()
 	if rt != nil {
 		return rt
 	}
-	transport, _, errBuild := proxyutil.BuildHTTPTransport(proxyStr)
-	if errBuild != nil {
-		log.Errorf("%v", errBuild)
-		return nil
+	var transport *http.Transport
+	if proxyStr == "" {
+		transport = proxyutil.NewInheritTransport()
+	} else {
+		var errBuild error
+		transport, _, errBuild = proxyutil.BuildHTTPTransport(proxyStr)
+		if errBuild != nil {
+			log.Errorf("%v", errBuild)
+			return nil
+		}
 	}
 	if transport == nil {
 		return nil
 	}
 	p.mu.Lock()
-	p.cache[proxyStr] = transport
+	p.cache[cacheKey] = transport
 	p.mu.Unlock()
 	return transport
 }

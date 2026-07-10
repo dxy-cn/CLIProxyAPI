@@ -14,6 +14,11 @@ import (
 	"golang.org/x/net/proxy"
 )
 
+const (
+	defaultMaxIdleConns        = 2048
+	defaultMaxIdleConnsPerHost = 1024
+)
+
 // Mode describes how a proxy setting should be interpreted.
 type Mode int
 
@@ -73,9 +78,27 @@ func Parse(raw string) (Setting, error) {
 
 func cloneDefaultTransport() *http.Transport {
 	if transport, ok := http.DefaultTransport.(*http.Transport); ok && transport != nil {
-		return transport.Clone()
+		return tuneTransportPool(transport.Clone())
 	}
-	return &http.Transport{}
+	return tuneTransportPool(&http.Transport{})
+}
+
+func tuneTransportPool(transport *http.Transport) *http.Transport {
+	if transport == nil {
+		return nil
+	}
+	if transport.MaxIdleConns < defaultMaxIdleConns {
+		transport.MaxIdleConns = defaultMaxIdleConns
+	}
+	if transport.MaxIdleConnsPerHost < defaultMaxIdleConnsPerHost {
+		transport.MaxIdleConnsPerHost = defaultMaxIdleConnsPerHost
+	}
+	return transport
+}
+
+// NewInheritTransport returns a pooled transport that keeps the default proxy behavior.
+func NewInheritTransport() *http.Transport {
+	return cloneDefaultTransport()
 }
 
 // NewDirectTransport returns a transport that bypasses environment proxies.
