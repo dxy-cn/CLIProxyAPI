@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -363,6 +364,16 @@ func headersFromContext(ctx context.Context) http.Header {
 	}
 	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
 		return ginCtx.Request.Header.Clone()
+	}
+	return nil
+}
+
+func queryFromContext(ctx context.Context) url.Values {
+	if ctx == nil {
+		return nil
+	}
+	if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil && ginCtx.Request.URL != nil {
+		return cloneURLValues(ginCtx.Request.URL.Query())
 	}
 	return nil
 }
@@ -732,9 +743,22 @@ func (h *BaseAPIHandler) ExecuteImageWithAuthManager(ctx context.Context, handle
 }
 
 func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string, allowImageModel bool) ([]byte, http.Header, *interfaces.ErrorMessage) {
-	providers, normalizedModel, errMsg := h.getRequestDetailsWithOptions(modelName, allowImageModel)
-	if errMsg != nil {
-		return nil, nil, errMsg
+	return h.executeWithAuthManagerFormats(ctx, handlerType, handlerType, modelName, rawJSON, alt, allowImageModel, modelExecutionOptions{})
+}
+
+func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
+	handlerType := entryProtocol
+	var providers []string
+	var normalizedModel string
+	if forcedProvider := strings.TrimSpace(execOptions.ForcedProvider); forcedProvider != "" {
+		providers = []string{forcedProvider}
+		normalizedModel = modelName
+	} else {
+		var errMsg *interfaces.ErrorMessage
+		providers, normalizedModel, errMsg = h.getRequestDetailsWithOptions(modelName, allowImageModel)
+		if errMsg != nil {
+			return nil, nil, errMsg
+		}
 	}
 	providers = filterProvidersByToolCompatibility(providers, rawJSON)
 	if len(providers) == 0 {
@@ -742,6 +766,10 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
+	if authSelectionModel := strings.TrimSpace(execOptions.AuthSelectionModel); authSelectionModel != "" {
+		reqMeta[coreexecutor.AuthSelectionModelMetadataKey] = authSelectionModel
+	}
+	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON
@@ -757,7 +785,9 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
 		Alt:             alt,
 		OriginalRequest: rawJSON,
 		SourceFormat:    sdktranslator.FromString(handlerType),
-		Headers:         headersFromContext(ctx),
+		ResponseFormat:  sdktranslator.FromString(modelExecutionResponseProtocol(entryProtocol, exitProtocol)),
+		Headers:         modelExecutionHeaders(ctx, execOptions.Headers),
+		Query:           modelExecutionQuery(ctx, execOptions.Query),
 	}
 	opts.Metadata = reqMeta
 	resp, err := h.AuthManager.Execute(ctx, providers, req, opts)
@@ -850,12 +880,25 @@ func (h *BaseAPIHandler) ExecuteImageStreamWithAuthManager(ctx context.Context, 
 }
 
 func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string, allowImageModel bool) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
-	providers, normalizedModel, errMsg := h.getRequestDetailsWithOptions(modelName, allowImageModel)
-	if errMsg != nil {
-		errChan := make(chan *interfaces.ErrorMessage, 1)
-		errChan <- errMsg
-		close(errChan)
-		return nil, nil, errChan
+	return h.executeStreamWithAuthManagerFormats(ctx, handlerType, handlerType, modelName, rawJSON, alt, allowImageModel, modelExecutionOptions{})
+}
+
+func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
+	handlerType := entryProtocol
+	var providers []string
+	var normalizedModel string
+	if forcedProvider := strings.TrimSpace(execOptions.ForcedProvider); forcedProvider != "" {
+		providers = []string{forcedProvider}
+		normalizedModel = modelName
+	} else {
+		var errMsg *interfaces.ErrorMessage
+		providers, normalizedModel, errMsg = h.getRequestDetailsWithOptions(modelName, allowImageModel)
+		if errMsg != nil {
+			errChan := make(chan *interfaces.ErrorMessage, 1)
+			errChan <- errMsg
+			close(errChan)
+			return nil, nil, errChan
+		}
 	}
 	providers = filterProvidersByToolCompatibility(providers, rawJSON)
 	if len(providers) == 0 {
@@ -866,6 +909,10 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 	}
 	reqMeta := requestExecutionMetadata(ctx)
 	reqMeta[coreexecutor.RequestedModelMetadataKey] = modelName
+	if authSelectionModel := strings.TrimSpace(execOptions.AuthSelectionModel); authSelectionModel != "" {
+		reqMeta[coreexecutor.AuthSelectionModelMetadataKey] = authSelectionModel
+	}
+	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
 	setReasoningEffortMetadata(reqMeta, handlerType, normalizedModel, rawJSON)
 	setServiceTierMetadata(reqMeta, rawJSON)
 	payload := rawJSON
@@ -881,7 +928,9 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
 		Alt:             alt,
 		OriginalRequest: rawJSON,
 		SourceFormat:    sdktranslator.FromString(handlerType),
-		Headers:         headersFromContext(ctx),
+		ResponseFormat:  sdktranslator.FromString(modelExecutionResponseProtocol(entryProtocol, exitProtocol)),
+		Headers:         modelExecutionHeaders(ctx, execOptions.Headers),
+		Query:           modelExecutionQuery(ctx, execOptions.Query),
 	}
 	opts.Metadata = reqMeta
 	firstChunkTimeout := StreamingFirstChunkTimeout(h.Cfg)

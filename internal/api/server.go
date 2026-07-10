@@ -1029,7 +1029,7 @@ func (s *Server) loadHomeModelEntries(c *gin.Context) ([]homeModelEntry, bool) {
 		return nil, false
 	}
 
-	raw, errGet := client.GetModels(c.Request.Context())
+	raw, errGet := client.GetModels(c.Request.Context(), c.Request.Header, c.Request.URL.Query())
 	if errGet != nil {
 		c.JSON(http.StatusBadGateway, handlers.ErrorResponse{
 			Error: handlers.ErrorDetail{

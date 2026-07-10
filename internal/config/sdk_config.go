@@ -87,6 +87,10 @@ type SDKConfig struct {
 	// through the Codex image tool.
 	GPTImage2BaseModel string `yaml:"gpt-image-2-base-model,omitempty" json:"gpt-image-2-base-model,omitempty"`
 
+	// VideoResultAuthCacheTTL controls how long video IDs stay pinned to the credential
+	// that created them. Empty or invalid values use the default.
+	VideoResultAuthCacheTTL string `yaml:"video-result-auth-cache-ttl,omitempty" json:"video-result-auth-cache-ttl,omitempty"`
+
 	// Streaming configures server-side streaming behavior (keep-alives and safe bootstrap retries).
 	Streaming StreamingConfig `yaml:"streaming" json:"streaming"`
 

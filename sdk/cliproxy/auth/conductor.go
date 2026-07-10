@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -1439,6 +1440,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	}
 	routeModel := req.Model
 	opts = ensureRequestedModelMetadata(opts, routeModel)
+	selectionModel := authSelectionModelFromOptions(opts, routeModel)
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
 	tried := make(map[string]struct{})
@@ -1455,7 +1457,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		if homeMode {
 			pickOpts = withHomeAuthCount(opts, homeAuthCount)
 		}
-		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
+		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, selectionModel, pickOpts, tried)
 		if errPick != nil {
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, lastErr
@@ -1551,6 +1553,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 	}
 	routeModel := req.Model
 	opts = ensureRequestedModelMetadata(opts, routeModel)
+	selectionModel := authSelectionModelFromOptions(opts, routeModel)
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
 	tried := make(map[string]struct{})
@@ -1567,7 +1570,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		if homeMode {
 			pickOpts = withHomeAuthCount(opts, homeAuthCount)
 		}
-		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
+		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, selectionModel, pickOpts, tried)
 		if errPick != nil {
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, lastErr
@@ -1651,6 +1654,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	}
 	routeModel := req.Model
 	opts = ensureRequestedModelMetadata(opts, routeModel)
+	selectionModel := authSelectionModelFromOptions(opts, routeModel)
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
 	tried := make(map[string]struct{})
@@ -1667,7 +1671,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		if homeMode {
 			pickOpts = withHomeAuthCount(opts, homeAuthCount)
 		}
-		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
+		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, selectionModel, pickOpts, tried)
 		if errPick != nil {
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return nil, lastErr
@@ -1746,6 +1750,28 @@ func ensureRequestedModelMetadata(opts cliproxyexecutor.Options, requestedModel 
 	meta[cliproxyexecutor.RequestedModelMetadataKey] = requestedModel
 	opts.Metadata = meta
 	return opts
+}
+
+func authSelectionModelFromOptions(opts cliproxyexecutor.Options, fallback string) string {
+	fallback = strings.TrimSpace(fallback)
+	if len(opts.Metadata) == 0 {
+		return fallback
+	}
+	raw, ok := opts.Metadata[cliproxyexecutor.AuthSelectionModelMetadataKey]
+	if !ok || raw == nil {
+		return fallback
+	}
+	switch value := raw.(type) {
+	case string:
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	case []byte:
+		if value := strings.TrimSpace(string(value)); value != "" {
+			return value
+		}
+	}
+	return fallback
 }
 
 func withHomeAuthCount(opts cliproxyexecutor.Options, count int) cliproxyexecutor.Options {
@@ -2231,6 +2257,7 @@ func resolveOpenAICompatConfig(cfg *internalconfig.Config, providerKey, compatNa
 func asModelAliasEntries[T interface {
 	GetName() string
 	GetAlias() string
+	GetForceMapping() bool
 }](models []T) []modelAliasEntry {
 	if len(models) == 0 {
 		return nil
@@ -2260,6 +2287,107 @@ func (m *Manager) normalizeProviders(providers []string) []string {
 		result = append(result, p)
 	}
 	return result
+}
+
+// AvailableProviders returns provider keys with at least one non-disabled auth record.
+func (m *Manager) AvailableProviders() []string {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	seen := make(map[string]struct{}, len(m.auths))
+	out := make([]string, 0, len(m.auths))
+	for _, auth := range m.auths {
+		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
+			continue
+		}
+		provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+		if provider == "" {
+			continue
+		}
+		if _, exists := seen[provider]; exists {
+			continue
+		}
+		seen[provider] = struct{}{}
+		out = append(out, provider)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// HasProviderAuth reports whether a non-disabled auth is registered for provider.
+func (m *Manager) HasProviderAuth(provider string) bool {
+	if m == nil {
+		return false
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, auth := range m.auths {
+		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(auth.Provider)) == provider {
+			return true
+		}
+	}
+	return false
+}
+
+// ResetQuota clears in-memory quota and cooldown state for one auth record.
+func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []string, error) {
+	if m == nil {
+		return nil, nil, nil
+	}
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return nil, nil, fmt.Errorf("auth id is required")
+	}
+	now := time.Now()
+	models := make([]string, 0)
+	m.mu.Lock()
+	auth := m.auths[authID]
+	if auth == nil {
+		m.mu.Unlock()
+		return nil, nil, nil
+	}
+	for model, state := range auth.ModelStates {
+		if strings.TrimSpace(model) == "" {
+			continue
+		}
+		models = append(models, model)
+		if state != nil {
+			resetModelState(state, now)
+		}
+	}
+	auth.Unavailable = false
+	auth.NextRetryAfter = time.Time{}
+	auth.Quota = QuotaState{}
+	auth.LastError = nil
+	auth.StatusMessage = ""
+	if !auth.Disabled && auth.Status != StatusDisabled {
+		auth.Status = StatusActive
+	}
+	auth.UpdatedAt = now
+	if errPersist := m.persist(ctx, auth); errPersist != nil {
+		m.mu.Unlock()
+		return nil, nil, errPersist
+	}
+	snapshot := auth.Clone()
+	m.mu.Unlock()
+	sort.Strings(models)
+	for _, model := range models {
+		registry.GetGlobalRegistry().ClearModelQuotaExceeded(authID, model)
+		registry.GetGlobalRegistry().ResumeClientModel(authID, model)
+	}
+	if m.scheduler != nil {
+		m.scheduler.upsertAuth(snapshot)
+	}
+	return snapshot, models, nil
 }
 
 func (m *Manager) retrySettings() (int, int, time.Duration) {

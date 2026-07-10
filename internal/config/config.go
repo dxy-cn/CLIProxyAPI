@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginstore"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
@@ -43,6 +44,9 @@ type Config struct {
 
 	// RemoteManagement nests management-related options under 'remote-management'.
 	RemoteManagement RemoteManagement `yaml:"remote-management" json:"-"`
+
+	// Plugins configures dynamic plugin discovery and per-plugin settings.
+	Plugins PluginsConfig `yaml:"plugins" json:"plugins"`
 
 	// AuthDir is the directory where authentication token files are stored.
 	AuthDir string `yaml:"auth-dir" json:"-"`
@@ -83,6 +87,13 @@ type Config struct {
 	// DisableCooling disables quota cooldown scheduling when true.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
 
+	// SaveCooldownStatus persists runtime cooldown status next to auth files when true.
+	SaveCooldownStatus bool `yaml:"save-cooldown-status" json:"save-cooldown-status"`
+
+	// TransientErrorCooldownSeconds controls cooldowns for transient upstream errors.
+	// 0 keeps the legacy default cooldown. Negative values disable these cooldowns.
+	TransientErrorCooldownSeconds int `yaml:"transient-error-cooldown-seconds" json:"transient-error-cooldown-seconds"`
+
 	// AuthAutoRefreshWorkers overrides the size of the core auth auto-refresh worker pool.
 	// When <= 0, the default worker count is used.
 	AuthAutoRefreshWorkers int `yaml:"auth-auto-refresh-workers" json:"auth-auto-refresh-workers"`
@@ -117,6 +128,9 @@ type Config struct {
 	// GeminiKey defines Gemini API key configurations with optional routing overrides.
 	GeminiKey []GeminiKey `yaml:"gemini-api-key" json:"gemini-api-key"`
 
+	// InteractionsKey defines native Google Interactions API key configurations.
+	InteractionsKey []GeminiKey `yaml:"interactions-api-key" json:"interactions-api-key"`
+
 	// Codex defines a list of Codex API key configurations as specified in the YAML configuration file.
 	CodexKey []CodexKey `yaml:"codex-api-key" json:"codex-api-key"`
 
@@ -133,6 +147,9 @@ type Config struct {
 	// ClaudeHeaderDefaults configures default header values for Claude API requests.
 	// These are used as fallbacks when the client does not send its own headers.
 	ClaudeHeaderDefaults ClaudeHeaderDefaults `yaml:"claude-header-defaults" json:"claude-header-defaults"`
+
+	// DisableClaudeCloakMode globally disables Claude request cloaking when true.
+	DisableClaudeCloakMode bool `yaml:"disable-claude-cloak-mode" json:"disable-claude-cloak-mode"`
 
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
@@ -157,6 +174,91 @@ type Config struct {
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+}
+
+// PluginsConfig holds dynamic plugin system settings.
+type PluginsConfig struct {
+	// Enabled toggles dynamic plugin loading.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Dir is the plugin discovery directory.
+	Dir string `yaml:"dir" json:"dir"`
+	// StoreSources appends third-party plugin store registries to the built-in official source.
+	StoreSources []string `yaml:"store-sources,omitempty" json:"store-sources,omitempty"`
+	// StoreAuth defines optional auth rules for plugin store registry, metadata, and artifact requests.
+	StoreAuth []sdkpluginstore.AuthConfig `yaml:"store-auth,omitempty" json:"store-auth,omitempty"`
+	// Configs stores per-plugin instance configuration by plugin ID.
+	Configs map[string]PluginInstanceConfig `yaml:"configs" json:"configs"`
+}
+
+// PluginInstanceConfig stores host-owned plugin settings and the original plugin YAML subtree.
+type PluginInstanceConfig struct {
+	// Enabled toggles this plugin instance. Nil is normalized to false during YAML parsing.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// Priority controls plugin startup and routing order.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+	// Raw preserves the full original plugin configuration YAML subtree.
+	Raw yaml.Node `yaml:"-" json:"-"`
+}
+
+// UnmarshalYAML extracts host-owned fields while preserving the full original YAML node.
+func (c *PluginInstanceConfig) UnmarshalYAML(value *yaml.Node) error {
+	if c == nil {
+		return nil
+	}
+
+	c.Priority = 0
+	defaultEnabled := false
+	c.Enabled = &defaultEnabled
+
+	if value == nil || value.Kind == 0 {
+		c.Raw = *defaultPluginInstanceConfigNode()
+		return nil
+	}
+
+	c.Raw = *deepCopyNode(value)
+	if value.Kind != yaml.MappingNode {
+		return nil
+	}
+
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		key := value.Content[i]
+		node := value.Content[i+1]
+		if key == nil {
+			continue
+		}
+		switch key.Value {
+		case "enabled":
+			var enabled bool
+			if errDecodeEnabled := node.Decode(&enabled); errDecodeEnabled != nil {
+				return fmt.Errorf("parse plugin enabled: %w", errDecodeEnabled)
+			}
+			c.Enabled = &enabled
+		case "priority":
+			var priority int
+			if errDecodePriority := node.Decode(&priority); errDecodePriority != nil {
+				return fmt.Errorf("parse plugin priority: %w", errDecodePriority)
+			}
+			c.Priority = priority
+		}
+	}
+
+	return nil
+}
+
+// MarshalYAML returns the preserved raw plugin YAML subtree for lossless config output.
+func (c PluginInstanceConfig) MarshalYAML() (any, error) {
+	if c.Raw.Kind == 0 {
+		return defaultPluginInstanceConfigNode(), nil
+	}
+	return deepCopyNode(&c.Raw), nil
+}
+
+func defaultPluginInstanceConfigNode() *yaml.Node {
+	return &yaml.Node{
+		Kind:    yaml.MappingNode,
+		Tag:     "!!map",
+		Content: []*yaml.Node{},
+	}
 }
 
 // ClaudeHeaderDefaults configures default header values injected into Claude API requests.
@@ -267,6 +369,8 @@ type OAuthModelAlias struct {
 	Name  string `yaml:"name" json:"name"`
 	Alias string `yaml:"alias" json:"alias"`
 	Fork  bool   `yaml:"fork,omitempty" json:"fork,omitempty"`
+
+	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
 
 // AmpModelMapping defines a model name mapping for Amp CLI requests.
@@ -429,6 +533,9 @@ type ClaudeKey struct {
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
 
+	// RebuildMidSystemMessage moves Claude messages with role "system" into the top-level system field.
+	RebuildMidSystemMessage bool `yaml:"rebuild-mid-system-message,omitempty" json:"rebuild-mid-system-message,omitempty"`
+
 	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
 	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 
@@ -451,10 +558,14 @@ type ClaudeModel struct {
 
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// ForceMapping rewrites upstream response model fields back to Alias.
+	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
 
-func (m ClaudeModel) GetName() string  { return m.Name }
-func (m ClaudeModel) GetAlias() string { return m.Alias }
+func (m ClaudeModel) GetName() string       { return m.Name }
+func (m ClaudeModel) GetAlias() string      { return m.Alias }
+func (m ClaudeModel) GetForceMapping() bool { return m.ForceMapping }
 
 // CodexKey represents the configuration for a Codex API key,
 // including the API key itself and an optional base URL for the API endpoint.
@@ -502,10 +613,14 @@ type CodexModel struct {
 
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// ForceMapping rewrites upstream response model fields back to Alias.
+	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
 
-func (m CodexModel) GetName() string  { return m.Name }
-func (m CodexModel) GetAlias() string { return m.Alias }
+func (m CodexModel) GetName() string       { return m.Name }
+func (m CodexModel) GetAlias() string      { return m.Alias }
+func (m CodexModel) GetForceMapping() bool { return m.ForceMapping }
 
 // GeminiKey represents the configuration for a Gemini API key,
 // including optional overrides for upstream base URL, proxy routing, and headers.
@@ -549,10 +664,14 @@ type GeminiModel struct {
 
 	// Alias is the client-facing model name that maps to Name.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// ForceMapping rewrites upstream response model fields back to Alias.
+	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
 
-func (m GeminiModel) GetName() string  { return m.Name }
-func (m GeminiModel) GetAlias() string { return m.Alias }
+func (m GeminiModel) GetName() string       { return m.Name }
+func (m GeminiModel) GetAlias() string      { return m.Alias }
+func (m GeminiModel) GetForceMapping() bool { return m.ForceMapping }
 
 // OpenAICompatibility represents the configuration for OpenAI API compatibility
 // with external providers, allowing model aliases to be routed through OpenAI API format.
@@ -604,6 +723,9 @@ type OpenAICompatibilityModel struct {
 	// Alias is the model name alias that clients will use to reference this model.
 	Alias string `yaml:"alias" json:"alias"`
 
+	// ForceMapping rewrites upstream response model fields back to Alias.
+	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
+
 	// Image marks this model as callable through /v1/images/generations and /v1/images/edits.
 	Image bool `yaml:"image,omitempty" json:"image,omitempty"`
 
@@ -612,8 +734,9 @@ type OpenAICompatibilityModel struct {
 	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
 }
 
-func (m OpenAICompatibilityModel) GetName() string  { return m.Name }
-func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
+func (m OpenAICompatibilityModel) GetName() string       { return m.Name }
+func (m OpenAICompatibilityModel) GetAlias() string      { return m.Alias }
+func (m OpenAICompatibilityModel) GetForceMapping() bool { return m.ForceMapping }
 
 // LoadConfig reads a YAML configuration file from the given path,
 // unmarshals it into a Config struct, applies environment variable overrides,
@@ -639,7 +762,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		if optional {
 			if os.IsNotExist(err) || errors.Is(err, syscall.EISDIR) {
 				// Missing and optional: return empty config (cloud deploy standby).
-				return &Config{}, nil
+				cfg := &Config{}
+				cfg.NormalizePluginsConfig()
+				return cfg, nil
 			}
 		}
 		return nil, fmt.Errorf("failed to read config file: %w", err)
@@ -647,7 +772,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// In cloud deploy mode (optional=true), if file is empty or contains only whitespace, return empty config.
 	if optional && len(data) == 0 {
-		return &Config{}, nil
+		cfg := &Config{}
+		cfg.NormalizePluginsConfig()
+		return cfg, nil
 	}
 
 	// Unmarshal the YAML data into the Config struct.
@@ -660,6 +787,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.UsageStatisticsEnabled = false
 	cfg.RedisUsageQueueRetentionSeconds = 60
 	cfg.DisableCooling = false
+	cfg.SaveCooldownStatus = false
+	cfg.TransientErrorCooldownSeconds = 0
 	cfg.DisableImageGeneration = DisableImageGenerationOff
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
@@ -668,7 +797,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
-			return &Config{}, nil
+			cfgOptional := &Config{}
+			cfgOptional.NormalizePluginsConfig()
+			return cfgOptional, nil
 		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
@@ -729,8 +860,13 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		cfg.MaxRetryCredentials = 0
 	}
 
+	cfg.NormalizePluginsConfig()
+
 	// Sanitize Gemini API key configuration and migrate legacy entries.
 	cfg.SanitizeGeminiKeys()
+
+	// Sanitize native Interactions API key configuration.
+	cfg.SanitizeInteractionsKeys()
 
 	// Sanitize Vertex-compatible API keys.
 	cfg.SanitizeVertexCompatKeys()
@@ -776,6 +912,32 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Return the populated configuration struct.
 	return &cfg, nil
+}
+
+// NormalizePluginsConfig applies default plugin configuration values.
+func (cfg *Config) NormalizePluginsConfig() {
+	if cfg == nil {
+		return
+	}
+	cfg.Plugins.Dir = strings.TrimSpace(cfg.Plugins.Dir)
+	if cfg.Plugins.Dir == "" {
+		cfg.Plugins.Dir = "plugins"
+	}
+	if len(cfg.Plugins.StoreSources) > 0 {
+		sources := make([]string, 0, len(cfg.Plugins.StoreSources))
+		for _, source := range cfg.Plugins.StoreSources {
+			source = strings.TrimSpace(source)
+			if source == "" {
+				continue
+			}
+			sources = append(sources, source)
+		}
+		cfg.Plugins.StoreSources = sources
+	}
+	cfg.Plugins.StoreAuth = sdkpluginstore.NormalizeAuthConfigs(cfg.Plugins.StoreAuth)
+	if cfg.Plugins.Configs == nil {
+		cfg.Plugins.Configs = map[string]PluginInstanceConfig{}
+	}
 }
 
 // SanitizePayloadRules validates raw JSON payload rule params and drops invalid rules.
@@ -886,7 +1048,7 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 				continue
 			}
 			seenAlias[aliasKey] = struct{}{}
-			clean = append(clean, OAuthModelAlias{Name: name, Alias: alias, Fork: entry.Fork})
+			clean = append(clean, OAuthModelAlias{Name: name, Alias: alias, Fork: entry.Fork, ForceMapping: entry.ForceMapping})
 		}
 		if len(clean) > 0 {
 			out[channel] = clean
@@ -952,17 +1114,11 @@ func (cfg *Config) SanitizeClaudeKeys() {
 	}
 }
 
-// SanitizeGeminiKeys deduplicates and normalizes Gemini credentials.
-// It uses API key + base URL as the uniqueness key.
-func (cfg *Config) SanitizeGeminiKeys() {
-	if cfg == nil {
-		return
-	}
-
-	seen := make(map[string]struct{}, len(cfg.GeminiKey))
-	out := cfg.GeminiKey[:0]
-	for i := range cfg.GeminiKey {
-		entry := cfg.GeminiKey[i]
+func sanitizeGeminiKeyEntries(entries []GeminiKey) []GeminiKey {
+	seen := make(map[string]struct{}, len(entries))
+	out := entries[:0]
+	for i := range entries {
+		entry := entries[i]
 		entry.APIKey = strings.TrimSpace(entry.APIKey)
 		if entry.APIKey == "" {
 			continue
@@ -979,7 +1135,25 @@ func (cfg *Config) SanitizeGeminiKeys() {
 		seen[uniqueKey] = struct{}{}
 		out = append(out, entry)
 	}
-	cfg.GeminiKey = out
+	return out
+}
+
+// SanitizeGeminiKeys deduplicates and normalizes Gemini credentials.
+// It uses API key + base URL as the uniqueness key.
+func (cfg *Config) SanitizeGeminiKeys() {
+	if cfg == nil {
+		return
+	}
+	cfg.GeminiKey = sanitizeGeminiKeyEntries(cfg.GeminiKey)
+}
+
+// SanitizeInteractionsKeys deduplicates and normalizes native Interactions credentials.
+// It uses API key + base URL as the uniqueness key.
+func (cfg *Config) SanitizeInteractionsKeys() {
+	if cfg == nil {
+		return
+	}
+	cfg.InteractionsKey = sanitizeGeminiKeyEntries(cfg.InteractionsKey)
 }
 
 func normalizeModelPrefix(prefix string) string {
@@ -1443,6 +1617,8 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
 			return node.Value == DefaultPprofAddr
 		case "remote-management.panel-release-url":
 			return node.Value == DefaultPanelReleaseURL
+		case "plugins.dir":
+			return node.Value == "plugins"
 		case "routing.strategy":
 			return node.Value == "round-robin"
 		}
@@ -1544,14 +1720,25 @@ func isZeroValueNode(node *yaml.Node) bool {
 
 // deepCopyNode creates a deep copy of a yaml.Node graph.
 func deepCopyNode(n *yaml.Node) *yaml.Node {
+	return deepCopyNodeSeen(n, map[*yaml.Node]*yaml.Node{})
+}
+
+func deepCopyNodeSeen(n *yaml.Node, seen map[*yaml.Node]*yaml.Node) *yaml.Node {
 	if n == nil {
 		return nil
 	}
+	if cp, ok := seen[n]; ok {
+		return cp
+	}
 	cp := *n
+	seen[n] = &cp
+	if n.Alias != nil {
+		cp.Alias = deepCopyNodeSeen(n.Alias, seen)
+	}
 	if len(n.Content) > 0 {
 		cp.Content = make([]*yaml.Node, len(n.Content))
 		for i := range n.Content {
-			cp.Content[i] = deepCopyNode(n.Content[i])
+			cp.Content[i] = deepCopyNodeSeen(n.Content[i], seen)
 		}
 	}
 	return &cp

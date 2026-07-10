@@ -77,6 +77,9 @@ type codexWebsocketSession struct {
 	activeCancel context.CancelFunc
 
 	readerConn *websocket.Conn
+
+	upstreamDisconnectOnce sync.Once
+	upstreamDisconnectCh   chan error
 }
 
 func NewCodexWebsocketsExecutor(cfg *config.Config) *CodexWebsocketsExecutor {
@@ -152,6 +155,37 @@ func (s *codexWebsocketSession) configureConn(conn *websocket.Conn) {
 	})
 }
 
+func (s *codexWebsocketSession) notifyUpstreamDisconnect(err error) {
+	if s == nil {
+		return
+	}
+	s.upstreamDisconnectOnce.Do(func() {
+		if s.upstreamDisconnectCh == nil {
+			return
+		}
+		select {
+		case s.upstreamDisconnectCh <- err:
+		default:
+		}
+		close(s.upstreamDisconnectCh)
+	})
+}
+
+func headerValueCaseInsensitive(headers http.Header, key string) string {
+	if headers == nil {
+		return ""
+	}
+	if value := headers.Get(key); value != "" {
+		return value
+	}
+	for existingKey, values := range headers {
+		if strings.EqualFold(existingKey, key) && len(values) > 0 {
+			return values[0]
+		}
+	}
+	return ""
+}
+
 func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -203,6 +237,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 
 	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, body)
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg)
+	applyModelHeaderOverrides(wsHeaders, baseModel)
 
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -404,6 +439,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 
 	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, body)
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg)
+	applyModelHeaderOverrides(wsHeaders, baseModel)
 
 	var authID, authLabel, authType, authValue string
 	authID = auth.ID
