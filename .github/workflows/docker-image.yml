@@ -14,8 +14,8 @@ on:
         default: "manual"
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  REGISTRY: ${{ vars.DOCKER_REGISTRY || 'ghcr.io' }}
+  IMAGE_NAME: ${{ vars.DOCKER_IMAGE_NAME || github.repository }}
 
 jobs:
   # ============================================
@@ -52,8 +52,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.DOCKER_USERNAME || github.actor }}
+          password: ${{ secrets.DOCKER_PASSWORD || secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
@@ -148,8 +148,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.DOCKER_USERNAME || github.actor }}
+          password: ${{ secrets.DOCKER_PASSWORD || secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
