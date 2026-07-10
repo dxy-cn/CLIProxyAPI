@@ -28,8 +28,12 @@ type imagesResponsesCaptureExecutor struct {
 
 func (e *imagesResponsesCaptureExecutor) Identifier() string { return "codex" }
 
-func (e *imagesResponsesCaptureExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
-	return coreexecutor.Response{}, fmt.Errorf("not implemented")
+func (e *imagesResponsesCaptureExecutor) Execute(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
+	e.calls++
+	e.model = req.Model
+	e.sourceFormat = opts.SourceFormat.String()
+	e.payload = bytes.Clone(req.Payload)
+	return coreexecutor.Response{Payload: []byte(`{"created":1704067200,"data":[{"b64_json":"aW1hZ2U="}]}`)}, nil
 }
 
 func (e *imagesResponsesCaptureExecutor) ExecuteStream(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, error) {
@@ -56,7 +60,7 @@ func (e *imagesResponsesCaptureExecutor) HttpRequest(context.Context, *coreauth.
 	return nil, fmt.Errorf("not implemented")
 }
 
-func TestImagesGenerationsDefaultGPTImage2UsesResponsesBaseModel(t *testing.T) {
+func TestImagesGenerationsDefaultGPTImage2UsesImageExecutor(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	executor := &imagesResponsesCaptureExecutor{}
@@ -74,11 +78,9 @@ func TestImagesGenerationsDefaultGPTImage2UsesResponsesBaseModel(t *testing.T) {
 	}
 
 	modelRegistry := registry.GetGlobalRegistry()
-	modelRegistry.RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-5.4-mini"}})
-	modelRegistry.RegisterClient("test-codex-image-auth", auth.Provider, []*registry.ModelInfo{{ID: "gpt-image-2"}})
+	modelRegistry.RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "gpt-image-2"}})
 	t.Cleanup(func() {
 		modelRegistry.UnregisterClient(auth.ID)
-		modelRegistry.UnregisterClient("test-codex-image-auth")
 	})
 
 	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{GPTImage2BaseModel: "gpt-5.4-mini"}, manager)
@@ -97,17 +99,36 @@ func TestImagesGenerationsDefaultGPTImage2UsesResponsesBaseModel(t *testing.T) {
 	if executor.calls != 1 {
 		t.Fatalf("executor calls = %d, want 1", executor.calls)
 	}
-	if executor.model != "gpt-5.4-mini" {
-		t.Fatalf("model = %q, want %q", executor.model, "gpt-5.4-mini")
+	if executor.model != "gpt-image-2" {
+		t.Fatalf("model = %q, want %q", executor.model, "gpt-image-2")
 	}
-	if executor.sourceFormat != "openai-response" {
-		t.Fatalf("source format = %q, want %q", executor.sourceFormat, "openai-response")
+	if executor.sourceFormat != "openai-image" {
+		t.Fatalf("source format = %q, want %q", executor.sourceFormat, "openai-image")
 	}
-	if got := gjson.GetBytes(executor.payload, "tools.0.model").String(); got != "gpt-image-2" {
-		t.Fatalf("tool model = %q, want %q; payload=%s", got, "gpt-image-2", string(executor.payload))
+	if got := gjson.GetBytes(executor.payload, "prompt").String(); got != "draw a cat" {
+		t.Fatalf("prompt = %q, want original image prompt; payload=%s", got, string(executor.payload))
 	}
 	if got := gjson.GetBytes([]byte(resp.Body.String()), "data.0.b64_json").String(); got != "aW1hZ2U=" {
 		t.Fatalf("b64_json = %q, want image payload; body=%s", got, resp.Body.String())
+	}
+}
+
+func TestCodexImagesToolModelOnlyMatchesGPTImage2(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{model: "gpt-image-2", want: true},
+		{model: "codex/gpt-image-2", want: true},
+		{model: "gpt-image-1.5", want: false},
+		{model: "codex/gpt-image-1.5", want: false},
+		{model: "grok-imagine-image", want: false},
+	}
+
+	for _, tt := range tests {
+		if got := isCodexImagesToolModel(tt.model); got != tt.want {
+			t.Fatalf("isCodexImagesToolModel(%q) = %v, want %v", tt.model, got, tt.want)
+		}
 	}
 }
 
