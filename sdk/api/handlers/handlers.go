@@ -1216,11 +1216,8 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	parsed := thinking.ParseSuffix(resolvedModelName)
 	baseModel := strings.TrimSpace(parsed.ModelName)
 
-	if strings.EqualFold(routeModelBaseName(baseModel), "gpt-image-2") && !allowImageModel {
-		return nil, "", &interfaces.ErrorMessage{
-			StatusCode: http.StatusServiceUnavailable,
-			Error:      fmt.Errorf("model %s is only supported on /v1/images/generations and /v1/images/edits", routeModelBaseName(baseModel)),
-		}
+	if errImageModel := h.validateImageOnlyModel(baseModel, allowImageModel); errImageModel != nil {
+		return nil, "", errImageModel
 	}
 
 	if h != nil && h.AuthManager != nil && h.AuthManager.HomeEnabled() {
@@ -1244,6 +1241,29 @@ func (h *BaseAPIHandler) getRequestDetailsWithOptions(modelName string, allowIma
 	// The thinking suffix is preserved in the model name itself, so no
 	// metadata-based configuration passing is needed.
 	return providers, resolvedModelName, nil
+}
+
+func (h *BaseAPIHandler) validateImageOnlyModel(modelName string, allowImageModel bool) *interfaces.ErrorMessage {
+	baseModel := strings.TrimSpace(thinking.ParseSuffix(modelName).ModelName)
+	if baseModel == "" {
+		baseModel = strings.TrimSpace(modelName)
+	}
+	if isOpenAIImageOnlyModel(baseModel) && !allowImageModel {
+		return &interfaces.ErrorMessage{
+			StatusCode: http.StatusServiceUnavailable,
+			Error:      fmt.Errorf("model %s is only supported on /v1/images/generations and /v1/images/edits", routeModelBaseName(baseModel)),
+		}
+	}
+	return nil
+}
+
+func isOpenAIImageOnlyModel(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(routeModelBaseName(model))) {
+	case "gpt-image-1.5", "gpt-image-2", "grok-imagine-image", "grok-imagine-image-quality":
+		return true
+	default:
+		return false
+	}
 }
 
 func routeModelBaseName(model string) string {

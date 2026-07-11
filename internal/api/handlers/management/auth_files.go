@@ -1834,6 +1834,9 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 			Storage:  tokenStorage,
 			Metadata: map[string]any{"email": tokenStorage.Email},
 		}
+		if errGuard := guardOAuthSessionPendingForSave(state, "anthropic"); errGuard != nil {
+			return
+		}
 		savedPath, errSave := h.saveTokenRecord(ctx, record)
 		if errSave != nil {
 			log.Errorf("Failed to save authentication tokens: %v", errSave)
@@ -1847,7 +1850,6 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		}
 		fmt.Println("You can now use Claude services through this CLI")
 		CompleteOAuthSession(state)
-		CompleteOAuthSessionsByProvider("anthropic")
 	}()
 
 	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
@@ -1981,6 +1983,9 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 				"account_id": tokenStorage.AccountID,
 			},
 		}
+		if errGuard := guardOAuthSessionPendingForSave(state, "codex"); errGuard != nil {
+			return
+		}
 		savedPath, errSave := h.saveTokenRecord(ctx, record)
 		if errSave != nil {
 			SetOAuthSessionError(state, "Failed to save authentication tokens")
@@ -1993,10 +1998,24 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		}
 		fmt.Println("You can now use Codex services through this CLI")
 		CompleteOAuthSession(state)
-		CompleteOAuthSessionsByProvider("codex")
 	}()
 
 	c.JSON(200, gin.H{"status": "ok", "url": authURL, "state": state})
+}
+
+// CancelAuthSession cancels a pending callback flow before credentials are saved.
+func (h *Handler) CancelAuthSession(c *gin.Context) {
+	state := strings.TrimSpace(c.Query("state"))
+	if state == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "missing state"})
+		return
+	}
+	if err := ValidateOAuthState(state); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "invalid state"})
+		return
+	}
+	cancelled := CancelOAuthSession(state)
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "cancelled": cancelled})
 }
 
 func (h *Handler) GetAuthStatus(c *gin.Context) {
@@ -2010,8 +2029,12 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 		return
 	}
 
-	_, status, ok := GetOAuthSession(state)
+	_, status, _, _, completed, ok := GetOAuthSessionDetails(state)
 	if !ok {
+		c.JSON(http.StatusOK, gin.H{"status": "error", "error": "unknown or expired state"})
+		return
+	}
+	if completed {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 		return
 	}

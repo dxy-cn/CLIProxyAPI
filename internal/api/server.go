@@ -696,6 +696,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/anthropic-auth-url", s.mgmt.RequestAnthropicToken)
 		mgmt.GET("/codex-auth-url", s.mgmt.RequestCodexToken)
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
+		mgmt.DELETE("/oauth-session", s.mgmt.CancelAuthSession)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 	}
 }

@@ -222,12 +222,13 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	body = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, originalTranslated, requestedModel, "")
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body, _ = sjson.SetBytes(body, "stream", true)
-	body, _ = sjson.DeleteBytes(body, "previous_response_id")
 	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
-	if !gjson.GetBytes(body, "instructions").Exists() {
-		body, _ = sjson.SetBytes(body, "instructions", "")
+	body = normalizeCodexInstructions(body)
+	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
+		body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
 	}
+	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex websockets executor", body)
 
 	httpURL := strings.TrimSuffix(baseURL, "/") + "/responses"
 	wsURL, err := buildCodexResponsesWebsocketURL(httpURL)
@@ -429,7 +430,14 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
-	body = helps.ApplyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", body, body, requestedModel, "")
+	requestPath := helps.PayloadRequestPath(opts)
+	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, body, requestedModel, requestPath, opts.Headers)
+	body, _ = sjson.SetBytes(body, "model", baseModel)
+	body = normalizeCodexInstructions(body)
+	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
+		body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
+	}
+	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex websockets executor", body)
 
 	httpURL := strings.TrimSuffix(baseURL, "/") + "/responses"
 	wsURL, err := buildCodexResponsesWebsocketURL(httpURL)
@@ -1011,23 +1019,54 @@ func parseCodexWebsocketError(payload []byte) (error, bool) {
 		return nil, false
 	}
 
-	out := []byte(`{}`)
-	if errNode := gjson.GetBytes(payload, "error"); errNode.Exists() {
-		raw := errNode.Raw
-		if errNode.Type == gjson.String {
-			raw = errNode.Raw
-		}
-		out, _ = sjson.SetRawBytes(out, "error", []byte(raw))
-	} else {
-		out, _ = sjson.SetBytes(out, "error.type", "server_error")
-		out, _ = sjson.SetBytes(out, "error.message", http.StatusText(status))
+	out := buildCodexWebsocketErrorPayload(payload, status)
+	statusError := statusErr{code: status, msg: string(out)}
+	if retryAfter := parseCodexRetryAfter(status, out, time.Now()); retryAfter != nil {
+		statusError.retryAfter = retryAfter
+	} else if isCodexWebsocketConnectionLimitError(payload) {
+		retryAfter := time.Duration(0)
+		statusError.retryAfter = &retryAfter
 	}
 
 	headers := parseCodexWebsocketErrorHeaders(payload)
 	return statusErrWithHeaders{
-		statusErr: statusErr{code: status, msg: string(out)},
+		statusErr: statusError,
 		headers:   headers,
 	}, true
+}
+
+func buildCodexWebsocketErrorPayload(payload []byte, status int) []byte {
+	out := []byte(`{}`)
+	out, _ = sjson.SetBytes(out, "status", status)
+
+	if bodyNode := gjson.GetBytes(payload, "body"); bodyNode.Exists() {
+		out, _ = sjson.SetRawBytes(out, "body", []byte(bodyNode.Raw))
+		if bodyErrorNode := bodyNode.Get("error"); bodyErrorNode.Exists() {
+			out, _ = sjson.SetRawBytes(out, "error", []byte(bodyErrorNode.Raw))
+			return out
+		}
+	}
+
+	if errNode := gjson.GetBytes(payload, "error"); errNode.Exists() {
+		out, _ = sjson.SetRawBytes(out, "error", []byte(errNode.Raw))
+		return out
+	}
+
+	out, _ = sjson.SetBytes(out, "error.type", "server_error")
+	out, _ = sjson.SetBytes(out, "error.message", http.StatusText(status))
+	return out
+}
+
+func isCodexWebsocketConnectionLimitError(payload []byte) bool {
+	if len(payload) == 0 {
+		return false
+	}
+	for _, path := range []string{"error.code", "error.type", "body.error.code", "body.error.type", "code", "error"} {
+		if strings.TrimSpace(gjson.GetBytes(payload, path).String()) == "websocket_connection_limit_reached" {
+			return true
+		}
+	}
+	return false
 }
 
 func parseCodexWebsocketErrorHeaders(payload []byte) http.Header {
