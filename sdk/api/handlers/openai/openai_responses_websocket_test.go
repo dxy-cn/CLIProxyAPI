@@ -434,6 +434,16 @@ func TestResponseCompletedOutputFromPayload(t *testing.T) {
 	}
 }
 
+func TestRestoreResponsesWebsocketCompletionOutputPreservesNonEmptyOutput(t *testing.T) {
+	payload := []byte(`{"type":"response.completed","response":{"id":"resp-1","output":[{"type":"message","id":"out-1"}]}}`)
+	collector := map[int64][]byte{0: []byte(`{"type":"function_call","id":"call-1","call_id":"call-1"}`)}
+
+	restored := restoreResponsesWebsocketCompletionOutput(payload, collector, nil)
+	if string(restored) != string(payload) {
+		t.Fatalf("non-empty completion output was overwritten: %s", restored)
+	}
+}
+
 func TestAppendWebsocketEvent(t *testing.T) {
 	var builder strings.Builder
 
@@ -804,7 +814,7 @@ func TestRecordResponsesWebsocketCustomToolCallsFromOutputItemDoneWithCache(t *t
 	}
 }
 
-func TestForwardResponsesWebsocketPreservesCompletedEvent(t *testing.T) {
+func TestForwardResponsesWebsocketRestoresAndForwardsCompletedOutput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	serverErrCh := make(chan error, 1)
@@ -824,9 +834,10 @@ func TestForwardResponsesWebsocketPreservesCompletedEvent(t *testing.T) {
 		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 		ctx.Request = r
 
-		data := make(chan []byte, 1)
+		data := make(chan []byte, 2)
 		errCh := make(chan *interfaces.ErrorMessage)
-		data <- []byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[{\"type\":\"message\",\"id\":\"out-1\"}]}}\n\n")
+		data <- []byte(`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"call-1","call_id":"call-1","name":"lookup","arguments":"{}"}}`)
+		data <- []byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[]}}\n\n")
 		close(data)
 		close(errCh)
 
@@ -849,8 +860,8 @@ func TestForwardResponsesWebsocketPreservesCompletedEvent(t *testing.T) {
 			serverErrCh <- errors.New("unexpected upstream error")
 			return
 		}
-		if gjson.GetBytes(completedOutput, "0.id").String() != "out-1" {
-			serverErrCh <- errors.New("completed output not captured")
+		if gjson.GetBytes(completedOutput, "0.id").String() != "call-1" {
+			serverErrCh <- errors.New("completed output not restored")
 			return
 		}
 		if !strings.Contains(timelineLog.String(), "Event: websocket.response") {
@@ -873,15 +884,26 @@ func TestForwardResponsesWebsocketPreservesCompletedEvent(t *testing.T) {
 		}
 	}()
 
+	_, outputItemPayload, errReadMessage := conn.ReadMessage()
+	if errReadMessage != nil {
+		t.Fatalf("read output item websocket message: %v", errReadMessage)
+	}
+	if got := gjson.GetBytes(outputItemPayload, "type").String(); got != "response.output_item.done" {
+		t.Fatalf("output item payload type = %s, want response.output_item.done", got)
+	}
+
 	_, payload, errReadMessage := conn.ReadMessage()
 	if errReadMessage != nil {
-		t.Fatalf("read websocket message: %v", errReadMessage)
+		t.Fatalf("read completion websocket message: %v", errReadMessage)
 	}
 	if gjson.GetBytes(payload, "type").String() != wsEventTypeCompleted {
 		t.Fatalf("payload type = %s, want %s", gjson.GetBytes(payload, "type").String(), wsEventTypeCompleted)
 	}
 	if strings.Contains(string(payload), "response.done") {
 		t.Fatalf("payload unexpectedly rewrote completed event: %s", payload)
+	}
+	if got := gjson.GetBytes(payload, "response.output.0.id").String(); got != "call-1" {
+		t.Fatalf("downstream completion output id = %q, want call-1; payload=%s", got, payload)
 	}
 
 	if errServer := <-serverErrCh; errServer != nil {
@@ -1745,5 +1767,187 @@ func TestResponsesWebsocketCompactionResetsTurnStateOnTranscriptReplacement(t *t
 	}
 	if items[0].Get("call_id").String() != "call-1" {
 		t.Fatalf("post-compact function call id = %s, want call-1", items[0].Get("call_id").String())
+	}
+}
+func TestInputContainsFullTranscriptFalseForAssistantMessageOnly(t *testing.T) {
+	input := gjson.Parse(`[
+		{"type":"message","role":"user","content":"hello"},
+		{"type":"message","role":"assistant","content":"hi there"}
+	]`)
+	if inputContainsFullTranscript(input) {
+		t.Fatal("assistant message alone must not be treated as full transcript")
+	}
+}
+
+func TestInputContainsFullTranscriptDetectsCompactionItem(t *testing.T) {
+	for _, typ := range []string{"compaction", "compaction_summary"} {
+		input := gjson.Parse(`[{"type":"message","role":"user","content":"hello"},{"type":"` + typ + `","encrypted_content":"summary"}]`)
+		if !inputContainsFullTranscript(input) {
+			t.Fatalf("expected full transcript for type=%s", typ)
+		}
+	}
+}
+
+func TestInputContainsFullTranscriptFalseForIncremental(t *testing.T) {
+	// Normal incremental turns: user messages or function_call_output only.
+	for _, raw := range []string{
+		`[{"type":"function_call_output","call_id":"call-1","output":"result"}]`,
+		`[{"type":"message","role":"user","content":"next question"}]`,
+		`[]`,
+	} {
+		if inputContainsFullTranscript(gjson.Parse(raw)) {
+			t.Fatalf("incremental input must not be detected as full transcript: %s", raw)
+		}
+	}
+}
+
+func TestNormalizeSubsequentRequestCompactSkipsMerge(t *testing.T) {
+	lastRequest := []byte(`{"model":"gpt-5.4","stream":true,"input":[
+		{"type":"message","role":"user","id":"msg-1","content":"original long prompt"},
+		{"type":"message","role":"assistant","id":"msg-2","content":"original long response"},
+		{"type":"function_call","id":"fc-1","call_id":"call-old","name":"bash","arguments":"{}"},
+		{"type":"function_call_output","id":"fco-1","call_id":"call-old","output":"old result"}
+	]}`)
+	lastResponseOutput := []byte(`[
+		{"type":"message","role":"assistant","id":"msg-3","content":"another assistant reply"},
+		{"type":"function_call","id":"fc-2","call_id":"call-stale","name":"read","arguments":"{}"}
+	]`)
+
+	// Remote compact response: user messages + compaction item, NO assistant message.
+	// This is the primary compact scenario from Codex CLI.
+	raw := []byte(`{"type":"response.create","input":[
+		{"type":"message","role":"user","id":"msg-1c","content":"compacted user msg"},
+		{"type":"compaction","encrypted_content":"conversation summary"}
+	]}`)
+
+	normalized, _, errMsg := normalizeResponsesWebsocketRequest(raw, lastRequest, lastResponseOutput)
+	if errMsg != nil {
+		t.Fatalf("unexpected error: %v", errMsg.Error)
+	}
+
+	input := gjson.GetBytes(normalized, "input").Array()
+	if len(input) != 2 {
+		t.Fatalf("input len = %d, want 2 (compacted only); stale state was not skipped", len(input))
+	}
+	if input[0].Get("id").String() != "msg-1c" {
+		t.Fatalf("input[0].id = %q, want %q", input[0].Get("id").String(), "msg-1c")
+	}
+	if input[1].Get("type").String() != "compaction" {
+		t.Fatalf("input[1].type = %q, want %q", input[1].Get("type").String(), "compaction")
+	}
+}
+
+func TestNormalizeSubsequentRequestReasoningContinuationWithPreviousResponseID(t *testing.T) {
+	lastRequest := []byte(`{"model":"gpt-5.6-terra","stream":true,"input":[{"type":"message","role":"user","id":"old-user","content":"long history"}]}`)
+	lastResponseOutput := []byte(`[{"type":"function_call","id":"old-call","call_id":"old-call","name":"lookup","arguments":"{}"}]`)
+
+	for _, requestType := range []string{"response.create", "response.append"} {
+		t.Run(requestType, func(t *testing.T) {
+			raw := []byte(`{"type":"` + requestType + `","previous_response_id":"resp-1","input":[
+				{"type":"reasoning","id":"reasoning-1","summary":[]},
+				{"type":"function_call_output","id":"output-1","call_id":"old-call","output":"result"}
+			]}`)
+
+			normalized, _, errMsg := normalizeResponsesWebsocketRequest(raw, lastRequest, lastResponseOutput)
+			if errMsg != nil {
+				t.Fatalf("unexpected error: %v", errMsg.Error)
+			}
+			if got := gjson.GetBytes(normalized, "previous_response_id").String(); got != "resp-1" {
+				t.Fatalf("previous_response_id = %q, want resp-1; payload=%s", got, normalized)
+			}
+			input := gjson.GetBytes(normalized, "input").Array()
+			if len(input) != 2 || input[0].Get("id").String() != "reasoning-1" || input[1].Get("id").String() != "output-1" {
+				t.Fatalf("incremental continuation was replaced or merged: %s", normalized)
+			}
+		})
+	}
+}
+
+func TestResponsesWebsocketOutputCollectorRestoresCompletedOutput(t *testing.T) {
+	outputItemsByIndex := make(map[int64][]byte)
+	var outputItemsFallback [][]byte
+	for _, payload := range [][]byte{
+		[]byte(`{"type":"response.output_item.done","output_index":1,"item":{"type":"message","id":"reply-1","role":"assistant"}}`),
+		[]byte(`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"summary-1","summary":[]}}`),
+		[]byte(`{"type":"response.output_item.done","item":{"type":"function_call","id":"call-1","call_id":"call-1"}}`),
+	} {
+		collectResponsesWebsocketOutputItem(payload, outputItemsByIndex, &outputItemsFallback)
+	}
+
+	output := responseCompletedOutputFromPayloadWithItems(
+		[]byte(`{"type":"response.completed","response":{"id":"resp-1","output":[]}}`),
+		outputItemsByIndex,
+		outputItemsFallback,
+	)
+	items := gjson.ParseBytes(output).Array()
+	if len(items) != 3 {
+		t.Fatalf("collected output len = %d, want 3: %s", len(items), output)
+	}
+	wantIDs := []string{"summary-1", "reply-1", "call-1"}
+	for i, wantID := range wantIDs {
+		if got := items[i].Get("id").String(); got != wantID {
+			t.Fatalf("output[%d].id = %q, want %q: %s", i, got, wantID, output)
+		}
+	}
+}
+
+func TestNormalizeSubsequentRequestIncrementalInputStillMerges(t *testing.T) {
+	// Normal incremental flow: user sends function_call_output (no assistant message).
+	lastRequest := []byte(`{"model":"gpt-5.4","stream":true,"input":[
+		{"type":"message","role":"user","id":"msg-1","content":"hello"}
+	]}`)
+	lastResponseOutput := []byte(`[
+		{"type":"message","role":"assistant","id":"msg-2","content":"let me check"},
+		{"type":"function_call","id":"fc-1","call_id":"call-1","name":"bash","arguments":"{}"}
+	]`)
+	raw := []byte(`{"type":"response.create","input":[
+		{"type":"function_call_output","call_id":"call-1","id":"fco-1","output":"done"}
+	]}`)
+
+	normalized, _, errMsg := normalizeResponsesWebsocketRequest(raw, lastRequest, lastResponseOutput)
+	if errMsg != nil {
+		t.Fatalf("unexpected error: %v", errMsg.Error)
+	}
+
+	input := gjson.GetBytes(normalized, "input").Array()
+
+	// Should be merged: msg-1 + msg-2 + fc-1 + fco-1 = 4 items
+	if len(input) != 4 {
+		t.Fatalf("input len = %d, want 4 (merged)", len(input))
+	}
+	wantIDs := []string{"msg-1", "msg-2", "fc-1", "fco-1"}
+	for i, want := range wantIDs {
+		got := input[i].Get("id").String()
+		if got != want {
+			t.Fatalf("input[%d].id = %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestNormalizeSubsequentRequestAssistantInputTriggersTranscriptReplacement(t *testing.T) {
+	// After dev's shouldReplaceWebsocketTranscript, assistant messages in input
+	// trigger transcript replacement (no merge with prior state).
+	lastRequest := []byte(`{"model":"gpt-5.4","stream":true,"input":[
+		{"type":"message","role":"user","id":"msg-1","content":"hello"}
+	]}`)
+	lastResponseOutput := []byte(`[
+		{"type":"message","role":"assistant","id":"msg-2","content":"prior assistant"},
+		{"type":"function_call","id":"fc-1","call_id":"call-1","name":"bash","arguments":"{}"}
+	]`)
+	raw := []byte(`{"type":"response.append","input":[
+		{"type":"message","role":"assistant","id":"msg-3","content":"patched assistant turn"}
+	]}`)
+
+	normalized, _, errMsg := normalizeResponsesWebsocketRequest(raw, lastRequest, lastResponseOutput)
+	if errMsg != nil {
+		t.Fatalf("unexpected error: %v", errMsg.Error)
+	}
+
+	input := gjson.GetBytes(normalized, "input").Array()
+	if len(input) != 1 {
+		t.Fatalf("input len = %d, want 1 (transcript replacement, not merge)", len(input))
+	}
+	if input[0].Get("id").String() != "msg-3" {
+		t.Fatalf("input[0].id = %q, want %q", input[0].Get("id").String(), "msg-3")
 	}
 }

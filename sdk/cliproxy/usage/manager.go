@@ -15,25 +15,33 @@ const DefaultServiceTier = "default"
 
 // Record contains the usage statistics captured for a single provider request.
 type Record struct {
-	Provider          string
-	ExecutorType      string
-	Model             string
-	Alias             string
-	APIKey            string
-	AuthID            string
-	AuthIndex         string
-	AuthType          string
-	Source            string
-	ReasoningEffort   string
-	ServiceTier       string
-	RequestedAt       time.Time
-	Latency           time.Duration
-	TTFT              time.Duration
-	FirstTokenLatency time.Duration
-	Failed            bool
-	Fail              Failure
-	Detail            Detail
-	ResponseHeaders   http.Header
+	Provider string
+	// ExecutorType stores the concrete executor type that handled the request.
+	ExecutorType string
+	Model        string
+	Alias        string
+	APIKey       string
+	AuthID       string
+	AuthIndex    string
+	AuthType     string
+	Source       string
+	// ReasoningEffort stores the translated upstream thinking level for request event logs.
+	ReasoningEffort string
+	// ServiceTier stores the client-requested service tier for request event logs.
+	ServiceTier string
+	// RequestServiceTier explicitly aliases the client-requested service tier.
+	RequestServiceTier string
+	// ResponseServiceTier stores the final tier reported by the upstream response.
+	ResponseServiceTier string
+	RequestedAt         time.Time
+	Latency             time.Duration
+	TTFT                time.Duration
+	FirstTokenLatency   time.Duration
+	Failed              bool
+	Fail                Failure
+	Detail              Detail
+	// ResponseHeaders stores a snapshot of upstream response headers for usage sinks.
+	ResponseHeaders http.Header
 }
 
 // Failure holds HTTP failure metadata for an upstream request attempt.
@@ -51,6 +59,7 @@ type Detail struct {
 	CacheReadTokens     int64
 	CacheCreationTokens int64
 	TotalTokens         int64
+	ResponseServiceTier string
 }
 
 type requestedModelAliasContextKey struct{}

@@ -73,7 +73,7 @@ func TestRegisterModelsForAuth_OpenAICompatibilityImageModelType(t *testing.T) {
 					Name:    "images",
 					BaseURL: "https://example.com/v1",
 					Models: []config.OpenAICompatibilityModel{
-						{Name: "upstream-image", Alias: "compat-image", Image: true},
+						{Name: "upstream-image", Alias: "compat-image", DisplayName: "Compatibility Image", Image: true},
 						{Name: "upstream-chat", Alias: "compat-chat"},
 					},
 				},
@@ -118,6 +118,9 @@ func TestRegisterModelsForAuth_OpenAICompatibilityImageModelType(t *testing.T) {
 	}
 	if imageModel.Type != internalregistry.OpenAIImageModelType {
 		t.Fatalf("image model type = %q, want %q", imageModel.Type, internalregistry.OpenAIImageModelType)
+	}
+	if imageModel.DisplayName != "Compatibility Image" {
+		t.Fatalf("image model display name = %q, want Compatibility Image", imageModel.DisplayName)
 	}
 	if imageModel.Thinking != nil {
 		t.Fatalf("image model thinking = %+v, want nil", imageModel.Thinking)

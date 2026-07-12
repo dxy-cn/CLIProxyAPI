@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,7 @@ const (
 	wsRequestTypeAppend  = "response.append"
 	wsEventTypeError     = "error"
 	wsEventTypeCompleted = "response.completed"
+	wsEventTypeDone      = "response.done"
 	wsDoneMarker         = "[DONE]"
 	wsTurnStateHeader    = "x-codex-turn-state"
 	wsTimelineBodyKey    = "WEBSOCKET_TIMELINE_OVERRIDE"
@@ -463,16 +465,30 @@ func shouldReplaceWebsocketTranscript(rawJSON []byte, nextInput gjson.Result) bo
 
 	for _, item := range nextInput.Array() {
 		switch strings.TrimSpace(item.Get("type").String()) {
+		case "compaction", "compaction_summary":
+			return true
 		case "function_call", "custom_tool_call":
 			return true
 		case "message":
-			role := strings.TrimSpace(item.Get("role").String())
-			if role == "assistant" {
+			if strings.TrimSpace(item.Get("role").String()) == "assistant" {
 				return true
 			}
 		}
 	}
 
+	return false
+}
+
+func inputContainsFullTranscript(input gjson.Result) bool {
+	if !input.IsArray() {
+		return false
+	}
+	for _, item := range input.Array() {
+		switch strings.TrimSpace(item.Get("type").String()) {
+		case "compaction", "compaction_summary":
+			return true
+		}
+	}
 	return false
 }
 
@@ -820,6 +836,8 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 ) ([]byte, *interfaces.ErrorMessage, error) {
 	completed := false
 	completedOutput := []byte("[]")
+	outputItemsByIndex := make(map[int64][]byte)
+	var outputItemsFallback [][]byte
 	downstreamSessionKey := ""
 	if c != nil && c.Request != nil {
 		downstreamSessionKey = websocketDownstreamSessionKey(c.Request)
@@ -903,11 +921,15 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 
 			payloads := websocketJSONPayloadsFromChunk(chunk)
 			for i := range payloads {
-				recordResponsesWebsocketToolCallsFromPayload(downstreamSessionKey, payloads[i])
+				collectResponsesWebsocketOutputItem(payloads[i], outputItemsByIndex, &outputItemsFallback)
 				eventType := gjson.GetBytes(payloads[i], "type").String()
-				if eventType == wsEventTypeCompleted {
+				if isResponsesWebsocketCompletionEvent(eventType) {
+					payloads[i] = restoreResponsesWebsocketCompletionOutput(payloads[i], outputItemsByIndex, outputItemsFallback)
+				}
+				recordResponsesWebsocketToolCallsFromPayload(downstreamSessionKey, payloads[i])
+				if isResponsesWebsocketCompletionEvent(eventType) {
 					completed = true
-					completedOutput = responseCompletedOutputFromPayload(payloads[i])
+					completedOutput = responseCompletedOutputFromPayloadWithItems(payloads[i], outputItemsByIndex, outputItemsFallback)
 				}
 				markAPIResponseTimestamp(c)
 				// log.Infof(
@@ -932,12 +954,72 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	}
 }
 
-func responseCompletedOutputFromPayload(payload []byte) []byte {
+func collectResponsesWebsocketOutputItem(payload []byte, outputItemsByIndex map[int64][]byte, outputItemsFallback *[][]byte) {
+	if gjson.GetBytes(payload, "type").String() != "response.output_item.done" {
+		return
+	}
+	item := gjson.GetBytes(payload, "item")
+	if !item.Exists() || !item.IsObject() {
+		return
+	}
+	outputIndex := gjson.GetBytes(payload, "output_index")
+	if outputIndex.Exists() {
+		outputItemsByIndex[outputIndex.Int()] = bytes.Clone([]byte(item.Raw))
+		return
+	}
+	*outputItemsFallback = append(*outputItemsFallback, bytes.Clone([]byte(item.Raw)))
+}
+
+func restoreResponsesWebsocketCompletionOutput(payload []byte, outputItemsByIndex map[int64][]byte, outputItemsFallback [][]byte) []byte {
 	output := gjson.GetBytes(payload, "response.output")
-	if output.Exists() && output.IsArray() {
+	if output.Exists() && output.IsArray() && len(output.Array()) > 0 {
+		return payload
+	}
+	if len(outputItemsByIndex) == 0 && len(outputItemsFallback) == 0 {
+		return payload
+	}
+
+	restored, errSet := sjson.SetRawBytes(payload, "response.output", responseCompletedOutputFromPayloadWithItems(payload, outputItemsByIndex, outputItemsFallback))
+	if errSet != nil {
+		return payload
+	}
+	return restored
+}
+
+func responseCompletedOutputFromPayload(payload []byte) []byte {
+	return responseCompletedOutputFromPayloadWithItems(payload, nil, nil)
+}
+
+func responseCompletedOutputFromPayloadWithItems(payload []byte, outputItemsByIndex map[int64][]byte, outputItemsFallback [][]byte) []byte {
+	output := gjson.GetBytes(payload, "response.output")
+	if output.Exists() && output.IsArray() && len(output.Array()) > 0 {
 		return bytes.Clone([]byte(output.Raw))
 	}
-	return []byte("[]")
+	if len(outputItemsByIndex) == 0 && len(outputItemsFallback) == 0 {
+		return []byte("[]")
+	}
+
+	indexes := make([]int64, 0, len(outputItemsByIndex))
+	for index := range outputItemsByIndex {
+		indexes = append(indexes, index)
+	}
+	sort.Slice(indexes, func(i, j int) bool {
+		return indexes[i] < indexes[j]
+	})
+
+	items := make([]json.RawMessage, 0, len(outputItemsByIndex)+len(outputItemsFallback))
+	for _, index := range indexes {
+		items = append(items, json.RawMessage(outputItemsByIndex[index]))
+	}
+	for _, item := range outputItemsFallback {
+		items = append(items, json.RawMessage(item))
+	}
+
+	marshaledOutput, errMarshal := json.Marshal(items)
+	if errMarshal != nil {
+		return []byte("[]")
+	}
+	return marshaledOutput
 }
 
 func websocketJSONPayloadsFromChunk(chunk []byte) [][]byte {
@@ -1080,6 +1162,10 @@ func websocketPayloadPreview(payload []byte) string {
 	previewText := strings.ReplaceAll(string(trimmedPayload), "\n", "\\n")
 	previewText = strings.ReplaceAll(previewText, "\r", "\\r")
 	return previewText
+}
+
+func isResponsesWebsocketCompletionEvent(eventType string) bool {
+	return eventType == wsEventTypeCompleted || eventType == wsEventTypeDone
 }
 
 func setWebsocketTimelineBody(c *gin.Context, body string) {

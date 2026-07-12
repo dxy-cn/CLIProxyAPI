@@ -1027,9 +1027,16 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 					for j := range compat.Models {
 						m := compat.Models[j]
 						// Use alias as model ID, fallback to name if alias is empty
-						modelID := m.Alias
+						modelID := strings.TrimSpace(m.Alias)
 						if modelID == "" {
-							modelID = m.Name
+							modelID = strings.TrimSpace(m.Name)
+						}
+						if modelID == "" {
+							continue
+						}
+						displayName := strings.TrimSpace(m.DisplayName)
+						if displayName == "" {
+							displayName = modelID
 						}
 						thinking := m.Thinking
 						modelType := "openai-compatibility"
@@ -1045,7 +1052,7 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 							Created:     time.Now().Unix(),
 							OwnedBy:     compat.Name,
 							Type:        modelType,
-							DisplayName: modelID,
+							DisplayName: displayName,
 							UserDefined: false,
 							Thinking:    thinking,
 						})
@@ -1394,6 +1401,34 @@ func matchWildcard(pattern, value string) bool {
 type modelEntry interface {
 	GetName() string
 	GetAlias() string
+	GetDisplayName() string
+}
+
+func buildConfiguredModelInfo(model modelEntry, ownedBy, modelType string, created int64, fallbackDisplayName string, userDefined bool) *ModelInfo {
+	name := strings.TrimSpace(model.GetName())
+	alias := strings.TrimSpace(model.GetAlias())
+	if alias == "" {
+		alias = name
+	}
+	if alias == "" {
+		return nil
+	}
+	displayName := strings.TrimSpace(model.GetDisplayName())
+	if displayName == "" {
+		displayName = fallbackDisplayName
+	}
+	if displayName == "" {
+		displayName = alias
+	}
+	return &ModelInfo{
+		ID:          alias,
+		Object:      "model",
+		Created:     created,
+		OwnedBy:     ownedBy,
+		Type:        modelType,
+		DisplayName: displayName,
+		UserDefined: userDefined,
+	}
 }
 
 func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*ModelInfo {
@@ -1406,31 +1441,16 @@ func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*M
 	for i := range models {
 		model := models[i]
 		name := strings.TrimSpace(model.GetName())
-		alias := strings.TrimSpace(model.GetAlias())
-		if alias == "" {
-			alias = name
-		}
-		if alias == "" {
+		info := buildConfiguredModelInfo(model, ownedBy, modelType, now, name, true)
+		if info == nil {
 			continue
 		}
+		alias := info.ID
 		key := strings.ToLower(alias)
 		if _, exists := seen[key]; exists {
 			continue
 		}
 		seen[key] = struct{}{}
-		display := name
-		if display == "" {
-			display = alias
-		}
-		info := &ModelInfo{
-			ID:          alias,
-			Object:      "model",
-			Created:     now,
-			OwnedBy:     ownedBy,
-			Type:        modelType,
-			DisplayName: display,
-			UserDefined: true,
-		}
 		if name != "" {
 			if upstream := registry.LookupStaticModelInfo(name); upstream != nil && upstream.Thinking != nil {
 				info.Thinking = upstream.Thinking
@@ -1466,7 +1486,39 @@ func buildCodexConfigModels(entry *config.CodexKey) []*ModelInfo {
 	if entry == nil {
 		return nil
 	}
-	return registry.WithCodexBuiltins(buildConfigModels(entry.Models, "openai", "openai"))
+
+	models := registry.WithCodexBuiltins(buildConfigModels(entry.Models, "openai", "openai"))
+	configuredDisplayNames := make(map[string]string, len(entry.Models))
+	seenConfiguredModels := make(map[string]struct{}, len(entry.Models))
+	for i := range entry.Models {
+		model := entry.Models[i]
+		alias := strings.TrimSpace(model.Alias)
+		if alias == "" {
+			alias = strings.TrimSpace(model.Name)
+		}
+		if alias == "" {
+			continue
+		}
+		key := strings.ToLower(alias)
+		if _, exists := seenConfiguredModels[key]; exists {
+			continue
+		}
+		seenConfiguredModels[key] = struct{}{}
+
+		displayName := strings.TrimSpace(model.DisplayName)
+		if displayName != "" {
+			configuredDisplayNames[key] = displayName
+		}
+	}
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		if displayName, ok := configuredDisplayNames[strings.ToLower(model.ID)]; ok {
+			model.DisplayName = displayName
+		}
+	}
+	return models
 }
 
 func rewriteModelInfoName(name, oldID, newID string) string {
