@@ -14,18 +14,17 @@ import (
 )
 
 func TestPostOAuthCallbackCreatesMissingAuthDir(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 
 	authDir := filepath.Join(t.TempDir(), "missing-auth")
-	state := "test-codex-state"
-	RegisterOAuthSession(state, "codex")
+	state := "test-antigravity-state"
+	RegisterOAuthSession(state, "antigravity")
 	defer CompleteOAuthSession(state)
 
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
 	router := gin.New()
 	router.POST("/v0/management/oauth-callback", h.PostOAuthCallback)
 
-	body := `{"provider":"codex","redirect_url":"http://localhost:1455/auth/callback?state=test-codex-state&code=test-code"}`
+	body := `{"provider":"antigravity","redirect_url":"http://localhost:59788/oauth-callback?state=test-antigravity-state&code=test-code"}`
 	req := httptest.NewRequest(http.MethodPost, "/v0/management/oauth-callback", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -36,7 +35,7 @@ func TestPostOAuthCallbackCreatesMissingAuthDir(t *testing.T) {
 		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, w.Code, w.Body.String())
 	}
 
-	callbackPath := filepath.Join(authDir, ".oauth-codex-"+state+".oauth")
+	callbackPath := filepath.Join(authDir, ".oauth-antigravity-"+state+".oauth")
 	data, errRead := os.ReadFile(callbackPath)
 	if errRead != nil {
 		t.Fatalf("expected callback file to be written: %v", errRead)
@@ -51,8 +50,75 @@ func TestPostOAuthCallbackCreatesMissingAuthDir(t *testing.T) {
 	}
 }
 
+func TestGetOAuthCallbackWritesPluginProviderCallback(t *testing.T) {
+	authDir := filepath.Join(t.TempDir(), "missing-auth")
+	state := "test-geminicli-state"
+	if errRegister := RegisterPluginOAuthSession(state, "gemini-cli", nil); errRegister != nil {
+		t.Fatalf("register plugin oauth session: %v", errRegister)
+	}
+	defer CompleteOAuthSession(state)
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
+	router := gin.New()
+	router.GET("/v0/management/oauth-callback", h.GetOAuthCallback)
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/oauth-callback?state="+state+"&code=test-code", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	callbackPath := filepath.Join(authDir, ".oauth-gemini-cli-"+state+".oauth")
+	data, errRead := os.ReadFile(callbackPath)
+	if errRead != nil {
+		t.Fatalf("expected callback file to be written: %v", errRead)
+	}
+
+	var payload oauthCallbackFilePayload
+	if errUnmarshal := json.Unmarshal(data, &payload); errUnmarshal != nil {
+		t.Fatalf("failed to decode callback payload: %v", errUnmarshal)
+	}
+	if payload.State != state || payload.Code != "test-code" || payload.Error != "" {
+		t.Fatalf("unexpected callback payload: %+v", payload)
+	}
+}
+
+func TestGetOAuthCallbackDoesNotAliasPluginProvider(t *testing.T) {
+	authDir := filepath.Join(t.TempDir(), "missing-auth")
+	state := "test-openai-plugin-state"
+	if errRegister := RegisterPluginOAuthSession(state, "openai", nil); errRegister != nil {
+		t.Fatalf("register plugin oauth session: %v", errRegister)
+	}
+	defer CompleteOAuthSession(state)
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: authDir}, nil)
+	router := gin.New()
+	router.GET("/v0/management/oauth-callback", h.GetOAuthCallback)
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/oauth-callback?state="+state+"&code=test-code", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	callbackPath := filepath.Join(authDir, ".oauth-openai-"+state+".oauth")
+	if _, errRead := os.ReadFile(callbackPath); errRead != nil {
+		t.Fatalf("expected plugin callback provider to stay openai: %v", errRead)
+	}
+	if _, errRead := os.ReadFile(filepath.Join(authDir, ".oauth-codex-"+state+".oauth")); errRead == nil {
+		t.Fatal("unexpected codex callback file for openai plugin provider")
+	}
+}
+
 func TestWriteOAuthCallbackFileForPendingSessionCreatesMissingAuthDirForCallbackProviders(t *testing.T) {
-	providers := []string{"anthropic", "codex"}
+	// xAI uses device-code flow and no longer writes callback files.
+	providers := []string{"anthropic", "codex", "gemini", "antigravity"}
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {
 			authDir := filepath.Join(t.TempDir(), "missing-auth")
@@ -76,16 +142,6 @@ func TestWriteOAuthCallbackFileForPendingSessionCreatesMissingAuthDirForCallback
 			}
 			if payload.State != state || payload.Code != "code-"+provider || payload.Error != "" {
 				t.Fatalf("unexpected callback payload: %+v", payload)
-			}
-		})
-	}
-}
-
-func TestNormalizeOAuthProviderRejectsUnsupportedCredentialFlows(t *testing.T) {
-	for _, provider := range []string{"kimi", "qwen", "gemini", "google", "antigravity", "xai", "grok"} {
-		t.Run(provider, func(t *testing.T) {
-			if got, err := NormalizeOAuthProvider(provider); err == nil {
-				t.Fatalf("NormalizeOAuthProvider(%q) = %q, nil; want unsupported provider error", provider, got)
 			}
 		})
 	}

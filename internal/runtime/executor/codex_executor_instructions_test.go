@@ -94,6 +94,45 @@ func TestCodexExecutorExecuteStreamNormalizesNullInstructions(t *testing.T) {
 	}
 }
 
+func TestCodexExecutorExecuteStreamUsesOAuthMetadataBaseURL(t *testing.T) {
+	var gotPath string
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"background\":false,\"error\":null,\"output\":[]}}\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Metadata: map[string]any{
+			"access_token": "oauth-test-token",
+			"base_url":     server.URL,
+		},
+	}
+
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.4",
+		Payload: []byte(`{"model":"gpt-5.4","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	for range result.Chunks {
+	}
+	if gotPath != "/responses" {
+		t.Fatalf("path = %q, want %q", gotPath, "/responses")
+	}
+	if gotAuth != "Bearer oauth-test-token" {
+		t.Fatalf("Authorization = %q, want bearer oauth token", gotAuth)
+	}
+}
+
 func TestCodexExecutorCountTokensTreatsNullInstructionsAsEmpty(t *testing.T) {
 	executor := NewCodexExecutor(&config.Config{})
 
