@@ -177,8 +177,7 @@ See [config.example.yaml](config.example.yaml) for the full schema. Important to
 | `request-retry`             | Retry count for failed provider requests                                |
 | `max-retry-credentials`     | Limit how many credentials are attempted per failed request             |
 | `max-retry-interval`        | Max wait before retrying a cooled-down credential                       |
-| `streaming.first-chunk-timeout` | Seconds to wait for the first streaming payload (TTFT); `0` disables it |
-| `streaming.bootstrap-retries` | Retry count before any streaming bytes are sent, including TTFT timeout |
+| `streaming.bootstrap-retries` | Retry count before any streaming bytes are sent                     |
 | `disable-cooling`           | Disable quota cooldown scheduling                                       |
 | `usage-statistics-enabled`  | Enable in-memory usage aggregation                                      |
 | `redis-usage-queue-retention-seconds` | In-memory usage queue retention for the Management API                  |
