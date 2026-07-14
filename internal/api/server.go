@@ -545,7 +545,8 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 	if sessionID := strings.TrimSpace(routing.ID); sessionID != "" {
 		selectionHeaders.Set("X-Session-ID", sessionID)
 	}
-	selected, err := s.handlers.AuthManager.SelectAuth(c.Request.Context(), "codex", strings.TrimSpace(routing.Model), coreexecutor.Options{
+	ctx := context.WithValue(c.Request.Context(), "gin", c)
+	selected, err := s.handlers.AuthManager.SelectAuth(ctx, "codex", strings.TrimSpace(routing.Model), coreexecutor.Options{
 		Headers:         selectionHeaders,
 		OriginalRequest: body,
 	})
@@ -571,7 +572,6 @@ func (s *Server) codexAlphaSearch(c *gin.Context) {
 		headers.Set("Chatgpt-Account-Id", accountID)
 	}
 
-	ctx := context.WithValue(c.Request.Context(), "gin", c)
 	const upstreamURL = "https://chatgpt.com/backend-api/codex/alpha/search"
 	req, err := s.handlers.AuthManager.NewHttpRequest(
 		ctx, selected, http.MethodPost, upstreamURL, body, headers,
@@ -784,6 +784,21 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/codex-api-key", s.mgmt.PatchCodexKey)
 		mgmt.DELETE("/codex-api-key", s.mgmt.DeleteCodexKey)
 
+		mgmt.GET("/xai-api-key", s.mgmt.GetXAIKeys)
+		mgmt.PUT("/xai-api-key", s.mgmt.PutXAIKeys)
+		mgmt.PATCH("/xai-api-key", s.mgmt.PatchXAIKey)
+		mgmt.DELETE("/xai-api-key", s.mgmt.DeleteXAIKey)
+
+		mgmt.GET("/openai-compatibility", s.mgmt.GetOpenAICompat)
+		mgmt.PUT("/openai-compatibility", s.mgmt.PutOpenAICompat)
+		mgmt.PATCH("/openai-compatibility", s.mgmt.PatchOpenAICompat)
+		mgmt.DELETE("/openai-compatibility", s.mgmt.DeleteOpenAICompat)
+
+		mgmt.GET("/vertex-api-key", s.mgmt.GetVertexCompatKeys)
+		mgmt.PUT("/vertex-api-key", s.mgmt.PutVertexCompatKeys)
+		mgmt.PATCH("/vertex-api-key", s.mgmt.PatchVertexCompatKey)
+		mgmt.DELETE("/vertex-api-key", s.mgmt.DeleteVertexCompatKey)
+
 		mgmt.GET("/oauth-excluded-models", s.mgmt.GetOAuthExcludedModels)
 		mgmt.PUT("/oauth-excluded-models", s.mgmt.PutOAuthExcludedModels)
 		mgmt.PATCH("/oauth-excluded-models", s.mgmt.PatchOAuthExcludedModels)
@@ -970,6 +985,8 @@ func (s *Server) unifiedModelsHandler(openaiHandler *openai.OpenAIAPIHandler, cl
 	}
 }
 
+// handleHomeCodexClientModels builds the Codex client catalog from Home model IDs.
+// Template metadata still comes from the local/remote codex_client_models catalog.
 func (s *Server) handleHomeCodexClientModels(c *gin.Context) {
 	entries, ok := s.loadHomeModelEntries(c)
 	if !ok {
@@ -1591,16 +1608,31 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		authEntries = util.CountAuthFiles(context.Background(), tokenStore)
 	}
 	geminiAPIKeyCount := len(cfg.GeminiKey)
+	interactionsAPIKeyCount := len(cfg.InteractionsKey)
 	claudeAPIKeyCount := len(cfg.ClaudeKey)
 	codexAPIKeyCount := len(cfg.CodexKey)
+	xaiAPIKeyCount := len(cfg.XAIKey)
+	vertexAICompatCount := len(cfg.VertexCompatAPIKey)
+	openAICompatCount := 0
+	for i := range cfg.OpenAICompatibility {
+		entry := cfg.OpenAICompatibility[i]
+		if entry.Disabled {
+			continue
+		}
+		openAICompatCount += len(entry.APIKeyEntries)
+	}
 
-	total := authEntries + geminiAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount
-	fmt.Printf("server clients and configuration updated: %d clients (%d auth entries + %d Gemini API keys + %d Claude API keys + %d Codex keys)\n",
+	total := authEntries + geminiAPIKeyCount + interactionsAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount + xaiAPIKeyCount + vertexAICompatCount + openAICompatCount
+	fmt.Printf("server clients and configuration updated: %d clients (%d auth entries + %d Gemini API keys + %d Interactions API keys + %d Claude API keys + %d Codex keys + %d xAI keys + %d Vertex-compat + %d OpenAI-compat)\n",
 		total,
 		authEntries,
 		geminiAPIKeyCount,
+		interactionsAPIKeyCount,
 		claudeAPIKeyCount,
 		codexAPIKeyCount,
+		xaiAPIKeyCount,
+		vertexAICompatCount,
+		openAICompatCount,
 	)
 }
 

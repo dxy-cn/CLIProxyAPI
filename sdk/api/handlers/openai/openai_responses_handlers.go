@@ -681,7 +681,7 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
 			for _, payload := range websocketJSONPayloadsFromChunk(chunk) {
 				if gjson.GetBytes(payload, "type").String() == wsEventTypeCompleted {
 					completed = true
-					completedOutput = responseCompletedOutputFromPayload(payload)
+					completedOutput = responseCompletedOutputFromPayload(payload, nil, nil)
 				}
 			}
 			restOutput, terminalErr, restCompleted := h.forwardResponsesStreamWithCapture(
@@ -735,7 +735,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStreamWithCapture(c *gin.Con
 			for _, payload := range websocketJSONPayloadsFromChunk(chunk) {
 				if gjson.GetBytes(payload, "type").String() == wsEventTypeCompleted {
 					completed = true
-					completedOutput = responseCompletedOutputFromPayload(payload)
+					completedOutput = responseCompletedOutputFromPayload(payload, nil, nil)
 				}
 			}
 			framer.WriteChunk(c.Writer, chunk)
