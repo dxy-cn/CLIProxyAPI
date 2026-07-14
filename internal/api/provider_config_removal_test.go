@@ -23,35 +23,40 @@ func readRepositoryFile(t *testing.T, parts ...string) string {
 	return string(data)
 }
 
-func TestRemovedProviderManagementRoutes(t *testing.T) {
+func TestProviderManagementRouteBoundary(t *testing.T) {
 	source := readRepositoryFile(t, "internal", "api", "server.go")
 
 	for _, forbidden := range []string{
 		`"/ampcode`,
-		`"/openai-compatibility"`,
-		`"/vertex-api-key"`,
 		`"/vertex/import"`,
 		"ampModule",
-		"OpenAI-compat",
-		"Vertex-compat",
 	} {
 		if strings.Contains(source, forbidden) {
-			t.Fatalf("server.go still contains removed provider backend logic %q", forbidden)
+			t.Fatalf("server.go contains excluded provider backend logic %q", forbidden)
+		}
+	}
+
+	for _, required := range []string{
+		`"/xai-api-key"`,
+		`"/openai-compatibility"`,
+		`"/vertex-api-key"`,
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("server.go is missing restored upstream provider route %q", required)
 		}
 	}
 }
 
-func TestRemovedProviderRuntimeSynthesis(t *testing.T) {
+func TestRestoredProviderRuntimeSynthesis(t *testing.T) {
 	source := readRepositoryFile(t, "internal", "watcher", "synthesizer", "config.go")
 
-	for _, forbidden := range []string{
+	for _, required := range []string{
+		"synthesizeXAIKeys",
 		"synthesizeOpenAICompat",
 		"synthesizeVertexCompat",
-		"OpenAI-compat",
-		"Vertex-compat",
 	} {
-		if strings.Contains(source, forbidden) {
-			t.Fatalf("config synthesizer still contains removed provider backend logic %q", forbidden)
+		if !strings.Contains(source, required) {
+			t.Fatalf("config synthesizer is missing restored upstream provider logic %q", required)
 		}
 	}
 }
