@@ -109,8 +109,4 @@ type StreamingConfig struct {
 	// to allow auth rotation / transient recovery.
 	// <= 0 disables bootstrap retries. Default is 0.
 	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
-
-	// FirstChunkTimeoutSeconds controls how long to wait for the first upstream stream payload (TTFT).
-	// <= 0 disables the timeout. Default is 0.
-	FirstChunkTimeoutSeconds int `yaml:"first-chunk-timeout,omitempty" json:"first-chunk-timeout,omitempty"`
 }

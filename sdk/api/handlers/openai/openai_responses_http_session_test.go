@@ -21,6 +21,14 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+type responsesHTTPStatusError struct {
+	code int
+	msg  string
+}
+
+func (e responsesHTTPStatusError) Error() string   { return e.msg }
+func (e responsesHTTPStatusError) StatusCode() int { return e.code }
+
 func resetResponsesHTTPSessionStoreForTest(t *testing.T) *responsesHTTPSessionStore {
 	t.Helper()
 
@@ -72,7 +80,7 @@ func (e *responsesHTTPFallbackExecutor) Execute(_ context.Context, auth *coreaut
 		return coreexecutor.Response{}, errors.New("read tcp 172.21.0.3:54800->172.64.155.209:443: i/o timeout")
 	}
 	if responsesRequestUsesPreviousResponseID(req.Payload) {
-		return coreexecutor.Response{}, websocketStatusErr{
+		return coreexecutor.Response{}, responsesHTTPStatusError{
 			code: http.StatusBadRequest,
 			msg:  `{"error":{"message":"Previous response with id 'resp-upstream-1' not found.","type":"invalid_request_error","code":"previous_response_not_found","param":"previous_response_id"}}`,
 		}
@@ -106,7 +114,7 @@ func (e *responsesHTTPFallbackExecutor) ExecuteStream(_ context.Context, auth *c
 		return nil, errors.New("read tcp 172.21.0.3:54800->172.64.155.209:443: i/o timeout")
 	}
 	if responsesRequestUsesPreviousResponseID(req.Payload) {
-		return nil, websocketStatusErr{
+		return nil, responsesHTTPStatusError{
 			code: http.StatusBadRequest,
 			msg:  `{"error":{"message":"Previous response with id 'resp-upstream-1' not found.","type":"invalid_request_error","code":"previous_response_not_found","param":"previous_response_id"}}`,
 		}

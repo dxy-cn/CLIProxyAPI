@@ -168,7 +168,18 @@ func responsesRequestUsesPreviousResponseID(rawJSON []byte) bool {
 }
 
 func isResponsesPreviousResponseNotFoundError(errMsg *interfaces.ErrorMessage) bool {
-	return isPreviousResponseNotFoundWebsocketError(errMsg)
+	if errMsg == nil || errMsg.Error == nil {
+		return false
+	}
+	raw := strings.TrimSpace(errMsg.Error.Error())
+	if raw == "" {
+		return false
+	}
+	lower := strings.ToLower(raw)
+	upstreamCode := strings.ToLower(strings.TrimSpace(gjson.GetBytes([]byte(raw), "error.code").String()))
+	return upstreamCode == "previous_response_not_found" ||
+		strings.Contains(lower, "previous_response_not_found") ||
+		(strings.Contains(lower, "previous_response_id") && strings.Contains(lower, "not found"))
 }
 
 func responsesOutputFromBody(payload []byte) []byte {
@@ -176,7 +187,7 @@ func responsesOutputFromBody(payload []byte) []byte {
 	if output.Exists() && output.IsArray() {
 		return bytes.Clone([]byte(output.Raw))
 	}
-	return responseCompletedOutputFromPayload(payload)
+	return responseCompletedOutputFromPayload(payload, nil, nil)
 }
 
 func normalizeResponsesHTTPRequestWithSession(
@@ -188,7 +199,7 @@ func normalizeResponsesHTTPRequestWithSession(
 		return bytes.Clone(rawJSON), nil
 	}
 
-	normalized, _, errMsg := normalizeResponseSubsequentRequest(rawJSON, lastRequest, lastResponseBody, false)
+	normalized, _, errMsg := normalizeResponseSubsequentRequest(rawJSON, lastRequest, lastResponseBody, "", nil, false, false)
 	if errMsg != nil {
 		return nil, errMsg
 	}
